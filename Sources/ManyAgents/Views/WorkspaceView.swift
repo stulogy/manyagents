@@ -24,6 +24,23 @@ struct WorkspaceView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(mainBackground)
+        .sheet(isPresented: Binding(
+            get: { manager.pendingRestore != nil },
+            set: { presented in
+                if !presented, manager.pendingRestore != nil {
+                    manager.dismissPendingSnapshot()
+                }
+            }
+        )) {
+            if let snap = manager.pendingRestore {
+                RestoreSessionsSheet(
+                    snapshot: snap,
+                    onReopen: { manager.acceptPendingSnapshot() },
+                    onDiscard: { manager.discardPendingSnapshot() },
+                    onDismiss: { manager.dismissPendingSnapshot() }
+                )
+            }
+        }
     }
 
     private var mainBackground: some View {

@@ -88,22 +88,27 @@ struct ProjectsSidebar: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.brandOrange)
                 Text("New session")
-                    .font(.system(size: 12.5, weight: .semibold))
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(.primary)
                 Spacer()
                 Text("⌘N")
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.7))
+                    .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(BrandGradient.warm)
+                    .fill(Color.primary.opacity(0.06))
             )
-            .foregroundStyle(.white)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.primary.opacity(0.10), lineWidth: 0.5)
+            )
         }
         .buttonStyle(.plain)
         .keyboardShortcut("n", modifiers: .command)

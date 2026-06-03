@@ -23,7 +23,7 @@ struct ManyAgentsApp: App {
                     guard !restored else { return }
                     restored = true
                     readiness.refresh()
-                    manager.restorePersisted()
+                    manager.loadPendingSnapshot()
                     autoNamer.attach(manager: manager)
                 }
         }

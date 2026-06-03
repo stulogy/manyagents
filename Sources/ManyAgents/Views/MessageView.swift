@@ -9,16 +9,36 @@ struct MessageView: View {
     let message: Message
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            marker
-                .frame(width: 14, alignment: .center)
-                .padding(.top, 3)
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(message.blocks) { block in
-                    blockView(block)
+        // Skip the row entirely when every block is empty/skipped —
+        // otherwise the marker renders as an orphan colored dot with
+        // nothing beside it.
+        if isRenderableEmpty {
+            EmptyView()
+        } else {
+            HStack(alignment: .top, spacing: 10) {
+                marker
+                    .frame(width: 14, alignment: .center)
+                    .padding(.top, 3)
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(message.blocks) { block in
+                        blockView(block)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var isRenderableEmpty: Bool {
+        message.blocks.allSatisfy { block in
+            switch block {
+            case .text(_, let t):     return t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case .thinking(_, let t): return t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case .toolUse:            return false
+            case .toolResult(_, _, let c, _):
+                return c.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case .image:              return false
+            }
         }
     }
 
@@ -51,10 +71,20 @@ struct MessageView: View {
         var hasText = false
         for block in message.blocks {
             switch block {
-            case .toolUse:  hasTool = true
-            case .thinking: hasThinking = true
-            case .text:     hasText = true
-            default:        break
+            case .toolUse:
+                hasTool = true
+            case .thinking(_, let t):
+                // Only count thinking blocks with actual content — empty
+                // ones tint the marker purple while rendering nothing.
+                if !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    hasThinking = true
+                }
+            case .text(_, let t):
+                if !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    hasText = true
+                }
+            default:
+                break
             }
         }
         if hasTool { return Color.activeHighlight }

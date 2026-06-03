@@ -9,9 +9,19 @@ final class AgentManager: ObservableObject {
     @Published var activeSessionId: UUID?
 
     private static let snapshotKey = "manyagents.snapshot.v1"
+    /// Bundle ids we'll look under when restoring. The first entry is the
+    /// active bundle (where we WRITE), the rest are historical ids we read
+    /// from for one-time migration so users don't lose work when the bundle
+    /// id changes (which happened when ManyAgents went open source).
+    private static let legacyBundleIds = ["co.ailogy.manyagents"]
+
     private var sessionSubscriptions: [UUID: AnyCancellable] = [:]
     private var cancellables: Set<AnyCancellable> = []
     private let sessionsDirty = PassthroughSubject<Void, Never>()
+
+    /// Set when a snapshot was found at launch and is waiting on the user
+    /// to confirm restoration via the sheet. Cleared on Reopen / Start fresh.
+    @Published var pendingRestore: Snapshot?
 
     init() {
         // Persist on any session-array change (add/remove) AND on any inner
@@ -100,13 +110,15 @@ final class AgentManager: ObservableObject {
 
     // MARK: - Persistence
 
-    private struct Snapshot: Codable {
+    struct Snapshot: Codable {
         let agents: [SavedAgent]
-        struct SavedAgent: Codable {
+        struct SavedAgent: Codable, Identifiable {
             let cwd: String
             let claudeSessionId: String?
             let displayName: String
             let aiTitle: String?
+
+            var id: String { (claudeSessionId ?? "") + cwd }
         }
     }
 
@@ -126,12 +138,41 @@ final class AgentManager: ObservableObject {
         }
     }
 
-    /// Reload previously-running agents from the persisted snapshot. Called
-    /// once at app launch.
-    func restorePersisted() {
-        guard let data = UserDefaults.standard.data(forKey: Self.snapshotKey),
-              let snap = try? JSONDecoder().decode(Snapshot.self, from: data)
-        else { return }
+    /// Look for a persisted snapshot under the current bundle id, falling
+    /// back to historical ids so a bundle-id change doesn't orphan the
+    /// user's data. Stashes the result in `pendingRestore` for the sheet
+    /// to surface — does NOT spawn anything yet.
+    func loadPendingSnapshot() {
+        if let snap = readSnapshot(from: UserDefaults.standard), !snap.agents.isEmpty {
+            pendingRestore = snap
+            return
+        }
+        for bid in Self.legacyBundleIds {
+            guard let defaults = UserDefaults(suiteName: bid),
+                  let snap = readSnapshot(from: defaults),
+                  !snap.agents.isEmpty
+            else { continue }
+            // Copy forward so future launches read it from the current
+            // bundle directly, then drop the legacy entry.
+            if let data = try? JSONEncoder().encode(snap) {
+                UserDefaults.standard.set(data, forKey: Self.snapshotKey)
+            }
+            defaults.removeObject(forKey: Self.snapshotKey)
+            pendingRestore = snap
+            return
+        }
+    }
+
+    private func readSnapshot(from defaults: UserDefaults) -> Snapshot? {
+        guard let data = defaults.data(forKey: Self.snapshotKey) else { return nil }
+        return try? JSONDecoder().decode(Snapshot.self, from: data)
+    }
+
+    /// Spawn every agent in `pendingRestore`. Called by the restore sheet
+    /// when the user clicks Reopen.
+    func acceptPendingSnapshot() {
+        guard let snap = pendingRestore else { return }
+        pendingRestore = nil
         let fm = FileManager.default
         for a in snap.agents {
             var isDir: ObjCBool = false
@@ -141,9 +182,6 @@ final class AgentManager: ObservableObject {
             let session = spawn(cwd: a.cwd, resumeSessionId: a.claudeSessionId)
             session.displayName = a.displayName
             session.aiTitle = a.aiTitle
-            // Replay the prior transcript so the conversation pane shows
-            // history. Without this the restored tab looks blank ("Ready"
-            // with no messages) even though the model has full context.
             if let sid = a.claudeSessionId, !sid.isEmpty {
                 let prior = TranscriptLoader.load(cwd: a.cwd, sessionId: sid)
                 if !prior.isEmpty {
@@ -152,6 +190,19 @@ final class AgentManager: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Drop the pending snapshot without spawning anything. Triggered by
+    /// "Start fresh" in the restore sheet.
+    func discardPendingSnapshot() {
+        pendingRestore = nil
+        UserDefaults.standard.removeObject(forKey: Self.snapshotKey)
+    }
+
+    /// Dismiss the sheet WITHOUT touching the persisted snapshot — the user
+    /// just wants to defer the decision (Escape / background click).
+    func dismissPendingSnapshot() {
+        pendingRestore = nil
     }
 }
 
