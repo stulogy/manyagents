@@ -17,31 +17,35 @@ struct MessageView: View {
         if isRenderableEmpty {
             EmptyView()
         } else {
-            HStack(alignment: .top, spacing: 10) {
-                marker
-                    .frame(width: 14, alignment: .center)
-                    .padding(.top, 3)
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(message.blocks) { block in
-                        blockView(block)
+            ZStack(alignment: .topTrailing) {
+                HStack(alignment: .top, spacing: 10) {
+                    marker
+                        .frame(width: 14, alignment: .center)
+                        .padding(.top, 3)
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(message.blocks) { block in
+                            blockView(block)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                // Always in the tree, just invisible when not hovering —
+                // so it can't disappear out from under the cursor mid-
+                // click. opacity + allowsHitTesting toggle together.
+                copyButton
+                    .opacity(hover ? 1 : 0)
+                    .allowsHitTesting(hover)
+                    .animation(.easeOut(duration: 0.12), value: hover)
             }
-            .overlay(alignment: .topTrailing) {
-                // Hover-revealed copy button. Selection across multiple
-                // Text views is a SwiftUI limitation — this gives a
-                // one-click path to the full message regardless.
-                if hover {
-                    copyButton
-                        .transition(.opacity)
-                }
-            }
+            // Make the entire row's frame hit-testable for hover, not
+            // just the text glyphs. Without this the cursor leaving a
+            // wrapped line's trailing whitespace flips hover off and
+            // takes the button with it before the user can click.
+            .contentShape(Rectangle())
             .onHover { h in
-                withAnimation(.easeOut(duration: 0.12)) { hover = h }
+                hover = h
                 if !h { copyConfirmed = false }
             }
-            .animation(.easeOut(duration: 0.12), value: hover)
         }
     }
 
