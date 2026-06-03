@@ -6,6 +6,7 @@ ManyAgents.xcodeproj/
 # Local build outputs.
 build/
 DerivedData/
+dist/
 
 # Xcode per-user state.
 *.xcuserdata/
@@ -18,6 +19,16 @@ DerivedData/
 
 # Personal signing overrides — keep your team ID off GitHub.
 Local.xcconfig.override
+
+# Signing material — never commit. The private key for a Developer ID
+# cert is the ONLY thing that grants someone the ability to sign as you;
+# without these files an attacker with the public repo can read your
+# team ID (already burned into every shipped .app) but can't sign anything.
+*.p12
+*.cer
+*.mobileprovision
+*.provisionprofile
+*.certSigningRequest
 
 # Docs assets.
 docs/.DS_Store
