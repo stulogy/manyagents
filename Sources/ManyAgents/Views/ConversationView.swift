@@ -24,7 +24,7 @@ struct ConversationView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.aiTitle ?? session.displayName)
                     .font(AppFont.heading(14.5))
@@ -34,8 +34,11 @@ struct ConversationView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if session.lastTurnContextTokens > 0 {
+                contextGauge
+            }
             if let sid = session.claudeSessionId {
-                Text("session \(String(sid.prefix(8)))")
+                Text(String(sid.prefix(8)))
                     .font(AppFont.mono(10))
                     .foregroundStyle(.tertiary)
                     .textSelection(.enabled)
@@ -52,6 +55,42 @@ struct ConversationView: View {
                 .frame(height: 1)
                 .frame(maxHeight: .infinity, alignment: .bottom)
         )
+    }
+
+    /// Compact "N% context" pill showing how full claude's context window
+    /// is. Tints warm at 60%, red past 85% so the user has a visual cue
+    /// to /compact before the model starts thrashing.
+    private var contextGauge: some View {
+        let used = session.lastTurnContextTokens
+        let cap  = session.contextWindowTokens
+        let pct  = min(max(Double(used) / Double(cap), 0), 1)
+        let tint: Color = {
+            if pct > 0.85 { return .red }
+            if pct > 0.60 { return .orange }
+            return Color.activeHighlight
+        }()
+        return HStack(spacing: 6) {
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(width: 56, height: 4)
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(tint)
+                    .frame(width: 56 * pct, height: 4)
+            }
+            Text(percentLabel(pct: pct, used: used))
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(tint)
+                .monospacedDigit()
+        }
+        .help("Context: \(used.formatted()) / \(cap.formatted()) tokens · \(Int(pct * 100))%")
+    }
+
+    private func percentLabel(pct: Double, used: Int) -> String {
+        if pct >= 0.01 { return "\(Int(pct * 100))%" }
+        // Under 1%, show absolute tokens so it doesn't perpetually read "0%".
+        if used < 1000 { return "\(used)t" }
+        return String(format: "%.1fk", Double(used) / 1000)
     }
 
     private var conversationScroll: some View {

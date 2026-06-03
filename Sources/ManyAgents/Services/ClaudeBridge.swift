@@ -17,6 +17,16 @@ enum BridgeEvent {
     struct TokenUsage {
         let inputTokens: Int
         let outputTokens: Int
+        let cacheReadInputTokens: Int
+        let cacheCreationInputTokens: Int
+
+        /// Total tokens currently in claude's context for this turn —
+        /// everything the model had to chew through, whether billed full
+        /// price (input) or cheap (cache read). This is what drives the
+        /// "context %" gauge.
+        var totalContextTokens: Int {
+            inputTokens + cacheReadInputTokens + cacheCreationInputTokens
+        }
     }
 }
 
@@ -265,7 +275,12 @@ final class ClaudeBridge {
         let usage = (obj["usage"] as? [String: Any]).flatMap { u -> BridgeEvent.TokenUsage? in
             guard let inT = u["input_tokens"] as? Int,
                   let outT = u["output_tokens"] as? Int else { return nil }
-            return .init(inputTokens: inT, outputTokens: outT)
+            let cacheRead = u["cache_read_input_tokens"] as? Int ?? 0
+            let cacheCreate = u["cache_creation_input_tokens"] as? Int ?? 0
+            return .init(inputTokens: inT,
+                         outputTokens: outT,
+                         cacheReadInputTokens: cacheRead,
+                         cacheCreationInputTokens: cacheCreate)
         }
         emit(.result(usage: usage, costUsd: cost, isError: isError, text: text))
     }

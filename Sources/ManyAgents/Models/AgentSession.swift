@@ -26,6 +26,16 @@ final class AgentSession: ObservableObject, Identifiable {
     @Published var totalInputTokens: Int = 0
     @Published var totalOutputTokens: Int = 0
     @Published var totalCostUsd: Double = 0
+    /// Total tokens claude saw in its context window on the LAST completed
+    /// turn (input + cache_read + cache_creation). This is the right number
+    /// to compare against the model's context window to compute "how full
+    /// am I" — `totalInputTokens` would double-count cache reads across
+    /// every turn.
+    @Published var lastTurnContextTokens: Int = 0
+    /// Total context window for the active model. Defaults to Opus 4.7's
+    /// 1M; we don't currently parse the model name from the init event
+    /// per-session, so this is a single-value approximation.
+    let contextWindowTokens: Int = 1_000_000
     /// When the user pressed send for the current in-flight turn. `nil` once
     /// the turn lands. Drives the "Warping… 2m 19s" elapsed timer.
     @Published var currentTurnStartedAt: Date?
@@ -177,6 +187,7 @@ final class AgentSession: ObservableObject, Identifiable {
                 totalInputTokens += u.inputTokens
                 totalOutputTokens += u.outputTokens
                 currentTurnOutputTokens = u.outputTokens
+                lastTurnContextTokens = u.totalContextTokens
             }
             if let c = cost { totalCostUsd += c }
             if isError {
