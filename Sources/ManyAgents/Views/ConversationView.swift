@@ -148,6 +148,28 @@ struct ConversationView: View {
                     scrollToLatest(proxy)
                 }
             }
+            // Restore-from-snapshot bug: ConversationView is keyed on
+            // session.id and mounts with `messages` already fully
+            // populated, so .defaultScrollAnchor(.bottom) computes its
+            // initial offset before the LazyVStack has materialized the
+            // trailing rows — viewport lands near the top until the user
+            // nudges. Fire scrollTo at expanding intervals so we still
+            // land at the bottom even for thousand-message transcripts
+            // that take ~500ms to lay out.
+            .onAppear { kickToBottom(proxy) }
+        }
+    }
+
+    private func kickToBottom(_ proxy: ScrollViewProxy) {
+        Task { @MainActor in
+            for nanos in [50_000_000, 200_000_000, 500_000_000, 1_000_000_000] {
+                try? await Task.sleep(nanoseconds: UInt64(nanos))
+                if let lastId = session.messages.last?.id {
+                    proxy.scrollTo(lastId, anchor: .bottom)
+                } else {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            }
         }
     }
 
