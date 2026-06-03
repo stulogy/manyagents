@@ -7,6 +7,8 @@ import SwiftUI
 /// `└` corner glyph the TUI uses.
 struct MessageView: View {
     let message: Message
+    @State private var hover = false
+    @State private var copyConfirmed = false
 
     var body: some View {
         // Skip the row entirely when every block is empty/skipped —
@@ -26,7 +28,87 @@ struct MessageView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .overlay(alignment: .topTrailing) {
+                // Hover-revealed copy button. Selection across multiple
+                // Text views is a SwiftUI limitation — this gives a
+                // one-click path to the full message regardless.
+                if hover {
+                    copyButton
+                        .transition(.opacity)
+                }
+            }
+            .onHover { h in
+                withAnimation(.easeOut(duration: 0.12)) { hover = h }
+                if !h { copyConfirmed = false }
+            }
+            .animation(.easeOut(duration: 0.12), value: hover)
         }
+    }
+
+    @ViewBuilder
+    private var copyButton: some View {
+        Button {
+            copyMessageToClipboard()
+            withAnimation(.easeOut(duration: 0.12)) { copyConfirmed = true }
+            // Reset the checkmark after a short beat so the user gets
+            // visual confirmation without the icon staying changed.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                withAnimation(.easeOut(duration: 0.12)) { copyConfirmed = false }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: copyConfirmed ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(copyConfirmed ? "Copied" : "Copy")
+                    .font(.system(size: 10.5, weight: .semibold))
+            }
+            .foregroundStyle(copyConfirmed ? .green : .secondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.85))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .help("Copy this message")
+        .padding(.top, 2)
+        .padding(.trailing, 2)
+    }
+
+    /// Concatenate the message's content into a clean copyable text
+    /// representation. Skips empty thinking blocks, formats tool calls
+    /// and results inline so the copied text reads like a transcript.
+    private func copyMessageToClipboard() {
+        var pieces: [String] = []
+        for block in message.blocks {
+            switch block {
+            case .text(_, let t):
+                let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { pieces.append(trimmed) }
+            case .thinking(_, let t):
+                let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { pieces.append("[thinking] \(trimmed)") }
+            case .toolUse(_, _, let name, let input):
+                let summary = input.compactMap { (k, v) -> String? in
+                    guard let s = v.stringValue, !s.isEmpty else { return nil }
+                    return "\(k): \(s)"
+                }.joined(separator: ", ")
+                pieces.append(summary.isEmpty ? "[\(name)]" : "[\(name)] \(summary)")
+            case .toolResult(_, _, let content, let isError):
+                let prefix = isError ? "[error] " : ""
+                pieces.append(prefix + content.trimmingCharacters(in: .whitespacesAndNewlines))
+            case .image:
+                pieces.append("[image]")
+            }
+        }
+        let text = pieces.joined(separator: "\n\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     private var isRenderableEmpty: Bool {

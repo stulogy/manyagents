@@ -157,10 +157,12 @@ struct WorkspaceView: View {
 
 private struct AgentTab: View {
     @ObservedObject var session: AgentSession
+    @EnvironmentObject var manager: AgentManager
     let isActive: Bool
     let onSelect: () -> Void
     let onClose: () -> Void
     @State private var hover = false
+    @State private var isDropTarget = false
     @State private var showRename = false
     @State private var renameDraft = ""
 
@@ -216,8 +218,37 @@ private struct AgentTab: View {
         )
         .foregroundStyle(isActive ? Color.activeHighlight : .primary)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(alignment: .leading) {
+            // Vertical insertion indicator while a drag hovers this tab.
+            if isDropTarget {
+                Rectangle()
+                    .fill(Color.brandOrange)
+                    .frame(width: 2)
+            }
+        }
         .onTapGesture(perform: onSelect)
         .onHover { hover = $0 }
+        .draggable(session.id.uuidString) {
+            HStack(spacing: 6) {
+                Circle().fill(dotColor).frame(width: 6, height: 6)
+                Text(label)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.activeHighlight.opacity(0.85)))
+            .foregroundStyle(.white)
+        }
+        .dropDestination(for: String.self) { items, _ in
+            guard let raw = items.first,
+                  let movedId = UUID(uuidString: raw),
+                  movedId != session.id else { return false }
+            manager.reorderSession(movedId: movedId, before: session.id)
+            return true
+        } isTargeted: { targeted in
+            isDropTarget = targeted
+        }
         .contextMenu {
             Button("Rename Tab…") {
                 renameDraft = session.aiTitle ?? ""

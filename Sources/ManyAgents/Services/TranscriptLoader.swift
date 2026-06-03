@@ -140,12 +140,18 @@ enum TranscriptLoader {
     }
 
     private static func flattenToolResultContent(_ value: Any?) -> String {
-        if let s = value as? String { return s }
-        if let arr = value as? [[String: Any]] {
-            return arr.compactMap { item in
+        let raw: String
+        if let s = value as? String {
+            raw = s
+        } else if let arr = value as? [[String: Any]] {
+            raw = arr.compactMap { item in
                 item["type"] as? String == "text" ? item["text"] as? String : nil
             }.joined(separator: "\n")
+        } else {
+            raw = ""
         }
-        return ""
+        // Strip claude's internal wrapper tags so they don't render as raw
+        // pseudo-XML in the transcript. Shared helper lives on ClaudeBridge.
+        return ClaudeBridge.cleanToolWrapperTags(raw)
     }
 }

@@ -99,6 +99,41 @@ final class AgentManager: ObservableObject {
         return ProjectEntry(cwd: s.cwd, sessions: sessions.filter { $0.cwd == s.cwd })
     }
 
+    // MARK: - Reordering
+
+    /// Move `movedId` so it sits immediately before `targetId` in the
+    /// sessions array. With `targetId == nil`, the session moves to the end.
+    /// Drives drag-and-drop tab reorder.
+    func reorderSession(movedId: UUID, before targetId: UUID?) {
+        guard movedId != targetId,
+              let movingIdx = sessions.firstIndex(where: { $0.id == movedId })
+        else { return }
+        let moving = sessions.remove(at: movingIdx)
+        if let targetId, let targetIdx = sessions.firstIndex(where: { $0.id == targetId }) {
+            sessions.insert(moving, at: targetIdx)
+        } else {
+            sessions.append(moving)
+        }
+    }
+
+    /// Move every session belonging to `movedCwd` as a block so the
+    /// project sits before `targetCwd`. nil target moves to the end.
+    /// `projects` is derived from the first-appearance order in sessions,
+    /// so reshuffling sessions of one cwd reshuffles the project rows.
+    func reorderProject(movedCwd: String, before targetCwd: String?) {
+        guard movedCwd != targetCwd else { return }
+        let movedSessions = sessions.filter { $0.cwd == movedCwd }
+        guard !movedSessions.isEmpty else { return }
+        let others = sessions.filter { $0.cwd != movedCwd }
+        if let targetCwd, let insertIdx = others.firstIndex(where: { $0.cwd == targetCwd }) {
+            var result = others
+            result.insert(contentsOf: movedSessions, at: insertIdx)
+            sessions = result
+        } else {
+            sessions = others + movedSessions
+        }
+    }
+
     /// Activate the most-recent session in `project`. If no session is
     /// currently active for that cwd, fall back to the last one added.
     func activate(project: ProjectEntry) {

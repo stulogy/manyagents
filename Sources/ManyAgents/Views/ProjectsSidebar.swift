@@ -173,6 +173,7 @@ struct ProjectsSidebar: View {
 private struct ProjectRow: View {
     let project: ProjectEntry
     @EnvironmentObject var manager: AgentManager
+    @State private var isDropTarget = false
 
     var isActive: Bool { manager.activeProject?.cwd == project.cwd }
 
@@ -202,7 +203,38 @@ private struct ProjectRow: View {
                 .strokeBorder(isActive ? Color.activeHighlight.opacity(0.45) : .clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
+        .overlay(alignment: .top) {
+            // Drop indicator — thin orange line above the row when a
+            // dragged project is hovering over it.
+            if isDropTarget {
+                Rectangle()
+                    .fill(Color.brandOrange)
+                    .frame(height: 2)
+            }
+        }
         .onTapGesture { manager.activate(project: project) }
+        .draggable(project.cwd) {
+            // Compact drag preview so the cursor stays close to the drop
+            // target and the row underneath stays legible.
+            HStack(spacing: 6) {
+                Image(systemName: "rectangle.stack.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(project.displayName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(Color.brandOrange.opacity(0.9)))
+            .foregroundStyle(.white)
+        }
+        .dropDestination(for: String.self) { items, _ in
+            guard let movedCwd = items.first, movedCwd != project.cwd else { return false }
+            manager.reorderProject(movedCwd: movedCwd, before: project.cwd)
+            return true
+        } isTargeted: { targeted in
+            isDropTarget = targeted
+        }
     }
 
     private var statusChips: some View {

@@ -3,7 +3,7 @@ import Combine
 
 /// Events the bridge surfaces upward.
 enum BridgeEvent {
-    case initialized(sessionId: String)
+    case initialized(sessionId: String, model: String?)
     case assistantBlocks([ContentBlock])
     case toolResult(toolUseId: String, content: String, isError: Bool)
     case result(usage: TokenUsage?, costUsd: Double?, isError: Bool, text: String?)
@@ -240,7 +240,8 @@ final class ClaudeBridge {
             if obj["subtype"] as? String == "init",
                let sid = obj["session_id"] as? String {
                 currentSessionId = sid
-                emit(.initialized(sessionId: sid))
+                let model = obj["model"] as? String
+                emit(.initialized(sessionId: sid, model: model))
             }
         case "assistant":
             handleAssistant(obj)
@@ -315,14 +316,38 @@ final class ClaudeBridge {
     }
 
     private static func flattenToolResultContent(_ value: Any?) -> String {
-        if let s = value as? String { return s }
-        if let arr = value as? [[String: Any]] {
-            return arr.compactMap { item in
+        let raw: String
+        if let s = value as? String {
+            raw = s
+        } else if let arr = value as? [[String: Any]] {
+            raw = arr.compactMap { item in
                 if item["type"] as? String == "text" { return item["text"] as? String }
                 return nil
             }.joined(separator: "\n")
+        } else {
+            raw = ""
         }
-        return ""
+        return Self.cleanToolWrapperTags(raw)
+    }
+
+    /// Strip claude code's internal wrapper tags from tool_result content
+    /// before it reaches the UI. The `is_error: true` flag already conveys
+    /// the error state; the literal `<tool_use_error>…</tool_use_error>`
+    /// markup is just visual noise. Same for the `<system-reminder>` tags
+    /// claude appends to some tool outputs.
+    static func cleanToolWrapperTags(_ raw: String) -> String {
+        var s = raw
+        let pairs: [(open: String, close: String)] = [
+            ("<tool_use_error>", "</tool_use_error>"),
+            ("<system-reminder>", "</system-reminder>"),
+            ("<local-command-stdout>", "</local-command-stdout>"),
+            ("<local-command-stderr>", "</local-command-stderr>")
+        ]
+        for pair in pairs {
+            s = s.replacingOccurrences(of: pair.open, with: "")
+            s = s.replacingOccurrences(of: pair.close, with: "")
+        }
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func handleResult(_ obj: [String: Any]) {

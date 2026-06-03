@@ -194,9 +194,26 @@ struct ConversationView: View {
             return now.timeIntervalSince(start)
         }
 
+        /// Headline word for the status line. When claude is genuinely
+        /// thinking we rotate through the creative verbs (Spelunking,
+        /// Warping…). When something concrete is happening — a tool call,
+        /// streaming text — show THAT instead, so we don't say
+        /// "Ruminating… running Bash" with the verb and the phase
+        /// contradicting each other.
         private var verb: String {
-            let idx = Int(elapsed / 25) % Self.verbs.count
-            return Self.verbs[idx]
+            let phase = session.currentPhase.lowercased()
+            if phase.isEmpty || phase == "thinking" {
+                let idx = Int(elapsed / 25) % Self.verbs.count
+                return Self.verbs[idx]
+            }
+            return capitalizedPhase(session.currentPhase)
+        }
+
+        /// Capitalize only the leading word; tool names like "Bash" or
+        /// file extensions inside the phase should keep their casing.
+        private func capitalizedPhase(_ s: String) -> String {
+            guard let first = s.first else { return s }
+            return String(first).uppercased() + s.dropFirst()
         }
 
         private var elapsedLabel: String {
@@ -251,7 +268,6 @@ struct ConversationView: View {
             if elapsed >= 1 {
                 var meta: [String] = [elapsedLabel]
                 if let t = tokenLabel { meta.append(t) }
-                meta.append(session.currentPhase)
                 parts.append("(\(meta.joined(separator: " · ")))")
             }
             return parts.joined(separator: " ")

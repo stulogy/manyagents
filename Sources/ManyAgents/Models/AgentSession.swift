@@ -32,10 +32,25 @@ final class AgentSession: ObservableObject, Identifiable {
     /// am I" — `totalInputTokens` would double-count cache reads across
     /// every turn.
     @Published var lastTurnContextTokens: Int = 0
-    /// Total context window for the active model. Defaults to Opus 4.7's
-    /// 1M; we don't currently parse the model name from the init event
-    /// per-session, so this is a single-value approximation.
-    let contextWindowTokens: Int = 1_000_000
+    /// Model id reported by claude's init event ("claude-opus-4-7",
+    /// "claude-opus-4-7[1m]", "claude-sonnet-4-6", etc). Drives the
+    /// context-window cap for the gauge so we don't over- or under-
+    /// estimate context usage based on a wrong assumption.
+    @Published var model: String?
+
+    /// Total context window for the active model, derived from `model`.
+    /// Falls back to 200K — the conservative default that matches every
+    /// non-[1m] Claude release. Updates when an init event arrives.
+    var contextWindowTokens: Int {
+        Self.contextWindow(for: model)
+    }
+
+    static func contextWindow(for model: String?) -> Int {
+        guard let m = model?.lowercased() else { return 200_000 }
+        // Anything with the [1m] / -1m suffix uses the 1M-context variant.
+        if m.contains("[1m]") || m.contains("-1m") { return 1_000_000 }
+        return 200_000
+    }
     /// When the user pressed send for the current in-flight turn. `nil` once
     /// the turn lands. Drives the "Warping… 2m 19s" elapsed timer.
     @Published var currentTurnStartedAt: Date?
@@ -194,11 +209,14 @@ final class AgentSession: ObservableObject, Identifiable {
 
     private func handle(_ event: BridgeEvent) {
         switch event {
-        case .initialized(let sid):
+        case .initialized(let sid, let model):
             // claude assigns a new session_id on the first turn; subsequent
             // turns reuse it via the bridge's currentSessionId.
             claudeSessionId = sid
             bridge.currentSessionId = sid
+            if let model {
+                self.model = model
+            }
         case .assistantBlocks(let blocks):
             // Either append to an in-progress assistant message or start a
             // new one. The CLI emits each assistant *message* as a single
