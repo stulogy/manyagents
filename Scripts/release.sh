@@ -196,13 +196,7 @@ SHA-256  $SHA
 Source: this same commit (\`$TAG\`).
 EOF
 
-    # Also upload a stable-name alias so the website's
-    # /releases/latest/download/ManyAgents.dmg URL keeps working across
-    # versions without a website redeploy on every release.
-    STABLE_DMG="$DIST_DIR/$SCHEME.dmg"
-    cp -f "$DMG_PATH" "$STABLE_DMG"
-
-    gh release create "$TAG" "$DMG_PATH" "$STABLE_DMG" \
+    gh release create "$TAG" "$DMG_PATH" \
         --title "ManyAgents $VERSION" \
         --notes-file "$NOTES_FILE"
     ok "released — https://github.com/stulogy/manyagents/releases/tag/$TAG"
