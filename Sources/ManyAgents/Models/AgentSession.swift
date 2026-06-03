@@ -117,7 +117,13 @@ final class AgentSession: ObservableObject, Identifiable {
         currentTurnStartedAt = Date()
         currentTurnOutputTokens = 0
         currentPhase = "thinking"
-        bridge.send(text: prompt.text, imagesPng: prompt.images)
+        // Kick the bridge off the main thread — process.run() + stdin
+        // write was blocking SwiftUI rendering, so the "Thinking…"
+        // indicator didn't appear until the spawn returned.
+        let bridgeRef = bridge
+        Task.detached(priority: .userInitiated) {
+            bridgeRef.send(text: prompt.text, imagesPng: prompt.images)
+        }
     }
 
     /// Pop the next queued prompt (if any) and send it. Called whenever a
@@ -133,6 +139,24 @@ final class AgentSession: ObservableObject, Identifiable {
     /// on the queued-prompts strip).
     func removeQueued(id: UUID) {
         pendingPrompts.removeAll { $0.id == id }
+    }
+
+    /// "Send now" — move a queued prompt to the front of the line and
+    /// cancel any in-flight turn so this one fires immediately. Other
+    /// queued prompts stay queued and dispatch FIFO behind it.
+    func forceSend(id: UUID) {
+        guard let idx = pendingPrompts.firstIndex(where: { $0.id == id }) else { return }
+        let prompt = pendingPrompts.remove(at: idx)
+        pendingPrompts.insert(prompt, at: 0)
+        if status == .running || bridge.isBusy {
+            // Terminate the running process; .processExited triggers
+            // drainQueueIfReady which will pop our prompt from the front.
+            bridge.cancel()
+        } else {
+            // Idle path — just dispatch directly.
+            pendingPrompts.removeFirst()
+            dispatch(prompt)
+        }
     }
 
     // MARK: - Stream event handling
@@ -194,7 +218,15 @@ final class AgentSession: ObservableObject, Identifiable {
                 status = .error
                 lastError = resultText
             } else {
-                status = .waiting
+                // Decide "waiting on you" vs "idle" by looking at the
+                // most recent assistant prose. claude is prompted (via
+                // --append-system-prompt in ClaudeBridge) to end with a
+                // cue when input is expected — we match that here.
+                let lastAssistantText = messages
+                    .last(where: { $0.role == .assistant })?.flatText ?? ""
+                status = Self.endedAwaitingUserInput(lastAssistantText)
+                    ? .waiting
+                    : .idle
             }
             currentTurnStartedAt = nil
             // Hand off to the next queued prompt on the next runloop tick so
@@ -217,5 +249,44 @@ final class AgentSession: ObservableObject, Identifiable {
             status = .error
             lastError = message
         }
+    }
+
+    /// True when the assistant's last turn ended in a way that suggests
+    /// it needs the user's input before continuing — a question mark, or
+    /// one of a small set of natural cues claude is instructed to use
+    /// via --append-system-prompt. Otherwise the turn is treated as a
+    /// completion (acknowledgement, status report, goodbye) and the
+    /// session goes idle.
+    static func endedAwaitingUserInput(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        // Only consider the trailing window — earlier "?"s in a long
+        // response don't indicate a present-tense ask.
+        let tail = String(trimmed.suffix(240))
+        if tail.hasSuffix("?") { return true }
+        // Strip closing punctuation / wrappers and re-check.
+        var stripped = tail
+        while let last = stripped.last,
+              "`)]}\"'*".contains(last) {
+            stripped.removeLast()
+        }
+        if stripped.hasSuffix("?") { return true }
+        let lower = tail.lowercased()
+        let cues = [
+            "your move",
+            "your call",
+            "let me know",
+            "should i ", "shall i ",
+            "do you want", "would you like",
+            "which one", "which would", "which do you",
+            "what should",
+            "either way",
+            "ready to proceed",
+            "confirm",
+            "decide",
+            "pick one", "pick which",
+            "your thoughts"
+        ]
+        return cues.contains { lower.contains($0) }
     }
 }

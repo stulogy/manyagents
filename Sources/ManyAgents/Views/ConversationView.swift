@@ -138,11 +138,15 @@ struct ConversationView: View {
 
     /// Target the last message's id (not the sentinel) so SwiftUI's
     /// LazyVStack actually has to construct that row to compute the
-    /// scroll offset. Falls back to the bottom anchor when there are no
-    /// messages yet.
+    /// scroll offset. While a turn is running we scroll to the
+    /// `"thinking"` indicator instead so the user sees the dots the
+    /// instant they appear, not just the trailing edge of their own
+    /// prompt with the indicator clipped below the fold.
     private func scrollToLatest(_ proxy: ScrollViewProxy) {
         withAnimation(.easeOut(duration: 0.25)) {
-            if let lastId = session.messages.last?.id {
+            if session.status == .running {
+                proxy.scrollTo("thinking", anchor: .bottom)
+            } else if let lastId = session.messages.last?.id {
                 proxy.scrollTo(lastId, anchor: .bottom)
             } else {
                 proxy.scrollTo("bottom", anchor: .bottom)

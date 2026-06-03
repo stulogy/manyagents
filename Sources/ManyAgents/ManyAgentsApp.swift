@@ -30,6 +30,17 @@ struct ManyAgentsApp: App {
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
         .defaultSize(width: 1240, height: 820)
+        .commands {
+            // Stand-alone menu so we don't replace SwiftUI's default
+            // .newItem command group — replacing it disabled ⌘N globally,
+            // including the sidebar's New Session button.
+            CommandMenu("Session") {
+                Button("Resume Previous Sessions…") {
+                    manager.loadPendingSnapshot()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            }
+        }
     }
 
     /// xcodegen flattens our Resources/Fonts folder into the bundle's

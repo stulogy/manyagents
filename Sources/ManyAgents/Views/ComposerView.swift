@@ -196,6 +196,17 @@ struct ComposerView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    // Force-send: bumps this prompt to the front and
+                    // cancels the in-flight turn so it fires now.
+                    Button {
+                        session.forceSend(id: p.id)
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.brandOrange.opacity(0.85))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Send now (interrupts current turn)")
                     Button {
                         session.removeQueued(id: p.id)
                     } label: {

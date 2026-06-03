@@ -77,7 +77,13 @@ final class ClaudeBridge {
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",
-            "--permission-mode", "acceptEdits"
+            "--permission-mode", "acceptEdits",
+            // Append a small instruction so claude consistently signals
+            // "waiting on you" with a recognizable cue. ManyAgents reads
+            // the last sentence to decide whether to flag this session
+            // as needing attention vs. just idle — without this the user
+            // gets too many false-positive "waiting" indicators.
+            "--append-system-prompt", Self.waitingCueSystemPrompt
         ]
         if let rid = currentSessionId, !rid.isEmpty {
             args.append(contentsOf: ["--resume", rid])
@@ -290,6 +296,22 @@ final class ClaudeBridge {
             self?.subject.send(event)
         }
     }
+
+    /// One-paragraph hint we append to claude's system prompt on every
+    /// invocation. Tells claude how to end its turn so ManyAgents can tell
+    /// "waiting on you" apart from "done/idle." Stays scoped to the
+    /// invocation — never touches the user's CLAUDE.md or global config.
+    private static let waitingCueSystemPrompt = """
+    When you finish a turn with something pending from me — a question, a \
+    decision, a choice between options, a confirmation, or any case where \
+    you need my input before continuing — end your final sentence with \
+    either a literal question mark or a short cue like "Your move.", \
+    "Let me know which.", or "Your call." When you finish a turn with \
+    nothing pending (an acknowledgement, a "done" status, a goodbye), end \
+    in a plain statement without a question mark or those cue phrases. \
+    Vary the cue phrasing naturally. This is read by the wrapping UI to \
+    distinguish "waiting on you" from "idle."
+    """
 
     // MARK: - Binary resolution
 
