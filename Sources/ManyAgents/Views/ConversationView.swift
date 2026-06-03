@@ -108,6 +108,9 @@ struct ConversationView: View {
                         ThinkingIndicator(session: session)
                             .id("thinking")
                     }
+                    // Bottom anchor — empty spacer at the very end so we
+                    // have a stable id to scroll to even when there are
+                    // zero messages or the thinking indicator isn't showing.
                     Color.clear.frame(height: 1).id("bottom")
                 }
                 .padding(.horizontal, 24)
@@ -115,39 +118,40 @@ struct ConversationView: View {
                 .frame(maxWidth: 1180, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
-            // Three triggers to make sure we land at the bottom on every
-            // change. messages.count fires on new messages, totalBlocks fires
-            // when an existing assistant message grows, status fires on turn
-            // end. The last one is the safety net for when the final block
-            // lays out after status flips.
-            .onChange(of: session.messages.count) { _, _ in scrollDown(proxy) }
-            .onChange(of: totalBlocks) { _, _ in scrollDown(proxy) }
+            // macOS 14+: tell SwiftUI this is a chat-style scroll view.
+            // The scroll position naturally tracks the bottom as content
+            // grows, and the initial position lands at the bottom — no
+            // more "scroll up a little to see anything" on restore.
+            .defaultScrollAnchor(.bottom)
+            // Belt-and-braces: also call scrollTo on content changes so
+            // active streams stay pinned to the latest token even if the
+            // anchor logic decides we're "scrolled away" from the bottom.
+            .onChange(of: session.messages.count) { _, _ in scrollToLatest(proxy) }
+            .onChange(of: totalBlocks) { _, _ in scrollToLatest(proxy) }
             .onChange(of: session.status) { _, _ in
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                    scrollDown(proxy)
+                    scrollToLatest(proxy)
                 }
             }
-            // Land at the bottom whenever this view freshly mounts —
-            // happens on every tab switch because ConversationView is keyed
-            // on session.id. Without the small delay the scroll fires
-            // before the LazyVStack has laid out its content and the
-            // request becomes a no-op.
-            .onAppear {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
+        }
+    }
+
+    /// Target the last message's id (not the sentinel) so SwiftUI's
+    /// LazyVStack actually has to construct that row to compute the
+    /// scroll offset. Falls back to the bottom anchor when there are no
+    /// messages yet.
+    private func scrollToLatest(_ proxy: ScrollViewProxy) {
+        withAnimation(.easeOut(duration: 0.25)) {
+            if let lastId = session.messages.last?.id {
+                proxy.scrollTo(lastId, anchor: .bottom)
+            } else {
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
         }
     }
 
     private var totalBlocks: Int {
         session.messages.reduce(0) { $0 + $1.blocks.count }
-    }
-
-    private func scrollDown(_ proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.25)) {
-            proxy.scrollTo("bottom", anchor: .bottom)
-        }
     }
 
     /// Inline status line that mirrors Claude Code's progress UX —
