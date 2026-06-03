@@ -78,6 +78,7 @@ xcodebuild \
     CODE_SIGN_IDENTITY="$DEVELOPER_ID" \
     DEVELOPMENT_TEAM="$TEAM_ID" \
     OTHER_CODE_SIGN_FLAGS="--timestamp --options runtime" \
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
     MARKETING_VERSION="$VERSION" \
     clean build \
     | xcbeautify 2>/dev/null || true
@@ -91,12 +92,28 @@ codesign -dvv "$APP_PATH" 2>&1 | grep -E "Authority|TeamIdentifier|Identifier" |
 ok "signature valid"
 
 # ── Notarize ──────────────────────────────────────────────────────────
+# notarytool exits 0 on `status: Invalid` (it succeeded at submitting,
+# Apple just rejected the binary), so trusting the exit code is a bug.
+# Parse the status line and bail with the submission id so the operator
+# can pull the rejection log immediately.
 b "Notarizing (zipping → submitting → waiting)"
 /usr/bin/ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
-xcrun notarytool submit "$ZIP_PATH" \
+SUBMIT_OUT="$(xcrun notarytool submit "$ZIP_PATH" \
     --keychain-profile "$NOTARY_PROFILE" \
-    --wait
-ok "notarization accepted"
+    --wait 2>&1)"
+echo "$SUBMIT_OUT"
+NOTARY_STATUS="$(printf '%s\n' "$SUBMIT_OUT" \
+    | awk -F: '/^[[:space:]]*status:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2}' \
+    | tail -1)"
+SUBMIT_ID="$(printf '%s\n' "$SUBMIT_OUT" \
+    | awk '/^[[:space:]]*id:/ {gsub(/^[[:space:]]+id:[[:space:]]+|[[:space:]]+$/, ""); print; exit}')"
+if [[ "$NOTARY_STATUS" != "Accepted" ]]; then
+    echo
+    echo "Pulling rejection log…"
+    xcrun notarytool log "$SUBMIT_ID" --keychain-profile "$NOTARY_PROFILE" 2>&1 | head -60 || true
+    die "notarization rejected — status: '$NOTARY_STATUS' · id: $SUBMIT_ID"
+fi
+ok "notarization accepted (id: $SUBMIT_ID)"
 
 # ── Staple ────────────────────────────────────────────────────────────
 b "Stapling ticket"
@@ -130,9 +147,19 @@ ok "DMG: $DMG_PATH"
 # it on download without needing to unmount-and-restaple.
 b "Signing + notarizing DMG"
 codesign --sign "$DEVELOPER_ID" --timestamp "$DMG_PATH"
-xcrun notarytool submit "$DMG_PATH" \
+DMG_SUBMIT_OUT="$(xcrun notarytool submit "$DMG_PATH" \
     --keychain-profile "$NOTARY_PROFILE" \
-    --wait
+    --wait 2>&1)"
+echo "$DMG_SUBMIT_OUT"
+DMG_STATUS="$(printf '%s\n' "$DMG_SUBMIT_OUT" \
+    | awk -F: '/^[[:space:]]*status:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2}' \
+    | tail -1)"
+DMG_ID="$(printf '%s\n' "$DMG_SUBMIT_OUT" \
+    | awk '/^[[:space:]]*id:/ {gsub(/^[[:space:]]+id:[[:space:]]+|[[:space:]]+$/, ""); print; exit}')"
+if [[ "$DMG_STATUS" != "Accepted" ]]; then
+    xcrun notarytool log "$DMG_ID" --keychain-profile "$NOTARY_PROFILE" 2>&1 | head -60 || true
+    die "DMG notarization rejected — status: '$DMG_STATUS' · id: $DMG_ID"
+fi
 xcrun stapler staple "$DMG_PATH"
 ok "DMG signed, notarized, stapled"
 
@@ -169,7 +196,13 @@ SHA-256  $SHA
 Source: this same commit (\`$TAG\`).
 EOF
 
-    gh release create "$TAG" "$DMG_PATH" \
+    # Also upload a stable-name alias so the website's
+    # /releases/latest/download/ManyAgents.dmg URL keeps working across
+    # versions without a website redeploy on every release.
+    STABLE_DMG="$DIST_DIR/$SCHEME.dmg"
+    cp -f "$DMG_PATH" "$STABLE_DMG"
+
+    gh release create "$TAG" "$DMG_PATH" "$STABLE_DMG" \
         --title "ManyAgents $VERSION" \
         --notes-file "$NOTES_FILE"
     ok "released — https://github.com/stulogy/manyagents/releases/tag/$TAG"
