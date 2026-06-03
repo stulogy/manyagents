@@ -116,6 +116,36 @@ final class AgentManager: ObservableObject {
         }
     }
 
+    // MARK: - Cycling shortcuts
+
+    /// Activate the next project in the sidebar order, wrapping around.
+    /// Driven by ⌘`.
+    func cycleNextProject() {
+        let order = projects
+        guard !order.isEmpty else { return }
+        let currentCwd = activeSession?.cwd
+        let currentIdx = order.firstIndex(where: { $0.cwd == currentCwd }) ?? -1
+        let next = order[(currentIdx + 1) % order.count]
+        activate(project: next)
+    }
+
+    /// Activate the next session within the current project, wrapping
+    /// around. Driven by ⌘⇧`.
+    func cycleNextTabInActiveProject() {
+        guard let project = activeProject, project.sessions.count > 1 else { return }
+        let tabs = project.sessions
+        let currentIdx = tabs.firstIndex(where: { $0.id == activeSessionId }) ?? -1
+        activeSessionId = tabs[(currentIdx + 1) % tabs.count].id
+    }
+
+    /// Spawn a new session in the currently active project's cwd.
+    /// No-op if nothing is active. Driven by ⌘T.
+    @discardableResult
+    func spawnInActiveProject() -> AgentSession? {
+        guard let cwd = activeProject?.cwd else { return nil }
+        return spawn(cwd: cwd)
+    }
+
     /// Move every session belonging to `movedCwd` as a block so the
     /// project sits before `targetCwd`. nil target moves to the end.
     /// `projects` is derived from the first-appearance order in sessions,

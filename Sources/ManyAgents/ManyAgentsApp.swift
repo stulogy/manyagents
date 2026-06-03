@@ -31,14 +31,44 @@ struct ManyAgentsApp: App {
         .windowToolbarStyle(.unified(showsTitle: true))
         .defaultSize(width: 1240, height: 820)
         .commands {
-            // Stand-alone menu so we don't replace SwiftUI's default
-            // .newItem command group — replacing it disabled ⌘N globally,
-            // including the sidebar's New Session button.
+            // File menu additions — keep the sidebar's New Session ⌘N
+            // working by adding via after-newItem rather than replacing.
+            CommandGroup(after: .newItem) {
+                Button("New Tab in Project") {
+                    NotificationCenter.default.post(name: .maNewTab, object: nil)
+                }
+                .keyboardShortcut("t", modifiers: .command)
+                Divider()
+                Button("Close Tab") {
+                    NotificationCenter.default.post(name: .maCloseTab, object: nil)
+                }
+                .keyboardShortcut("w", modifiers: .command)
+            }
             CommandMenu("Session") {
                 Button("Resume Previous Sessions…") {
                     manager.loadPendingSnapshot()
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+                Divider()
+                Button("Next Project") {
+                    NotificationCenter.default.post(name: .maCycleProject, object: nil)
+                }
+                .keyboardShortcut("`", modifiers: .command)
+                Button("Next Tab in Project") {
+                    NotificationCenter.default.post(name: .maCycleTab, object: nil)
+                }
+                .keyboardShortcut("`", modifiers: [.command, .shift])
+                Divider()
+                Button("Toggle Card / List View") {
+                    NotificationCenter.default.post(name: .maToggleViewMode, object: nil)
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+            }
+            CommandGroup(replacing: .help) {
+                Button("Keyboard Shortcuts") {
+                    NotificationCenter.default.post(name: .maShowShortcuts, object: nil)
+                }
+                .keyboardShortcut("/", modifiers: .command)
             }
         }
     }
@@ -58,4 +88,13 @@ struct ManyAgentsApp: App {
         var error: Unmanaged<CFError>?
         CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error)
     }
+}
+
+extension Notification.Name {
+    static let maNewTab           = Notification.Name("ManyAgents.newTab")
+    static let maCloseTab         = Notification.Name("ManyAgents.closeTab")
+    static let maCycleProject     = Notification.Name("ManyAgents.cycleProject")
+    static let maCycleTab         = Notification.Name("ManyAgents.cycleTab")
+    static let maToggleViewMode   = Notification.Name("ManyAgents.toggleViewMode")
+    static let maShowShortcuts    = Notification.Name("ManyAgents.showShortcuts")
 }

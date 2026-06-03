@@ -5,6 +5,8 @@ struct WorkspaceView: View {
     @EnvironmentObject var readiness: ClaudeReadiness
     @AppStorage("sidebar.width") private var sidebarWidth: Double = 260
     @AppStorage("workspace.viewMode") private var viewModeRaw: String = WorkspaceMode.row.rawValue
+    @State private var pendingCloseTarget: AgentSession?
+    @State private var showShortcuts: Bool = false
 
     private var viewMode: Binding<WorkspaceMode> {
         Binding(
@@ -40,6 +42,50 @@ struct WorkspaceView: View {
                     onDismiss: { manager.dismissPendingSnapshot() }
                 )
             }
+        }
+        // Close-tab confirmation. ⌘W stages the active session into
+        // pendingCloseTarget which presents this alert; clicking Close
+        // actually drops it.
+        .alert("Close this tab?",
+               isPresented: Binding(
+                get: { pendingCloseTarget != nil },
+                set: { if !$0 { pendingCloseTarget = nil } }
+               ),
+               presenting: pendingCloseTarget) { target in
+            Button("Close", role: .destructive) {
+                manager.close(target)
+                pendingCloseTarget = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingCloseTarget = nil
+            }
+        } message: { target in
+            let label = target.aiTitle?.isEmpty == false ? target.aiTitle! : target.displayName
+            Text("“\(label)” will be removed from this workspace. You can reopen it later via Session → Resume Previous Sessions… as long as the underlying claude transcript still exists.")
+        }
+        .sheet(isPresented: $showShortcuts) {
+            KeyboardShortcutsSheet(onClose: { showShortcuts = false })
+        }
+        // Menu-bar commands publish notifications; the active window
+        // routes them through the manager. Scoped per WorkspaceView so
+        // multi-window setups stay coherent.
+        .onReceive(NotificationCenter.default.publisher(for: .maNewTab)) { _ in
+            manager.spawnInActiveProject()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .maCloseTab)) { _ in
+            if let s = manager.activeSession { pendingCloseTarget = s }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .maCycleProject)) { _ in
+            manager.cycleNextProject()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .maCycleTab)) { _ in
+            manager.cycleNextTabInActiveProject()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .maToggleViewMode)) { _ in
+            viewMode.wrappedValue = viewMode.wrappedValue == .row ? .card : .row
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .maShowShortcuts)) { _ in
+            showShortcuts = true
         }
     }
 
