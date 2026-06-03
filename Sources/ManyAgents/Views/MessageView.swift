@@ -143,7 +143,14 @@ struct MessageView: View {
                 }
             }
         case .toolUse(_, _, let name, let input):
-            ToolUseCard(toolName: name, input: input)
+            // AskUserQuestion is rendered as a native picker below the
+            // conversation, so skip the raw tool-use card here to avoid
+            // double-rendering the same prompt.
+            if name == "AskUserQuestion" {
+                EmptyView()
+            } else {
+                ToolUseCard(toolName: name, input: input)
+            }
         case .toolResult(_, _, let content, let isError):
             ToolResultRow(content: content, isError: isError)
         case .image(_, let data, _):

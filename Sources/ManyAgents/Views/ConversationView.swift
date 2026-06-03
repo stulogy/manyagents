@@ -8,6 +8,21 @@ struct ConversationView: View {
         VStack(spacing: 0) {
             header
             conversationScroll
+            // Mid-turn AskUserQuestion picker — appears between the
+            // conversation and the composer when claude is waiting on a
+            // user-side option pick. Disappears the instant we send the
+            // answer back as a tool_result.
+            if session.pendingAskUserQuestion != nil {
+                HStack {
+                    Spacer(minLength: 0)
+                    AskUserQuestionPicker(session: session)
+                        .frame(maxWidth: 760)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 8)
+            }
+
             // Floating composer — capped width, centered with comfortable
             // margins. Mirrors the way the Claude chat panel sits in VS
             // Code: the input doesn't stretch across the whole pane.

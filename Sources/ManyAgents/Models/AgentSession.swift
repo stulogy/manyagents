@@ -56,6 +56,20 @@ final class AgentSession: ObservableObject, Identifiable {
         let images: [Data]
     }
 
+    /// claude called AskUserQuestion mid-turn and is now waiting for our
+    /// selection. The UI renders an inline picker bound to this; clicking
+    /// an option calls `answerQuestion` which posts the result back to
+    /// claude and clears this state.
+    @Published var pendingAskUserQuestion: AskState?
+
+    struct AskState: Equatable {
+        let toolUseId: String
+        let header: String?
+        let question: String
+        let options: [BridgeEvent.AskOption]
+        let multiSelect: Bool
+    }
+
     /// Set externally before connect() if we should resume a prior session id.
     var resumeSessionId: String?
 
@@ -139,6 +153,23 @@ final class AgentSession: ObservableObject, Identifiable {
     /// on the queued-prompts strip).
     func removeQueued(id: UUID) {
         pendingPrompts.removeAll { $0.id == id }
+    }
+
+    /// User picked an option from the AskUserQuestion picker. Post the
+    /// result back to claude as a tool_result on the still-open stdin so
+    /// the turn continues. Multi-select callers pass the comma-joined
+    /// labels.
+    func answerQuestion(_ answer: String) {
+        guard let q = pendingAskUserQuestion else { return }
+        pendingAskUserQuestion = nil
+        // Render the user's pick in the transcript so the conversation
+        // history reads cleanly on replay.
+        messages.append(Message(
+            role: .user,
+            blocks: [.text(id: UUID(), text: answer)]
+        ))
+        currentPhase = "thinking"
+        bridge.submitToolResult(toolUseId: q.toolUseId, content: answer)
     }
 
     /// "Send now" — move a queued prompt to the front of the line and
@@ -235,6 +266,15 @@ final class AgentSession: ObservableObject, Identifiable {
             DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
         case .tokenCount(let outputTokens):
             currentTurnOutputTokens = max(currentTurnOutputTokens, outputTokens)
+        case .askUserQuestion(let toolUseId, let prompt):
+            pendingAskUserQuestion = AskState(
+                toolUseId: toolUseId,
+                header: prompt.header,
+                question: prompt.question,
+                options: prompt.options,
+                multiSelect: prompt.multiSelect
+            )
+            currentPhase = "waiting on you"
         case .processExited(let exitCode):
             // Each turn is its own process. A non-zero exit during a turn
             // (status == .running) is an error; an exit after a successful

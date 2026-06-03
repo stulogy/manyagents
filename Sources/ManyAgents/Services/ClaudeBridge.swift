@@ -13,6 +13,23 @@ enum BridgeEvent {
     /// lands with usage info, so the UI can show a live "↓ N tokens" counter
     /// during long turns without waiting for the final result event.
     case tokenCount(outputTokens: Int)
+    /// claude called the AskUserQuestion tool. The owning session is
+    /// expected to render a native picker and reply via
+    /// `submitToolResult(toolUseId:, content:)` so the turn can continue.
+    case askUserQuestion(toolUseId: String, prompt: AskPrompt)
+
+    struct AskPrompt: Equatable {
+        let header: String?
+        let question: String
+        let options: [AskOption]
+        let multiSelect: Bool
+    }
+
+    struct AskOption: Equatable, Identifiable {
+        let label: String
+        let description: String?
+        var id: String { label }
+    }
 
     struct TokenUsage {
         let inputTokens: Int
@@ -47,6 +64,10 @@ final class ClaudeBridge {
 
     private let subject = PassthroughSubject<BridgeEvent, Never>()
     private var activeProcess: Process?
+    /// Held open across the lifetime of a turn so we can post tool_result
+    /// payloads (e.g. AskUserQuestion answers) back to claude mid-stream.
+    /// Closed in handleResult so claude exits cleanly.
+    private var activeStdin: FileHandle?
     private var stdoutBuffer = Data()
 
     var events: AnyPublisher<BridgeEvent, Never> { subject.eraseToAnyPublisher() }
@@ -78,13 +99,6 @@ final class ClaudeBridge {
             "--output-format", "stream-json",
             "--verbose",
             "--permission-mode", "acceptEdits",
-            // AskUserQuestion is an interactive TUI tool. In headless
-            // stream-json mode there's no way to surface its options to
-            // the user, so claude's call auto-resolves to "dismissed" and
-            // it proceeds without our input. Disallow it entirely —
-            // claude knows how to ask in prose instead (which our
-            // waiting-state heuristic detects).
-            "--disallowed-tools", "AskUserQuestion",
             // Append a small instruction so claude consistently signals
             // "waiting on you" with a recognizable cue.
             "--append-system-prompt", Self.waitingCueSystemPrompt
@@ -146,9 +160,10 @@ final class ClaudeBridge {
             return
         }
 
-        // Write the user prompt as a stream-json line, then close stdin so
-        // claude knows no further turns are coming. Without the close, claude
-        // would wait indefinitely for the next message.
+        // Write the user prompt. stdin is kept OPEN so we can inject
+        // tool_result responses (e.g. AskUserQuestion answers) mid-turn.
+        // It's closed in handleResult once the turn fully resolves.
+        activeStdin = stdin.fileHandleForWriting
         var content: [[String: Any]] = []
         if !text.isEmpty {
             content.append(["type": "text", "text": text])
@@ -163,21 +178,42 @@ final class ClaudeBridge {
                 ]
             ])
         }
-        let payload: [String: Any] = [
+        writeUserPayload([
             "type": "user",
             "message": ["role": "user", "content": content]
-        ]
-        if let data = try? JSONSerialization.data(withJSONObject: payload),
-           let line = String(data: data, encoding: .utf8) {
-            let bytes = (line + "\n").data(using: .utf8) ?? Data()
-            try? stdin.fileHandleForWriting.write(contentsOf: bytes)
-        }
-        try? stdin.fileHandleForWriting.close()
+        ])
+    }
+
+    /// Post a tool_result back to claude mid-turn. Used by AgentSession
+    /// when the user answers an in-flight AskUserQuestion prompt.
+    func submitToolResult(toolUseId: String, content: String) {
+        writeUserPayload([
+            "type": "user",
+            "message": [
+                "role": "user",
+                "content": [[
+                    "type": "tool_result",
+                    "tool_use_id": toolUseId,
+                    "content": content
+                ]]
+            ]
+        ])
+    }
+
+    private func writeUserPayload(_ payload: [String: Any]) {
+        guard let handle = activeStdin,
+              let data = try? JSONSerialization.data(withJSONObject: payload),
+              let line = String(data: data, encoding: .utf8)
+        else { return }
+        let bytes = (line + "\n").data(using: .utf8) ?? Data()
+        try? handle.write(contentsOf: bytes)
     }
 
     /// Cancel any in-flight turn. The corresponding `.processExited` event
     /// will fire on the termination handler.
     func cancel() {
+        try? activeStdin?.close()
+        activeStdin = nil
         if let p = activeProcess, p.isRunning {
             p.terminate()
         }
@@ -243,6 +279,17 @@ final class ClaudeBridge {
                 if let id = raw["id"] as? String,
                    let name = raw["name"] as? String {
                     let rawInput = raw["input"] as? [String: Any] ?? [:]
+                    // AskUserQuestion is special — we DON'T want it rendered
+                    // as a generic tool-use card. Surface it as an
+                    // `.askUserQuestion` event so the session can render a
+                    // native picker. Still emit it as a regular tool_use
+                    // block so the transcript records the call, but the
+                    // MessageView will skip drawing AskUserQuestion cards.
+                    if name == "AskUserQuestion" {
+                        if let parsed = Self.parseAskUserQuestion(input: rawInput) {
+                            emit(.askUserQuestion(toolUseId: id, prompt: parsed))
+                        }
+                    }
                     let input = rawInput.mapValues(AnyCodable.from)
                     blocks.append(.toolUse(id: UUID(), toolUseId: id, name: name, input: input))
                 }
@@ -292,7 +339,37 @@ final class ClaudeBridge {
                          cacheReadInputTokens: cacheRead,
                          cacheCreationInputTokens: cacheCreate)
         }
+        // Turn is done — close stdin so the claude process exits cleanly.
+        try? activeStdin?.close()
+        activeStdin = nil
         emit(.result(usage: usage, costUsd: cost, isError: isError, text: text))
+    }
+
+    /// Parse the structured AskUserQuestion input — the tool takes an
+    /// array of `questions` each with `question`, `header`, `multiSelect`,
+    /// and `options` (`label` + `description`). We surface only the first
+    /// question (the multi-question variant is rare in practice; can
+    /// extend later).
+    private static func parseAskUserQuestion(input: [String: Any]) -> BridgeEvent.AskPrompt? {
+        guard let questions = input["questions"] as? [[String: Any]],
+              let first = questions.first
+        else { return nil }
+        let question = first["question"] as? String ?? ""
+        let header = first["header"] as? String
+        let multi = first["multiSelect"] as? Bool ?? false
+        let rawOpts = first["options"] as? [[String: Any]] ?? []
+        let opts: [BridgeEvent.AskOption] = rawOpts.compactMap { o in
+            guard let label = o["label"] as? String, !label.isEmpty else { return nil }
+            return BridgeEvent.AskOption(
+                label: label,
+                description: o["description"] as? String
+            )
+        }
+        guard !opts.isEmpty else { return nil }
+        return BridgeEvent.AskPrompt(header: header,
+                                     question: question,
+                                     options: opts,
+                                     multiSelect: multi)
     }
 
     private func emit(_ event: BridgeEvent) {
