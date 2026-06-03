@@ -1,0 +1,44 @@
+name: ManyAgents
+options:
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+
+configFiles:
+  Debug: Local.xcconfig
+  Release: Local.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+targets:
+  ManyAgents:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    entitlements:
+      path: Resources/ManyAgents.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+    sources:
+      - path: Sources/ManyAgents
+      # Including Resources/ in sources is how xcodegen wires the asset
+      # catalog + fonts into Xcode's resource-compile pipeline. With them
+      # only in a separate `resources:` block they get silently dropped
+      # and the built bundle has no Resources/ directory at all.
+      - path: Resources
+        excludes:
+          - "Info.plist"
+          - "ManyAgents.entitlements"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Resources/ManyAgents.entitlements
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        COMBINE_HIDPI_IMAGES: YES

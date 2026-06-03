@@ -1,0 +1,14 @@
+// Copy this file to `Local.xcconfig.override` (which is gitignored) and
+// fill in your own Apple Developer team ID + signing identity to stop
+// macOS from re-prompting for keychain access on every rebuild.
+//
+// Find your team ID with:
+//   security find-identity -v -p codesigning
+
+DEVELOPMENT_TEAM = ABCDE12345
+CODE_SIGN_IDENTITY = Apple Development
+CODE_SIGN_STYLE = Automatic
+
+// Optional: a unique bundle id so your build doesn't collide with anyone
+// else's settings on the same machine.
+// PRODUCT_BUNDLE_IDENTIFIER = com.yourname.manyagents

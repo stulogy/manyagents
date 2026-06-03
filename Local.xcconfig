@@ -1,0 +1,19 @@
+// Defaults — overridable by a gitignored Local.xcconfig.override file.
+// See Local.xcconfig.override.example for the format.
+//
+// Notes for contributors:
+//
+// - Bundle identifier defaults to "app.manyagents". Override it locally if
+//   you want to keep settings across upgrades or to install alongside
+//   someone else's build.
+// - Signing defaults to ad-hoc. macOS will re-prompt for keychain access
+//   on every rebuild with ad-hoc signing because each build has a fresh
+//   signature. To stop that, set DEVELOPMENT_TEAM in
+//   Local.xcconfig.override.
+
+CODE_SIGN_IDENTITY = -
+CODE_SIGN_STYLE = Manual
+DEVELOPMENT_TEAM =
+PRODUCT_BUNDLE_IDENTIFIER = app.manyagents
+
+#include? "Local.xcconfig.override"
