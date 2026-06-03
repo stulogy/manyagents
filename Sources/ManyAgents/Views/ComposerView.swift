@@ -21,6 +21,9 @@ struct ComposerView: View {
     var body: some View {
         VStack(spacing: 8) {
             voiceErrorBanner
+            if !session.pendingPrompts.isEmpty {
+                queuedStrip
+            }
             if !pendingImages.isEmpty {
                 imageStrip
             }
@@ -173,9 +176,44 @@ struct ComposerView: View {
 
     private var canSubmit: Bool {
         let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return (hasText || !pendingImages.isEmpty)
-            && session.status != .running
-            && !voice.isRecording
+        // Allow submission while running — the prompt gets queued and
+        // dispatched FIFO when the current turn lands.
+        return (hasText || !pendingImages.isEmpty) && !voice.isRecording
+    }
+
+    /// Strip above the composer listing pending queued prompts. Click X
+    /// on any to remove it before it fires.
+    private var queuedStrip: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(session.pendingPrompts) { p in
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "clock.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.brandOrange.opacity(0.8))
+                        .padding(.top, 3)
+                    Text(p.text.isEmpty ? "(image only)" : p.text)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button {
+                        session.removeQueued(id: p.id)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove queued prompt")
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.primary.opacity(0.04))
+                )
+            }
+        }
     }
 
     private func submit() {

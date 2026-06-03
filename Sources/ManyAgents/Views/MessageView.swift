@@ -113,8 +113,12 @@ struct MessageView: View {
                             .stroke(Color.brandOrange.opacity(0.28), lineWidth: 0.5)
                     )
             case .assistant:
-                Text(asAttributed(text))
-                    .assistantTextStyle()
+                // Block-level markdown — headings, code blocks, lists,
+                // blockquotes, inline code, links. Inline `code` spans
+                // get a tinted monospace treatment so they actually
+                // look like code in flowing text.
+                MarkdownText(raw: text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             case .system:
                 Text(text)
                     .font(AppFont.mono(11.5))

@@ -35,6 +35,16 @@ final class AgentSession: ObservableObject, Identifiable {
     /// What claude is doing right now — "thinking", "writing", "running Bash",
     /// etc. Derived from the most recent stream event.
     @Published var currentPhase: String = "thinking"
+    /// Prompts the user has queued while the current turn is in flight.
+    /// Sent one-by-one in FIFO order once the current turn lands. Matches
+    /// the queued-messages UX in the Claude Code TUI.
+    @Published var pendingPrompts: [PendingPrompt] = []
+
+    struct PendingPrompt: Identifiable, Equatable {
+        let id = UUID()
+        let text: String
+        let images: [Data]
+    }
 
     /// Set externally before connect() if we should resume a prior session id.
     var resumeSessionId: String?
@@ -70,12 +80,25 @@ final class AgentSession: ObservableObject, Identifiable {
 
     /// Send a user prompt. Spawns a fresh `claude -p` process per turn,
     /// resuming the existing session if we already have one.
+    /// User submitted a prompt. Sends immediately if the agent is free;
+    /// otherwise queues it for FIFO delivery once the current turn lands.
     func send(_ text: String, images: [Data] = []) {
-        var blocks: [ContentBlock] = []
-        if !text.isEmpty {
-            blocks.append(.text(id: UUID(), text: text))
+        let prompt = PendingPrompt(text: text, images: images)
+        if status == .running || bridge.isBusy {
+            pendingPrompts.append(prompt)
+            return
         }
-        for img in images {
+        dispatch(prompt)
+    }
+
+    /// Actually push a prompt to the bridge. Adds the user message to the
+    /// transcript, flips status, kicks off the turn.
+    private func dispatch(_ prompt: PendingPrompt) {
+        var blocks: [ContentBlock] = []
+        if !prompt.text.isEmpty {
+            blocks.append(.text(id: UUID(), text: prompt.text))
+        }
+        for img in prompt.images {
             blocks.append(.image(id: UUID(), data: img, mediaType: "image/png"))
         }
         let userMessage = Message(role: .user, blocks: blocks)
@@ -84,7 +107,22 @@ final class AgentSession: ObservableObject, Identifiable {
         currentTurnStartedAt = Date()
         currentTurnOutputTokens = 0
         currentPhase = "thinking"
-        bridge.send(text: text, imagesPng: images)
+        bridge.send(text: prompt.text, imagesPng: prompt.images)
+    }
+
+    /// Pop the next queued prompt (if any) and send it. Called whenever a
+    /// turn finishes so the queue drains FIFO without further user action.
+    private func drainQueueIfReady() {
+        guard status != .running, !bridge.isBusy,
+              let next = pendingPrompts.first else { return }
+        pendingPrompts.removeFirst()
+        dispatch(next)
+    }
+
+    /// Allow the composer to surgically remove a queued item (e.g. an "X"
+    /// on the queued-prompts strip).
+    func removeQueued(id: UUID) {
+        pendingPrompts.removeAll { $0.id == id }
     }
 
     // MARK: - Stream event handling
@@ -148,6 +186,10 @@ final class AgentSession: ObservableObject, Identifiable {
                 status = .waiting
             }
             currentTurnStartedAt = nil
+            // Hand off to the next queued prompt on the next runloop tick so
+            // any UI bound to .result has settled before the new turn flips
+            // status back to .running.
+            DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
         case .tokenCount(let outputTokens):
             currentTurnOutputTokens = max(currentTurnOutputTokens, outputTokens)
         case .processExited(let exitCode):
@@ -158,6 +200,8 @@ final class AgentSession: ObservableObject, Identifiable {
                 status = .error
                 lastError = "claude exited (\(exitCode))"
             }
+            // Whether the previous turn succeeded or errored, try to drain.
+            DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
         case .systemError(let message):
             status = .error
             lastError = message
