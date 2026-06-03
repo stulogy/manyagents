@@ -112,7 +112,62 @@ struct MarkdownText: View {
                 .fill(Color.primary.opacity(0.10))
                 .frame(height: 1)
                 .padding(.vertical, 4)
+        case .table(let header, let rows):
+            tableView(header: header, rows: rows)
         }
+    }
+
+    @ViewBuilder
+    private func tableView(header: [String], rows: [[String]]) -> some View {
+        let columnCount = max(header.count, rows.map(\.count).max() ?? 0)
+        VStack(alignment: .leading, spacing: 0) {
+            // Header row.
+            HStack(alignment: .top, spacing: 0) {
+                ForEach(0..<columnCount, id: \.self) { i in
+                    Text(inline(i < header.count ? header[i] : ""))
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                }
+            }
+            .background(Color.primary.opacity(0.05))
+            .overlay(
+                Rectangle()
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(height: 0.5)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+            )
+            // Body rows.
+            ForEach(Array(rows.enumerated()), id: \.offset) { ridx, row in
+                HStack(alignment: .top, spacing: 0) {
+                    ForEach(0..<columnCount, id: \.self) { i in
+                        Text(inline(i < row.count ? row[i] : ""))
+                            .font(.system(size: 12.5))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                    }
+                }
+                .background(ridx % 2 == 0 ? Color.clear : Color.primary.opacity(0.025))
+                .overlay(
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(height: 0.5)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor).opacity(0.4))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     private func headingSize(_ level: Int) -> CGFloat {
@@ -163,6 +218,7 @@ enum MdBlock {
     case codeBlock(language: String?, code: String)
     case quote(String)
     case divider
+    case table(header: [String], rows: [[String]])
 
     static func parse(_ raw: String) -> [MdBlock] {
         var blocks: [MdBlock] = []
@@ -205,6 +261,22 @@ enum MdBlock {
             if trimmed == "---" || trimmed == "***" || trimmed == "___" {
                 blocks.append(.divider)
                 i += 1
+                continue
+            }
+
+            // GFM pipe table — detect a header row followed by a separator
+            // row (e.g. `|---|---|`), then consume contiguous data rows.
+            if i + 1 < lines.count,
+               isTableRow(line),
+               isTableSeparator(lines[i + 1]) {
+                let header = parseTableRow(line)
+                var rowData: [[String]] = []
+                i += 2
+                while i < lines.count, isTableRow(lines[i]) {
+                    rowData.append(parseTableRow(lines[i]))
+                    i += 1
+                }
+                blocks.append(.table(header: header, rows: rowData))
                 continue
             }
 
@@ -274,6 +346,7 @@ enum MdBlock {
                 if isFence(lines[i]).0 { break }
                 if bulletItem(nextTrim) != nil { break }
                 if orderedItem(nextTrim) != nil { break }
+                if Self.isTableRow(lines[i]) { break }
                 paraLines.append(nextTrim)
                 i += 1
             }
@@ -287,6 +360,39 @@ enum MdBlock {
             return String(s.dropFirst(prefix.count))
         }
         return nil
+    }
+
+    private static func isTableRow(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        return t.hasPrefix("|") && t.contains("|") && t.count >= 3
+    }
+
+    /// `|---|:---:|---:|` style separator — pipes, dashes, optional
+    /// colons for alignment, possibly with whitespace.
+    private static func isTableSeparator(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard t.hasPrefix("|"), t.count >= 3 else { return false }
+        let inner = String(t.dropFirst().dropLast())
+        let cells = inner.split(separator: "|", omittingEmptySubsequences: false)
+        guard !cells.isEmpty else { return false }
+        for cell in cells {
+            let c = cell.trimmingCharacters(in: .whitespaces)
+            guard !c.isEmpty else { return false }
+            // Each cell must be only `-` and optional leading/trailing `:`.
+            let body = c.trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+            guard !body.isEmpty,
+                  body.allSatisfy({ $0 == "-" })
+            else { return false }
+        }
+        return true
+    }
+
+    private static func parseTableRow(_ line: String) -> [String] {
+        var t = line.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("|") { t.removeFirst() }
+        if t.hasSuffix("|") { t.removeLast() }
+        return t.split(separator: "|", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
     }
 
     private static func orderedItem(_ s: String) -> String? {

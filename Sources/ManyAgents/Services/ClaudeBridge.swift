@@ -78,11 +78,15 @@ final class ClaudeBridge {
             "--output-format", "stream-json",
             "--verbose",
             "--permission-mode", "acceptEdits",
+            // AskUserQuestion is an interactive TUI tool. In headless
+            // stream-json mode there's no way to surface its options to
+            // the user, so claude's call auto-resolves to "dismissed" and
+            // it proceeds without our input. Disallow it entirely —
+            // claude knows how to ask in prose instead (which our
+            // waiting-state heuristic detects).
+            "--disallowed-tools", "AskUserQuestion",
             // Append a small instruction so claude consistently signals
-            // "waiting on you" with a recognizable cue. ManyAgents reads
-            // the last sentence to decide whether to flag this session
-            // as needing attention vs. just idle — without this the user
-            // gets too many false-positive "waiting" indicators.
+            // "waiting on you" with a recognizable cue.
             "--append-system-prompt", Self.waitingCueSystemPrompt
         ]
         if let rid = currentSessionId, !rid.isEmpty {
