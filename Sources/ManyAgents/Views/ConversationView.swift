@@ -108,6 +108,29 @@ struct ConversationView: View {
         return String(format: "%.1fk", Double(used) / 1000)
     }
 
+    /// Bucket subagent activity (messages with a parent_tool_use_id) by
+    /// the parent Task tool_use's id, and return the list of messages
+    /// that should appear at top level (everything that ISN'T wholly
+    /// inside a subagent). MessageView renders the parent Task's card
+    /// with its children folded inside.
+    private var grouped: (top: [Message], children: [String: [Message]]) {
+        var top: [Message] = []
+        var children: [String: [Message]] = [:]
+        for msg in session.messages {
+            // A message belongs "under" a subagent if EVERY block in it
+            // carries the same parent_tool_use_id. Mixed messages
+            // (rare — e.g. an intermediate user prompt) stay top-level.
+            let parents = Set(msg.blocks.compactMap(\.parentToolUseId))
+            if parents.count == 1, let parent = parents.first,
+               msg.blocks.allSatisfy({ $0.parentToolUseId == parent }) {
+                children[parent, default: []].append(msg)
+            } else {
+                top.append(msg)
+            }
+        }
+        return (top, children)
+    }
+
     private var conversationScroll: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -115,8 +138,9 @@ struct ConversationView: View {
                     if session.messages.isEmpty {
                         emptyState
                     }
-                    ForEach(session.messages) { msg in
-                        MessageView(message: msg)
+                    let g = grouped
+                    ForEach(g.top) { msg in
+                        MessageView(message: msg, subagentChildren: g.children)
                             .id(msg.id)
                     }
                     if session.status == .running {

@@ -7,6 +7,12 @@ import SwiftUI
 /// `└` corner glyph the TUI uses.
 struct MessageView: View {
     let message: Message
+    /// Map of Task tool_use_id → child messages spawned by that subagent.
+    /// ConversationView builds this dictionary up-front; we look up by
+    /// the Task's own toolUseId when we encounter its block so the
+    /// nested-card renderer can show every subagent step in place.
+    /// Defaults to empty so the type stays drop-in.
+    var subagentChildren: [String: [Message]] = [:]
     @State private var hover = false
     @State private var copyConfirmed = false
 
@@ -97,13 +103,13 @@ struct MessageView: View {
             case .thinking(_, let t):
                 let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty { pieces.append("[thinking] \(trimmed)") }
-            case .toolUse(_, _, let name, let input):
+            case .toolUse(_, _, let name, let input, _):
                 let summary = input.compactMap { (k, v) -> String? in
                     guard let s = v.stringValue, !s.isEmpty else { return nil }
                     return "\(k): \(s)"
                 }.joined(separator: ", ")
                 pieces.append(summary.isEmpty ? "[\(name)]" : "[\(name)] \(summary)")
-            case .toolResult(_, _, let content, let isError):
+            case .toolResult(_, _, let content, let isError, _):
                 let prefix = isError ? "[error] " : ""
                 pieces.append(prefix + content.trimmingCharacters(in: .whitespacesAndNewlines))
             case .image:
@@ -121,7 +127,7 @@ struct MessageView: View {
             case .text(_, let t):     return t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             case .thinking(_, let t): return t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             case .toolUse:            return false
-            case .toolResult(_, _, let c, _):
+            case .toolResult(_, _, let c, _, _):
                 return c.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             case .image:              return false
             }
@@ -228,16 +234,23 @@ struct MessageView: View {
                         .multilineTextAlignment(.leading)
                 }
             }
-        case .toolUse(_, _, let name, let input):
+        case .toolUse(_, let toolUseId, let name, let input, _):
             // AskUserQuestion is rendered as a native picker below the
             // conversation, so skip the raw tool-use card here to avoid
             // double-rendering the same prompt.
             if name == "AskUserQuestion" {
                 EmptyView()
+            } else if name == "Task", let children = subagentChildren[toolUseId] {
+                // Task tool_use → render the parent Agent card with all
+                // subagent activity (child tool calls + results) nested
+                // inside a collapsible disclosure. Without this the
+                // subagent's steps spill into the conversation as
+                // disconnected top-level blocks.
+                TaskExpansionCard(input: input, children: children)
             } else {
                 ToolUseCard(toolName: name, input: input)
             }
-        case .toolResult(_, _, let content, let isError):
+        case .toolResult(_, _, let content, let isError, _):
             ToolResultRow(content: content, isError: isError)
         case .image(_, let data, _):
             if let img = NSImage(data: data) {
@@ -349,5 +362,282 @@ struct MessageView: View {
             return parsed
         }
         return AttributedString(raw)
+    }
+
+    /// Parent card for a Task tool_use (subagent dispatch). Renders the
+    /// prompt one-liner up top, then a collapsible disclosure of every
+    /// child block produced by the subagent (its own tool calls + their
+    /// results + any prose it streamed). Without this, those child
+    /// blocks sprawl as disconnected top-level rows because the renderer
+    /// has no idea they belong together.
+    private struct TaskExpansionCard: View {
+        let input: [String: AnyCodable]
+        /// Messages whose blocks all belong to this Task (parent_tool_use_id
+        /// matches). Ordered as they arrived from the stream.
+        let children: [Message]
+        @State private var expanded = false
+
+        /// One-line prompt summary pulled from the standard Task input keys.
+        private var prompt: String {
+            // claude code's Task tool takes `description` (short) and
+            // `prompt` (the actual subagent instruction). Prefer the
+            // description for the header; fall back to the first line of
+            // prompt.
+            if let d = input["description"]?.stringValue, !d.isEmpty {
+                return d
+            }
+            if let p = input["prompt"]?.stringValue, !p.isEmpty {
+                return p.components(separatedBy: "\n").first ?? p
+            }
+            return "Subagent task"
+        }
+
+        private var subagentName: String {
+            input["subagent_type"]?.stringValue ?? "Agent"
+        }
+
+        /// Flat list of (toolUse, matching toolResult?) pairs across all
+        /// child messages — what the subagent actually did, ordered.
+        /// Used for the step count + the expanded body.
+        private var steps: [SubagentStep] {
+            var out: [SubagentStep] = []
+            // Index toolResults by toolUseId so we can match in a single
+            // pass without an O(N²) lookup.
+            var resultByToolUse: [String: (content: String, isError: Bool)] = [:]
+            for msg in children {
+                for block in msg.blocks {
+                    if case .toolResult(_, let id, let content, let isError, _) = block {
+                        resultByToolUse[id] = (content, isError)
+                    }
+                }
+            }
+            for msg in children {
+                for block in msg.blocks {
+                    switch block {
+                    case .toolUse(_, let toolUseId, let name, let bInput, _):
+                        let result = resultByToolUse[toolUseId]
+                        out.append(SubagentStep(
+                            id: block.id,
+                            kind: .tool(name: name, input: bInput, result: result)
+                        ))
+                    case .text(_, let t):
+                        let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty {
+                            out.append(SubagentStep(id: block.id, kind: .text(trimmed)))
+                        }
+                    case .thinking(_, let t):
+                        let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty {
+                            out.append(SubagentStep(id: block.id, kind: .thinking(trimmed)))
+                        }
+                    default:
+                        break
+                    }
+                }
+            }
+            return out
+        }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                if expanded && !steps.isEmpty {
+                    Divider().background(Color.primary.opacity(0.06))
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(steps) { step in
+                            StepRow(step: step)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.activeHighlight.opacity(0.35), lineWidth: 0.5)
+            )
+        }
+
+        private var header: some View {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.activeHighlight)
+                    Text(subagentName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.activeHighlight)
+                    Text(prompt)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if !steps.isEmpty {
+                        Text("\(steps.count) step\(steps.count == 1 ? "" : "s")")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                    }
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            }
+            .buttonStyle(.plain)
+        }
+
+        /// One pair of (subagent action, optional result) rendered inside
+        /// the expanded panel. Kept compact — the user has already opted
+        /// into seeing detail, but it should still read as "summary",
+        /// not as a full transcript turn.
+        private struct StepRow: View {
+            let step: SubagentStep
+            @State private var resultExpanded = false
+
+            var body: some View {
+                switch step.kind {
+                case .tool(let name, let input, let result):
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Image(systemName: iconName(for: name))
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 12)
+                            Text(name)
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.primary)
+                            Text(oneLine(input))
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if let r = result, r.isError {
+                                Text("error")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(.red)
+                            }
+                        }
+                        if let r = result {
+                            ResultPeek(content: r.content, isError: r.isError)
+                                .padding(.leading, 18)
+                        }
+                    }
+                case .text(let t):
+                    HStack(alignment: .top, spacing: 6) {
+                        Text("·")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 12)
+                        Text(t)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                case .thinking(let t):
+                    HStack(alignment: .top, spacing: 6) {
+                        Text("✻")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.purple.opacity(0.7))
+                            .frame(width: 12)
+                        Text(t)
+                            .font(.system(size: 11))
+                            .italic()
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+
+            private func iconName(for tool: String) -> String {
+                switch tool {
+                case "Bash":              return "terminal"
+                case "Read":              return "doc.text"
+                case "Edit", "MultiEdit": return "pencil"
+                case "Write":             return "square.and.pencil"
+                case "Grep", "Glob":      return "magnifyingglass"
+                case "WebFetch", "WebSearch": return "globe"
+                default:                  return "wrench.adjustable"
+                }
+            }
+
+            /// Compact one-line summary of a tool's args. Prefers
+            /// `command`, then `file_path`, then `pattern`, then first
+            /// string value found. Long values truncated mid-string.
+            private func oneLine(_ input: [String: AnyCodable]) -> String {
+                let priority = ["command", "file_path", "path", "pattern", "url", "query", "description"]
+                for key in priority {
+                    if let s = input[key]?.stringValue, !s.isEmpty {
+                        return s
+                    }
+                }
+                for (_, v) in input {
+                    if let s = v.stringValue, !s.isEmpty { return s }
+                }
+                return ""
+            }
+        }
+
+        private struct ResultPeek: View {
+            let content: String
+            let isError: Bool
+            @State private var expanded = false
+
+            private static let collapsedLines = 2
+
+            private var lines: [String] {
+                content.components(separatedBy: "\n")
+            }
+
+            var body: some View {
+                let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(expanded
+                             ? content
+                             : lines.prefix(Self.collapsedLines).joined(separator: "\n"))
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(isError ? .red : .secondary)
+                            .lineSpacing(1.5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                        if lines.count > Self.collapsedLines {
+                            Button {
+                                withAnimation(.easeOut(duration: 0.12)) { expanded.toggle() }
+                            } label: {
+                                Text(expanded
+                                     ? "Collapse"
+                                     : "\(lines.count - Self.collapsedLines) more lines")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// One unit of subagent activity used by TaskExpansionCard.
+    private struct SubagentStep: Identifiable {
+        let id: UUID
+        let kind: Kind
+
+        enum Kind {
+            case tool(name: String, input: [String: AnyCodable],
+                      result: (content: String, isError: Bool)?)
+            case text(String)
+            case thinking(String)
+        }
     }
 }

@@ -254,7 +254,7 @@ final class AgentSession: ObservableObject, Identifiable {
             // status line can read "writing" / "running Bash" / etc.
             for block in blocks.reversed() {
                 switch block {
-                case .toolUse(_, _, let name, _):
+                case .toolUse(_, _, let name, _, _):
                     currentPhase = name == "Bash" ? "running Bash"
                                  : (name == "Edit" || name == "MultiEdit" || name == "Write") ? "editing"
                                  : (name == "Read") ? "reading"
@@ -269,13 +269,17 @@ final class AgentSession: ObservableObject, Identifiable {
                 }
                 break
             }
-        case .toolResult(let toolUseId, let content, let isError):
+        case .toolResult(let toolUseId, let content, let isError, let parentToolUseId):
             // Claude itself runs tools and reports the result. Render as a
-            // dedicated message so the conversation stays linear.
+            // dedicated message so the conversation stays linear. The
+            // parentToolUseId, if set, tells the renderer this result
+            // belongs to a subagent's tool call — it nests under the
+            // parent Task card rather than rendering as a top-level row.
             let block = ContentBlock.toolResult(id: UUID(),
                                                 toolUseId: toolUseId,
                                                 content: content,
-                                                isError: isError)
+                                                isError: isError,
+                                                parentToolUseId: parentToolUseId)
             messages.append(Message(role: .system, blocks: [block]))
         case .result(let usage, let cost, let isError, let resultText):
             if let u = usage {

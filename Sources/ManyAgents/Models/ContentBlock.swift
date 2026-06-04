@@ -2,21 +2,50 @@ import Foundation
 
 /// One piece of a message. Mirrors the Anthropic Messages API content-block
 /// shape that the `claude` CLI emits over the stream-json transport.
+///
+/// `parentToolUseId` is set on tool blocks that were spawned by a subagent
+/// (Task tool). The renderer uses it to nest sub-tool-calls visually
+/// underneath their parent Agent card instead of letting them sprawl as
+/// independent top-level cards.
 enum ContentBlock: Identifiable, Equatable {
     case text(id: UUID, text: String)
-    case toolUse(id: UUID, toolUseId: String, name: String, input: [String: AnyCodable])
-    case toolResult(id: UUID, toolUseId: String, content: String, isError: Bool)
+    case toolUse(id: UUID, toolUseId: String, name: String, input: [String: AnyCodable], parentToolUseId: String?)
+    case toolResult(id: UUID, toolUseId: String, content: String, isError: Bool, parentToolUseId: String?)
     case thinking(id: UUID, text: String)
     case image(id: UUID, data: Data, mediaType: String)
 
     var id: UUID {
         switch self {
         case .text(let id, _),
-             .toolUse(let id, _, _, _),
-             .toolResult(let id, _, _, _),
+             .toolUse(let id, _, _, _, _),
+             .toolResult(let id, _, _, _, _),
              .thinking(let id, _),
              .image(let id, _, _):
             return id
+        }
+    }
+
+    /// Parent tool_use id, if this block was emitted under a subagent.
+    /// nil for top-level blocks. Drives the nested-card rendering.
+    var parentToolUseId: String? {
+        switch self {
+        case .toolUse(_, _, _, _, let p),
+             .toolResult(_, _, _, _, let p):
+            return p
+        default:
+            return nil
+        }
+    }
+
+    /// Tool-use id that other blocks can reference as their parent.
+    /// nil for non-tool-use blocks.
+    var toolUseId: String? {
+        switch self {
+        case .toolUse(_, let id, _, _, _),
+             .toolResult(_, let id, _, _, _):
+            return id
+        default:
+            return nil
         }
     }
 

@@ -45,6 +45,10 @@ enum TranscriptLoader {
 
     private static func parseUser(_ obj: [String: Any]) -> Message? {
         guard let msg = obj["message"] as? [String: Any] else { return nil }
+        // When present, tags every tool_result in this user message as
+        // a subagent's tool feedback so the renderer can nest it under
+        // its parent Task card on transcript restore.
+        let parentToolUseId = obj["parent_tool_use_id"] as? String
         var blocks: [ContentBlock] = []
         var isToolResultsOnly = true
 
@@ -83,7 +87,8 @@ enum TranscriptLoader {
                     blocks.append(.toolResult(id: UUID(),
                                               toolUseId: toolUseId,
                                               content: text,
-                                              isError: isError))
+                                              isError: isError,
+                                              parentToolUseId: parentToolUseId))
                 }
             }
         }
@@ -99,6 +104,9 @@ enum TranscriptLoader {
         guard let msg = obj["message"] as? [String: Any],
               let content = msg["content"] as? [[String: Any]]
         else { return nil }
+        // Carries through restore so subagent tool_use blocks nest
+        // under their parent Task card just like in a live session.
+        let parentToolUseId = obj["parent_tool_use_id"] as? String
         var blocks: [ContentBlock] = []
         for c in content {
             let ct = c["type"] as? String
@@ -119,7 +127,8 @@ enum TranscriptLoader {
                     blocks.append(.toolUse(id: UUID(),
                                            toolUseId: id,
                                            name: name,
-                                           input: input))
+                                           input: input,
+                                           parentToolUseId: parentToolUseId))
                 }
             default:
                 break

@@ -5,7 +5,7 @@ import Combine
 enum BridgeEvent {
     case initialized(sessionId: String, model: String?)
     case assistantBlocks([ContentBlock])
-    case toolResult(toolUseId: String, content: String, isError: Bool)
+    case toolResult(toolUseId: String, content: String, isError: Bool, parentToolUseId: String?)
     case result(usage: TokenUsage?, costUsd: Double?, isError: Bool, text: String?)
     case processExited(exitCode: Int32)
     case systemError(String)
@@ -339,6 +339,12 @@ final class ClaudeBridge {
         // per-message count. The canonical count now comes from
         // `stream_event/message_delta` in `handleStreamEvent`.
 
+        // claude reports the parent tool_use id at the event root when
+        // the assistant message was produced by a subagent (Task tool).
+        // We propagate it onto each tool block so the renderer can nest
+        // sub-tool-calls under their parent Agent card.
+        let parentToolUseId = obj["parent_tool_use_id"] as? String
+
         var blocks: [ContentBlock] = []
         for raw in content {
             guard let blockType = raw["type"] as? String else { continue }
@@ -367,7 +373,11 @@ final class ClaudeBridge {
                         }
                     }
                     let input = rawInput.mapValues(AnyCodable.from)
-                    blocks.append(.toolUse(id: UUID(), toolUseId: id, name: name, input: input))
+                    blocks.append(.toolUse(id: UUID(),
+                                           toolUseId: id,
+                                           name: name,
+                                           input: input,
+                                           parentToolUseId: parentToolUseId))
                 }
             default:
                 break
@@ -382,11 +392,18 @@ final class ClaudeBridge {
         guard let message = obj["message"] as? [String: Any],
               let content = message["content"] as? [[String: Any]]
         else { return }
+        // Same provenance signal as on the assistant side — when set,
+        // this tool_result is feedback to a subagent's tool call, not
+        // the top-level conversation.
+        let parentToolUseId = obj["parent_tool_use_id"] as? String
         for raw in content where raw["type"] as? String == "tool_result" {
             let toolUseId = raw["tool_use_id"] as? String ?? ""
             let isError = raw["is_error"] as? Bool ?? false
             let text = Self.flattenToolResultContent(raw["content"])
-            emit(.toolResult(toolUseId: toolUseId, content: text, isError: isError))
+            emit(.toolResult(toolUseId: toolUseId,
+                             content: text,
+                             isError: isError,
+                             parentToolUseId: parentToolUseId))
         }
     }
 
