@@ -9,10 +9,21 @@ enum BridgeEvent {
     case result(usage: TokenUsage?, costUsd: Double?, isError: Bool, text: String?)
     case processExited(exitCode: Int32)
     case systemError(String)
-    /// Per-chunk token-count update — fires whenever an assistant message
-    /// lands with usage info, so the UI can show a live "↓ N tokens" counter
-    /// during long turns without waiting for the final result event.
+    /// Canonical per-message output-token total. Fires from `message_delta`
+    /// stream events at end-of-message — exactly correct, but only ticks
+    /// at message boundaries.
     case tokenCount(outputTokens: Int)
+    /// Live text/thinking chars arriving on `content_block_delta` stream
+    /// events. The session converts chars→tokens with a rough /4 estimate
+    /// so the gauge ticks smoothly within a single long message; the
+    /// estimate is reconciled to the canonical count when `.tokenCount`
+    /// fires at message-end.
+    case partialOutputChars(Int)
+    /// A new content block just opened — text, thinking, or a specific
+    /// tool. Lets the session set a real phase ("Thinking", "Writing",
+    /// "Preparing Bash") even when no completed assistant event has
+    /// landed yet, so long extended-thinking sequences don't look stuck.
+    case partialBlockKind(String)
     /// claude called the AskUserQuestion tool. The owning session is
     /// expected to render a native picker and reply via
     /// `submitToolResult(toolUseId:, content:)` so the turn can continue.
@@ -98,6 +109,11 @@ final class ClaudeBridge {
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",
+            // Stream content-block deltas (text/thinking chunks) and
+            // message_delta events. Lets us tick the output-token gauge
+            // smoothly during long single-message generations instead of
+            // jumping only at message boundaries.
+            "--include-partial-messages",
             "--permission-mode", "acceptEdits",
             // Append a small instruction so claude consistently signals
             // "waiting on you" with a recognizable cue.
@@ -249,6 +265,64 @@ final class ClaudeBridge {
             handleUserMessage(obj)
         case "result":
             handleResult(obj)
+        case "stream_event":
+            handleStreamEvent(obj)
+        default:
+            break
+        }
+    }
+
+    /// Parse the wrapped Anthropic-API SSE events that `claude` re-emits
+    /// when `--include-partial-messages` is on. We only care about two
+    /// shapes here:
+    ///   * `content_block_delta`: incoming text/thinking/json chunks for
+    ///     the live token-estimate ticker. We forward char counts; the
+    ///     session does the chars→tokens estimate.
+    ///   * `message_delta`: end-of-message canonical `output_tokens` for
+    ///     that one message. The session sums these across the turn.
+    private func handleStreamEvent(_ obj: [String: Any]) {
+        guard let event = obj["event"] as? [String: Any],
+              let eventType = event["type"] as? String
+        else { return }
+        switch eventType {
+        case "content_block_start":
+            // Earliest possible "what's claude doing right now" signal —
+            // fires the moment a new block opens, before any text streams.
+            // For tool_use blocks the tool name is right here in
+            // `content_block.name`; for text/thinking blocks we surface
+            // those kinds directly so the indicator's verb reflects
+            // reality instead of rotating whimsy words during long
+            // extended-thinking stretches.
+            guard let block = event["content_block"] as? [String: Any],
+                  let kind = block["type"] as? String
+            else { return }
+            switch kind {
+            case "thinking":
+                emit(.partialBlockKind("thinking"))
+            case "text":
+                emit(.partialBlockKind("writing"))
+            case "tool_use":
+                let toolName = block["name"] as? String ?? "tool"
+                emit(.partialBlockKind("preparing \(toolName)"))
+            default:
+                break
+            }
+        case "content_block_delta":
+            guard let delta = event["delta"] as? [String: Any] else { return }
+            // Any deltable text field counts toward output token estimate:
+            // visible text, hidden thinking, and the partial JSON of a
+            // tool_use's input block.
+            let chars: Int
+            if let t = delta["text"] as? String { chars = t.count }
+            else if let t = delta["thinking"] as? String { chars = t.count }
+            else if let t = delta["partial_json"] as? String { chars = t.count }
+            else { return }
+            if chars > 0 { emit(.partialOutputChars(chars)) }
+        case "message_delta":
+            if let usage = event["usage"] as? [String: Any],
+               let out = usage["output_tokens"] as? Int {
+                emit(.tokenCount(outputTokens: out))
+            }
         default:
             break
         }
@@ -258,12 +332,13 @@ final class ClaudeBridge {
         guard let message = obj["message"] as? [String: Any],
               let content = message["content"] as? [[String: Any]]
         else { return }
-        // Live token counter — each intermediate assistant event carries a
-        // running total. Surface immediately so the status line ticks.
-        if let usage = message["usage"] as? [String: Any],
-           let outTokens = usage["output_tokens"] as? Int {
-            emit(.tokenCount(outputTokens: outTokens))
-        }
+        // NOTE: we used to emit `.tokenCount` here from
+        // `message.usage.output_tokens`. With `--include-partial-messages`
+        // enabled, the `assistant` event lands mid-stream and its usage
+        // reflects only the warmup (e.g. ~7 tokens), not the final
+        // per-message count. The canonical count now comes from
+        // `stream_event/message_delta` in `handleStreamEvent`.
+
         var blocks: [ContentBlock] = []
         for raw in content {
             guard let blockType = raw["type"] as? String else { continue }

@@ -47,16 +47,37 @@ final class AgentSession: ObservableObject, Identifiable {
 
     static func contextWindow(for model: String?) -> Int {
         guard let m = model?.lowercased() else { return 200_000 }
-        // Anything with the [1m] / -1m suffix uses the 1M-context variant.
+        // Explicit [1m] / -1m suffix means 1M variant. Older signal —
+        // newer Claude builds drop the suffix from the init event even
+        // when running the 1M variant, so we can't rely on it alone.
         if m.contains("[1m]") || m.contains("-1m") { return 1_000_000 }
+        // Opus 4.7+ ships with 1M as the default. claude's init event
+        // reports the bare id ("claude-opus-4-7" / "claude-opus-4-8" /
+        // "claude-opus-5-…") even on the 1M variant, so we have to
+        // infer from the family — without this the gauge slams to 100%
+        // around the 200K mark while /context still reads ~20%.
+        if m.range(of: #"opus-4-[7-9]"#, options: .regularExpression) != nil {
+            return 1_000_000
+        }
+        if m.range(of: #"opus-[5-9]"#, options: .regularExpression) != nil {
+            return 1_000_000
+        }
         return 200_000
     }
     /// When the user pressed send for the current in-flight turn. `nil` once
     /// the turn lands. Drives the "Warping… 2m 19s" elapsed timer.
     @Published var currentTurnStartedAt: Date?
-    /// Running output-token count for the in-flight turn. Reset on send,
-    /// accumulated from each assistant event's `usage.output_tokens`.
+    /// Running output-token count for the in-flight turn. Reset on send.
+    /// Sum of (canonical per-message counts already committed) + (a live
+    /// chars-÷-4 estimate of the in-flight message). The estimate is
+    /// rolled back into the canonical count by `.tokenCount` events at
+    /// each message boundary, so the displayed number self-corrects.
     @Published var currentTurnOutputTokens: Int = 0
+    /// chars-÷-4 estimate of how much we've over-counted the current
+    /// in-flight message via partial-text deltas. Subtracted then
+    /// replaced when `.tokenCount` lands with the canonical figure.
+    /// Not @Published — internal accounting only.
+    private var inflightTokenEstimate: Int = 0
     /// What claude is doing right now — "thinking", "writing", "running Bash",
     /// etc. Derived from the most recent stream event.
     @Published var currentPhase: String = "thinking"
@@ -145,6 +166,7 @@ final class AgentSession: ObservableObject, Identifiable {
         status = .running
         currentTurnStartedAt = Date()
         currentTurnOutputTokens = 0
+        inflightTokenEstimate = 0
         currentPhase = "thinking"
         // Kick the bridge off the main thread — process.run() + stdin
         // write was blocking SwiftUI rendering, so the "Thinking…"
@@ -262,6 +284,11 @@ final class AgentSession: ObservableObject, Identifiable {
                 currentTurnOutputTokens = u.outputTokens
                 lastTurnContextTokens = u.totalContextTokens
             }
+            // End-of-turn: estimate should already be drained by the
+            // last message_delta. Clear defensively in case the turn
+            // ended via error or an unexpected event ordering — keeps
+            // the next turn from starting with stale state.
+            inflightTokenEstimate = 0
             if let c = cost { totalCostUsd += c }
             if isError {
                 status = .error
@@ -282,8 +309,28 @@ final class AgentSession: ObservableObject, Identifiable {
             // any UI bound to .result has settled before the new turn flips
             // status back to .running.
             DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
+        case .partialBlockKind(let kind):
+            // Earliest-possible "what is claude doing right now" signal.
+            // Stops the indicator from sitting on a rotating whimsy verb
+            // during long extended-thinking stretches that never produce
+            // a completed assistant message.
+            currentPhase = kind
+        case .partialOutputChars(let chars):
+            // Live ticker — count incoming chars as ~tokens/4 so the
+            // gauge moves smoothly inside a single long message instead
+            // of waiting for message-end. Rolled back when `.tokenCount`
+            // delivers the canonical figure for the same message.
+            let est = max(1, chars / 4)
+            inflightTokenEstimate += est
+            currentTurnOutputTokens += est
         case .tokenCount(let outputTokens):
-            currentTurnOutputTokens = max(currentTurnOutputTokens, outputTokens)
+            // End-of-message canonical figure (from message_delta).
+            // Roll back the live estimate for the message that just
+            // ended, then add the truth on top — net behaviour is
+            // "sum per-message canonical counts across the turn".
+            currentTurnOutputTokens -= inflightTokenEstimate
+            inflightTokenEstimate = 0
+            currentTurnOutputTokens += outputTokens
         case .askUserQuestion(let toolUseId, let prompt):
             pendingAskUserQuestion = AskState(
                 toolUseId: toolUseId,

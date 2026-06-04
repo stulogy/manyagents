@@ -200,8 +200,6 @@ struct ConversationView: View {
     /// long stream stays visually alive instead of frozen on one word.
     private struct ThinkingIndicator: View {
         @ObservedObject var session: AgentSession
-        @State private var now: Date = Date()
-        private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
         /// Curated list matching Claude Code's whimsy. Index = floor(elapsed / 25).
         private static let verbs = [
@@ -211,7 +209,13 @@ struct ConversationView: View {
             "Cogitating", "Ruminating", "Reasoning", "Reckoning", "Untangling"
         ]
 
-        private var elapsed: TimeInterval {
+        /// `now` is supplied by a TimelineView so the elapsed display
+        /// updates exactly once per second regardless of how much
+        /// @Published state thrash the partial-message stream is
+        /// causing elsewhere. The previous Timer.publish + @State pair
+        /// lost its subscription mid-turn during high-token sequences,
+        /// freezing the displayed time while tokens kept climbing.
+        private func elapsed(now: Date) -> TimeInterval {
             guard let start = session.currentTurnStartedAt else { return 0 }
             return now.timeIntervalSince(start)
         }
@@ -222,7 +226,7 @@ struct ConversationView: View {
         /// streaming text — show THAT instead, so we don't say
         /// "Ruminating… running Bash" with the verb and the phase
         /// contradicting each other.
-        private var verb: String {
+        private func verb(elapsed: TimeInterval) -> String {
             let phase = session.currentPhase.lowercased()
             if phase.isEmpty || phase == "thinking" {
                 let idx = Int(elapsed / 25) % Self.verbs.count
@@ -238,7 +242,7 @@ struct ConversationView: View {
             return String(first).uppercased() + s.dropFirst()
         }
 
-        private var elapsedLabel: String {
+        private func elapsedLabel(_ elapsed: TimeInterval) -> String {
             let s = Int(elapsed)
             if s < 60 { return "\(s)s" }
             return "\(s / 60)m \(s % 60)s"
@@ -274,21 +278,23 @@ struct ConversationView: View {
                     }
                     .frame(width: 32, height: 12, alignment: .leading)
                 }
-                Text(statusLine)
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .contentTransition(.opacity)
-                    .animation(.easeInOut(duration: 0.25), value: statusLine)
+                // 1-second cadence TimelineView for the status text —
+                // SwiftUI clock-driven, can't be starved by state churn.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(statusLine(now: context.date))
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding(.vertical, 4)
-            .onReceive(tick) { now = $0 }
         }
 
-        private var statusLine: String {
+        private func statusLine(now: Date) -> String {
+            let e = elapsed(now: now)
             var parts: [String] = []
-            parts.append("\(verb)…")
-            if elapsed >= 1 {
-                var meta: [String] = [elapsedLabel]
+            parts.append("\(verb(elapsed: e))…")
+            if e >= 1 {
+                var meta: [String] = [elapsedLabel(e)]
                 if let t = tokenLabel { meta.append(t) }
                 parts.append("(\(meta.joined(separator: " · ")))")
             }
