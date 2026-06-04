@@ -12,7 +12,7 @@ struct ComposerView: View {
     @State private var preVoiceDraft: String = ""
     @State private var pendingImages: [Data] = []
     @State private var pendingImageFingerprints: Set<String> = []
-    @State private var editorHeight: CGFloat = 36
+    @State private var editorHeight: CGFloat = 44
     /// Anthropic recommends ≤5 images per request; more than that and the
     /// API starts rejecting or truncating. We cap at this in the composer.
     private static let maxPendingImages = 8
@@ -34,14 +34,31 @@ struct ComposerView: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 12)
+        // Solid surface + visible border + elevation shadow so the
+        // composer reads as a distinct input affordance instead of
+        // dissolving into the dark conversation panel. Focus state
+        // adds a faint orange halo so you can see when keyboard
+        // input is captured.
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.98))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(borderColor, lineWidth: 1)
+                .stroke(borderColor, lineWidth: focused || voice.isRecording ? 1.5 : 1)
+        )
+        .shadow(
+            color: Color.black.opacity(0.35),
+            radius: 14,
+            x: 0,
+            y: 4
+        )
+        .shadow(
+            color: focused ? Color.brandOrange.opacity(0.18) : .clear,
+            radius: 10,
+            x: 0,
+            y: 0
         )
         .onAppear { focused = true }
         .onChange(of: voice.liveTranscript) { _, partial in
@@ -84,8 +101,8 @@ struct ComposerView: View {
 
     private var borderColor: Color {
         if voice.isRecording { return Color.red.opacity(0.7) }
-        if focused { return Color.activeHighlight.opacity(0.45) }
-        return Color.primary.opacity(0.08)
+        if focused { return Color.brandOrange.opacity(0.55) }
+        return Color.primary.opacity(0.20)
     }
 
     private var editor: some View {
@@ -93,9 +110,12 @@ struct ComposerView: View {
             text: $draft,
             height: $editorHeight,
             placeholder: "Message…",
-            font: NSFont.systemFont(ofSize: 13.5, weight: .regular),
-            minHeight: 36,
-            maxHeight: 240,
+            // Bumped from 13.5 — the composer needs to read at LEAST
+            // as confidently as the assistant prose above it, otherwise
+            // typing feels like a relegated afterthought.
+            font: NSFont.systemFont(ofSize: 15, weight: .regular),
+            minHeight: 44,
+            maxHeight: 280,
             onSubmit: submit,
             onImagePaste: { datas in
                 ingest(images: datas)
@@ -186,14 +206,14 @@ struct ComposerView: View {
     private var queuedStrip: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(session.pendingPrompts) { p in
-                HStack(alignment: .top, spacing: 6) {
+                HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "clock.fill")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.brandOrange.opacity(0.8))
-                        .padding(.top, 3)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.brandOrange.opacity(0.85))
+                        .padding(.top, 4)
                     Text(p.text.isEmpty ? "(image only)" : p.text)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 14))
+                        .foregroundStyle(.primary.opacity(0.85))
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     // Force-send: bumps this prompt to the front and
@@ -202,8 +222,8 @@ struct ComposerView: View {
                         session.forceSend(id: p.id)
                     } label: {
                         Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.brandOrange.opacity(0.85))
+                            .font(.system(size: 15))
+                            .foregroundStyle(Color.brandOrange.opacity(0.9))
                     }
                     .buttonStyle(.plain)
                     .help("Send now (interrupts current turn)")
@@ -211,14 +231,14 @@ struct ComposerView: View {
                         session.removeQueued(id: p.id)
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
+                            .font(.system(size: 14))
                             .foregroundStyle(.tertiary)
                     }
                     .buttonStyle(.plain)
                     .help("Remove queued prompt")
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(Color.primary.opacity(0.04))
