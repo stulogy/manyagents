@@ -140,7 +140,9 @@ struct ConversationView: View {
                     }
                     let g = grouped
                     ForEach(g.top) { msg in
-                        MessageView(message: msg, subagentChildren: g.children)
+                        MessageView(message: msg,
+                                    subagentChildren: g.children,
+                                    sessionCwd: session.cwd)
                             .id(msg.id)
                     }
                     if session.status == .running {

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Block-level markdown renderer for assistant prose. SwiftUI's built-in
 /// AttributedString markdown only handles inline syntax (bold, italic,
@@ -7,6 +8,11 @@ import SwiftUI
 /// AttributedString do the inline pass per paragraph.
 struct MarkdownText: View {
     let raw: String
+    /// Working directory of the session this text belongs to. Used to
+    /// resolve relative file paths inside code spans (e.g.
+    /// `notes/quiz_mockup.html`) so we can autolink them. nil → only
+    /// absolute paths and http(s) URLs get autolinked.
+    var sessionCwd: String? = nil
 
     private var blocks: [MdBlock] { MdBlock.parse(raw) }
 
@@ -16,6 +22,14 @@ struct MarkdownText: View {
                 view(for: block)
             }
         }
+        // SwiftUI's default openURL on macOS doesn't reliably handle
+        // file:// URLs (it's geared toward http schemes / Universal Links).
+        // Route every link click through NSWorkspace so .html opens in
+        // the browser, .swift in Xcode, a directory in Finder, etc.
+        .environment(\.openURL, OpenURLAction { url in
+            NSWorkspace.shared.open(url)
+            return .handled
+        })
     }
 
     @ViewBuilder
@@ -179,6 +193,41 @@ struct MarkdownText: View {
         }
     }
 
+    /// Detect URLs and file paths inside a code span. Returns a URL we
+    /// should attach as `.link`, or nil if the span is just code text.
+    /// Resolution order:
+    ///   * http(s) URLs — always
+    ///   * absolute file paths (/, ~) — if the file actually exists
+    ///   * relative file paths — joined against sessionCwd, if that file
+    ///     actually exists
+    /// We intentionally check existence so we don't autolink things like
+    /// `foo/bar` that are just code identifiers with a slash.
+    private func autolinkURL(from raw: String) -> URL? {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        if s.hasPrefix("http://") || s.hasPrefix("https://") {
+            return URL(string: s)
+        }
+        let fm = FileManager.default
+        if s.hasPrefix("/") {
+            return fm.fileExists(atPath: s) ? URL(fileURLWithPath: s) : nil
+        }
+        if s.hasPrefix("~/") {
+            let expanded = NSString(string: s).expandingTildeInPath
+            return fm.fileExists(atPath: expanded) ? URL(fileURLWithPath: expanded) : nil
+        }
+        // Relative path — needs the session cwd to resolve. Skip if we
+        // weren't given one, and require the file to actually exist so
+        // we don't false-positive on every code identifier with a slash.
+        if let cwd = sessionCwd, s.contains("/") || s.contains(".") {
+            let joined = (cwd as NSString).appendingPathComponent(s)
+            if fm.fileExists(atPath: joined) {
+                return URL(fileURLWithPath: joined)
+            }
+        }
+        return nil
+    }
+
     /// Inline pass — bold, italic, code spans, links — with code spans
     /// styled so they actually look like code (monospace + tinted bg).
     private func inline(_ text: String) -> AttributedString {
@@ -194,12 +243,25 @@ struct MarkdownText: View {
         }
         // Inline code spans live on `inlinePresentationIntent` (not the
         // block-level `presentationIntent`). Tint them orange in a
-        // monospace face with a faint background fill.
+        // monospace face with a faint background fill. Then autolink
+        // any span that looks like a URL or a file path so Cmd-clicking
+        // it opens in the default app — Finder for directories, the
+        // user's editor for files, browser for http(s).
         for run in str.runs {
             if run.inlinePresentationIntent?.contains(.code) == true {
                 str[run.range].font = .system(size: 12.5, weight: .medium, design: .monospaced)
                 str[run.range].foregroundColor = Color.brandOrange
                 str[run.range].backgroundColor = Color.brandOrange.opacity(0.12)
+                let spanText = String(str[run.range].characters)
+                if let url = autolinkURL(from: spanText) {
+                    str[run.range].link = url
+                    str[run.range].underlineStyle = .single
+                }
+            } else if run.link != nil {
+                // Markdown link from `[text](url)` — give it the brand
+                // accent + underline so it actually reads as a link.
+                str[run.range].foregroundColor = Color.activeHighlight
+                str[run.range].underlineStyle = .single
             }
         }
         return str

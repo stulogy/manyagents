@@ -13,6 +13,10 @@ struct MessageView: View {
     /// nested-card renderer can show every subagent step in place.
     /// Defaults to empty so the type stays drop-in.
     var subagentChildren: [String: [Message]] = [:]
+    /// cwd of the owning session — passed through to MarkdownText so
+    /// relative file paths in code spans (`notes/foo.html`) can be
+    /// resolved against the project root and autolinked.
+    var sessionCwd: String? = nil
     @State private var hover = false
     @State private var copyConfirmed = false
 
@@ -209,7 +213,7 @@ struct MessageView: View {
                 // blockquotes, inline code, links. Inline `code` spans
                 // get a tinted monospace treatment so they actually
                 // look like code in flowing text.
-                MarkdownText(raw: text)
+                MarkdownText(raw: text, sessionCwd: sessionCwd)
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .system:
                 Text(text)
