@@ -5,15 +5,48 @@ struct ConversationView: View {
     @ObservedObject var session: AgentSession
     @EnvironmentObject var manager: AgentManager
     @State private var showingChainSettings = false
+    @State private var showingRename = false
+    @State private var renameDraft = ""
+    /// Global default for the "Bypass permissions" toggle — applied to
+    /// every newly-spawned session. Stored in UserDefaults under the
+    /// same key AgentSession reads at init time, so flipping it here
+    /// inherits cleanly into future sessions without extra plumbing.
+    @AppStorage("manyagents.bypassPermissions.defaultForNewSessions")
+    private var bypassDefaultForNewSessions: Bool = false
+    /// Scroll-tracking metrics. Driven by GeometryReader-derived
+    /// preferences on each scroll/layout pass. We compute "near the
+    /// bottom" as (content - scrollY - viewport < tolerance) — a real
+    /// pixel-distance check that survives LazyVStack rebuilds.
+    /// Earlier we used a 1-pt sentinel + onAppear, which kept flipping
+    /// off when the layout flashed and broke chat-style auto-scroll.
+    @State private var contentHeight: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+    @State private var scrollY: CGFloat = 0
+    /// Pixels from the bottom under which we still auto-scroll. ~300px
+    /// is roughly "the last screen-ish worth of content is visible".
+    private static let nearBottomTolerance: CGFloat = 300
+
+    /// True when the user is within `nearBottomTolerance` of the
+    /// trailing edge. While true, programmatic scrolling tracks new
+    /// content. While false, the user is reading further up and we
+    /// leave them alone.
+    private var nearBottom: Bool {
+        // Until the first layout pass we default to "yes" so the
+        // initial kickToBottom + first message land at the bottom.
+        guard contentHeight > 0 && viewportHeight > 0 else { return true }
+        let distanceFromBottom = contentHeight - scrollY - viewportHeight
+        return distanceFromBottom <= Self.nearBottomTolerance
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             conversationScroll
-            // Pending hand-off banner — fires when another agent's
-            // "Send to → Stage on target" lands a prompt here. Sits
-            // above the AskUserQuestion picker so a chained question
-            // is still resolvable in the normal flow.
+            // Pending hand-off banner — appears when another agent's
+            // chain (or a manual "Send to → Stage on target") staged
+            // a prompt on this session. Sits ABOVE the
+            // AskUserQuestion picker so a chained question is still
+            // resolvable in normal flow.
             if session.pendingHandOff != nil {
                 HStack {
                     Spacer(minLength: 0)
@@ -24,10 +57,40 @@ struct ConversationView: View {
                 .padding(.horizontal, 18)
                 .padding(.bottom, 8)
             }
-            // Permission picker — Allow / Deny banner for sensitive-path
-            // writes that claude routes through the manyagents MCP
-            // permission_prompt tool. Sits above the AskUserQuestion
-            // picker so it can't be missed.
+            // Compaction banner — shown while AgentSession is running
+            // its two-phase compact (summarise then reseed). Blocks
+            // submission via the disabled composer state in a real
+            // implementation, but at minimum tells the user "this tab
+            // is intentionally between contexts, not stuck."
+            if session.isCompacting {
+                HStack {
+                    Spacer(minLength: 0)
+                    compactingBanner
+                        .frame(maxWidth: 760)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 6)
+            }
+            // Auto-resume notice — shown when the last turn errored
+            // while the network was down. The manager re-fires the
+            // prompt the instant NWPathMonitor reports the path is
+            // satisfied again. Reads as "your work isn't lost".
+            if session.awaitingNetworkResume {
+                HStack {
+                    Spacer(minLength: 0)
+                    autoResumeBanner
+                        .frame(maxWidth: 760)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 6)
+            }
+            // Permission prompt — claude wants to perform a sensitive
+            // action (write to a sensitive path, edit settings, etc.)
+            // and is blocked waiting on the user's Allow / Deny. Sits
+            // above AskUserQuestion so security decisions stay above
+            // editorial ones.
             if session.pendingPermission != nil {
                 HStack {
                     Spacer(minLength: 0)
@@ -83,13 +146,29 @@ struct ConversationView: View {
             if session.lastTurnContextTokens > 0 {
                 contextGauge
             }
-            chainGearButton
             if let sid = session.claudeSessionId {
                 Text(String(sid.prefix(8)))
                     .font(AppFont.mono(10))
                     .foregroundStyle(.tertiary)
                     .textSelection(.enabled)
             }
+            kebabMenu
+        }
+        .alert("Rename tab", isPresented: $showingRename) {
+            TextField("Title", text: $renameDraft)
+            Button("Save") {
+                let trimmed = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                session.aiTitle = trimmed
+            }
+            .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Enter a short label for this agent. Persists across launches.")
+        }
+        .popover(isPresented: $showingChainSettings, arrowEdge: .top) {
+            ChainSettingsPopover(session: session,
+                                 onClose: { showingChainSettings = false })
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
@@ -104,19 +183,94 @@ struct ConversationView: View {
         )
     }
 
-    /// Header indicator showing this session's chain wiring at a
-    /// glance — outgoing (chain target set), incoming (chainSourceId set
-    /// because another session fed this one), or hidden otherwise.
-    /// Click opens the chain settings popover.
+    /// Banner above the composer during the two-phase compact.
+    /// Wording explains what's happening so the empty transcript
+    /// reads as intentional, not a crash.
+    private var compactingBanner: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 16, height: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Compacting conversation…")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("Summarising what we know, then spawning a fresh claude session seeded with the brief.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.brandOrange.opacity(0.07))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.brandOrange.opacity(0.30), lineWidth: 1)
+        )
+    }
+
+    /// Slim banner shown above the composer when this session's last
+    /// turn errored out while the network was down. The wording is
+    /// reassuring on purpose — there's nothing the user has to do; the
+    /// retry fires automatically the moment connectivity comes back.
+    private var autoResumeBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.brandOrange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Network's down — will auto-retry when it's back.")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("Your prompt is saved. Nothing to do.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Cancel retry") {
+                session.awaitingNetworkResume = false
+            }
+            .buttonStyle(.borderless)
+            .font(.system(size: 10.5))
+            .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.brandOrange.opacity(0.07))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.brandOrange.opacity(0.30), lineWidth: 1)
+        )
+    }
+
+    /// Header indicator showing this session's chain wiring at a glance
+    /// — either incoming (set when a chain just fed this agent) or
+    /// outgoing (a target is configured). Click opens the chain
+    /// settings popover. Hidden if neither side is wired.
     @ViewBuilder
     private var chainHeaderChip: some View {
-        if session.isCoordinator || session.chainTargetId != nil || session.chainSourceId != nil {
+        if session.chainTargetId != nil || session.chainSourceId != nil || session.isCoordinator {
             Button {
                 showingChainSettings = true
             } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: chainChipIcon)
-                        .font(.system(size: 9.5, weight: .semibold))
+                    if session.isCoordinator {
+                        Image(systemName: "network")
+                            .font(.system(size: 9.5, weight: .semibold))
+                    } else if session.chainTargetId != nil {
+                        Image(systemName: "arrow.turn.up.right")
+                            .font(.system(size: 9.5, weight: .semibold))
+                    } else {
+                        Image(systemName: "arrow.turn.down.right")
+                            .font(.system(size: 9.5, weight: .semibold))
+                    }
                     Text(chainChipLabel)
                         .font(.system(size: 10, weight: .semibold))
                 }
@@ -132,14 +286,10 @@ struct ConversationView: View {
         }
     }
 
-    private var chainChipIcon: String {
-        if session.isCoordinator { return "network" }
-        if session.chainTargetId != nil { return "arrow.turn.up.right" }
-        return "arrow.turn.down.right"
-    }
-
     private var chainChipLabel: String {
-        if session.isCoordinator { return "coordinator" }
+        if session.isCoordinator {
+            return "coordinator"
+        }
         if let targetId = session.chainTargetId,
            let target = manager.sessions.first(where: { $0.id == targetId }) {
             let title = target.aiTitle ?? target.displayName
@@ -153,27 +303,117 @@ struct ConversationView: View {
         return "chained"
     }
 
-    /// Always-visible gear that opens the chain settings popover.
-    /// Quiet when no chain is wired, brand-tinted when it is.
-    private var chainGearButton: some View {
-        Button {
-            showingChainSettings = true
-        } label: {
-            Image(systemName: "link")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(
-                    (session.isCoordinator || session.chainTargetId != nil)
-                        ? Color.brandOrange
-                        : Color.secondary
+    /// Kebab menu — overflow surface for everything that isn't a
+    /// glance-able status chip. Houses session actions (compact, new,
+    /// rename, reveal), pipeline / coordination (formerly its own
+    /// link gear), and a jump to the keyboard-shortcuts sheet.
+    private var kebabMenu: some View {
+        Menu {
+            Button {
+                compactConversation()
+            } label: {
+                Label(
+                    session.isCompacting ? "Compacting…" : "Compact conversation",
+                    systemImage: "rectangle.compress.vertical"
                 )
-                .padding(4)
+            }
+            .disabled(session.isCompacting || session.status == .running)
+            .help("Generate a summary of everything important so far, then spawn a fresh claude session seeded with that summary. The model's working memory is truly reset — context window drops back to near-zero.")
+
+            Button {
+                manager.spawn(cwd: session.cwd)
+            } label: {
+                Label("New session in this project", systemImage: "plus.bubble")
+            }
+
+            Button {
+                renameDraft = session.aiTitle ?? session.displayName
+                showingRename = true
+            } label: {
+                Label("Rename tab…", systemImage: "pencil")
+            }
+
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting(
+                    [URL(fileURLWithPath: session.cwd)]
+                )
+            } label: {
+                Label("Reveal project in Finder", systemImage: "folder")
+            }
+
+            Divider()
+
+            Button {
+                session.bypassPermissions.toggle()
+            } label: {
+                Label(
+                    session.bypassPermissions
+                        ? "Bypass permissions  ✓"
+                        : "Bypass permissions",
+                    systemImage: session.bypassPermissions
+                        ? "shield.lefthalf.filled.slash"
+                        : "shield"
+                )
+            }
+            .help("Spawn claude with --permission-mode bypassPermissions so sensitive-file gates (auto-memory dir, settings.local.json, etc.) get skipped. Off by default. Use to unblock a stuck session; switch back when done. Takes effect on the next turn.")
+
+            Button {
+                bypassDefaultForNewSessions.toggle()
+            } label: {
+                Label(
+                    bypassDefaultForNewSessions
+                        ? "Bypass by default (new sessions)  ✓"
+                        : "Bypass by default (new sessions)",
+                    systemImage: "checkmark.shield"
+                )
+            }
+            .help("When on, every NEW session you spawn from here on starts with the bypass already enabled. Existing sessions keep their current per-session setting. Persists across app launches.")
+
+            Button {
+                showingChainSettings = true
+            } label: {
+                Label(
+                    chainMenuLabel,
+                    systemImage: session.isCoordinator
+                        ? "network"
+                        : (session.chainTargetId != nil
+                            ? "arrow.turn.up.right"
+                            : "link")
+                )
+            }
+
+            Divider()
+
+            Button {
+                NotificationCenter.default.post(name: .maShowShortcuts, object: nil)
+            } label: {
+                Label("Keyboard shortcuts…", systemImage: "command")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
         }
-        .buttonStyle(.plain)
-        .help("Pipeline & coordination")
-        .popover(isPresented: $showingChainSettings, arrowEdge: .top) {
-            ChainSettingsPopover(session: session,
-                                 onClose: { showingChainSettings = false })
-        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Session menu")
+    }
+
+    /// Label for the chain settings menu item — reflects whether
+    /// anything's already wired so the user can tell at a glance.
+    private var chainMenuLabel: String {
+        if session.isCoordinator { return "Pipeline & coordination · coordinator" }
+        if session.chainTargetId != nil { return "Pipeline & coordination · chained" }
+        return "Pipeline & coordination…"
+    }
+
+    /// Real conversation compaction. Hands off to AgentSession.compact()
+    /// which orchestrates the two phases (summarise → reset → reseed).
+    /// The kebab + the in-progress banner both block re-entry while
+    /// isCompacting is true.
+    private func compactConversation() {
+        session.compact()
     }
 
     /// Compact "N% context" pill showing how full claude's context window
@@ -263,7 +503,41 @@ struct ConversationView: View {
                 .padding(.vertical, 20)
                 .frame(maxWidth: 1180, alignment: .leading)
                 .frame(maxWidth: .infinity)
+                // Content size + position tracker. Lives in a background
+                // GeometryReader so it never affects layout. Reports
+                // (a) the LazyVStack's total height (content) and
+                // (b) the negative top-offset relative to the "scroll"
+                // coordinate space, which is the scroll Y. Together
+                // with the outer viewport height we can compute the
+                // exact distance from the trailing edge.
+                .background(
+                    GeometryReader { contentProxy in
+                        Color.clear
+                            .preference(
+                                key: ContentHeightKey.self,
+                                value: contentProxy.size.height
+                            )
+                            .preference(
+                                key: ScrollYKey.self,
+                                value: -contentProxy.frame(in: .named("scroll")).minY
+                            )
+                    }
+                )
             }
+            .coordinateSpace(name: "scroll")
+            // Viewport height — measured on the ScrollView itself.
+            .background(
+                GeometryReader { viewportProxy in
+                    Color.clear
+                        .preference(
+                            key: ViewportHeightKey.self,
+                            value: viewportProxy.size.height
+                        )
+                }
+            )
+            .onPreferenceChange(ContentHeightKey.self) { contentHeight = $0 }
+            .onPreferenceChange(ScrollYKey.self) { scrollY = $0 }
+            .onPreferenceChange(ViewportHeightKey.self) { viewportHeight = $0 }
             // macOS 14+: tell SwiftUI this is a chat-style scroll view.
             // The scroll position naturally tracks the bottom as content
             // grows, and the initial position lands at the bottom — no
@@ -272,11 +546,19 @@ struct ConversationView: View {
             // Belt-and-braces: also call scrollTo on content changes so
             // active streams stay pinned to the latest token even if the
             // anchor logic decides we're "scrolled away" from the bottom.
-            .onChange(of: session.messages.count) { _, _ in scrollToLatest(proxy) }
-            .onChange(of: totalBlocks) { _, _ in scrollToLatest(proxy) }
+            // GATED on `nearBottom` — if the user has scrolled up to
+            // read something, every partial-message event would yank
+            // them back down. With this gate, programmatic scrolling
+            // only fires while they're already at the trailing edge.
+            .onChange(of: session.messages.count) { _, _ in
+                if nearBottom { scrollToLatest(proxy) }
+            }
+            .onChange(of: totalBlocks) { _, _ in
+                if nearBottom { scrollToLatest(proxy) }
+            }
             .onChange(of: session.status) { _, _ in
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                    scrollToLatest(proxy)
+                    if nearBottom { scrollToLatest(proxy) }
                 }
             }
             // Restore-from-snapshot bug: ConversationView is keyed on
@@ -295,6 +577,11 @@ struct ConversationView: View {
         Task { @MainActor in
             for nanos in [50_000_000, 200_000_000, 500_000_000, 1_000_000_000] {
                 try? await Task.sleep(nanoseconds: UInt64(nanos))
+                // If the user has scrolled up while we were waiting for
+                // the next kick, stop chasing the bottom — the whole
+                // point of this loop is to land at the bottom on first
+                // mount, not to fight a deliberate scroll.
+                guard nearBottom else { return }
                 if let lastId = session.messages.last?.id {
                     proxy.scrollTo(lastId, anchor: .bottom)
                 } else {
@@ -451,5 +738,28 @@ struct ConversationView: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Scroll-tracking preference keys
+
+private struct ContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct ScrollYKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct ViewportHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }

@@ -40,6 +40,35 @@ final class AgentManager: ObservableObject {
         // can dispatch into the session list without needing to drag
         // a manager reference around through every call.
         MCPRelay.shared.attach(manager: self)
+        // Auto-resumer: every time the network flips off → on, retry
+        // any session that errored out while we were offline. The
+        // session keeps the prompt that failed in `lastSentPrompt`
+        // and clears it on a clean .result, so we know exactly what
+        // to re-dispatch and we won't double-fire after a real success.
+        NetworkMonitor.shared.cameOnline
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.resumeOfflineFailures() }
+            .store(in: &cancellables)
+    }
+
+    /// Re-dispatch every session that was flagged as awaiting network.
+    /// Belt-and-braces 800 ms delay so the path actually settles before
+    /// we spawn — `cameOnline` can fire while DNS hasn't fully resolved.
+    private func resumeOfflineFailures() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self else { return }
+            for session in self.sessions where session.awaitingNetworkResume {
+                guard let prompt = session.lastSentPrompt else {
+                    session.awaitingNetworkResume = false
+                    continue
+                }
+                // Clear flags first so the auto-resumer doesn't loop if
+                // the retry itself goes offline → online again instantly.
+                session.awaitingNetworkResume = false
+                session.lastError = nil
+                session.send(prompt.text, images: prompt.images)
+            }
+        }
     }
 
     // MARK: - Sessions
@@ -57,8 +86,9 @@ final class AgentManager: ObservableObject {
                 self?.objectWillChange.send()
                 self?.sessionsDirty.send()
             }
-        // Hook the chain coordinator: every clean .result on this
-        // session triggers an evaluation of its `chainTargetId`.
+        // Hook the chain coordinator: every clean .result on this session
+        // triggers an evaluation of its `chainTargetId`. Tracked in a
+        // separate map so we can tear down independently if needed.
         wireChainCoordination(for: session)
         sessions.append(session)
         activeSessionId = session.id
@@ -75,8 +105,8 @@ final class AgentManager: ObservableObject {
         for other in sessions where other.chainTargetId == session.id {
             other.chainTargetId = nil
         }
-        // Drop any lingering coordinator mcp.json so /tmp doesn't fill
-        // up over time.
+        // Drop any lingering coordinator mcp.json for the session
+        // so /tmp/manyagents/configs/ doesn't accumulate stale files.
         CoordinatorConfig.cleanup(for: session)
         sessions.removeAll { $0.id == session.id }
         if activeSessionId == session.id {
@@ -88,6 +118,9 @@ final class AgentManager: ObservableObject {
 
     // MARK: - Chain coordination
 
+    /// Per-session subscription to that session's turn-completed signal.
+    /// When the publisher fires, we evaluate the session's chain target
+    /// and stage or fire a hand-off accordingly.
     private var chainSubscriptions: [UUID: AnyCancellable] = [:]
 
     private func wireChainCoordination(for session: AgentSession) {
@@ -98,9 +131,9 @@ final class AgentManager: ObservableObject {
             }
     }
 
-    /// Called when a session's turn lands without error. Decides
-    /// whether to forward to a chain target — respecting the hop budget,
-    /// the self-loop guard, and the YOLO toggle on the source.
+    /// Called when a session's turn lands without error. Decides whether
+    /// to forward to a chain target (auto vs staged), respecting the hop
+    /// budget and self-loop guard.
     private func handleTurnCompleted(on source: AgentSession, payload: String) {
         guard let targetId = source.chainTargetId,
               targetId != source.id,                          // no self-loop
@@ -111,15 +144,23 @@ final class AgentManager: ObservableObject {
         let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        // The downstream agent's budget is whatever the source had left,
+        // minus one for the hop we're about to take. When this hits 0
+        // the target completes its turn but won't auto-forward further.
         let hopsForTarget = max(0, source.remainingHops - 1)
 
         if source.chainYoloMode {
+            // YOLO: dispatch immediately, no banner.
             dispatchHandOff(from: source,
                             to: target,
                             payload: trimmed,
                             hopsForTarget: hopsForTarget,
                             includeProvenance: true)
         } else {
+            // Stage as a pending hand-off — banner above the composer
+            // asks the user to approve, edit, or dismiss it. Pending
+            // hand-offs replace any previous pending hand-off on the
+            // same target (last one wins).
             target.pendingHandOff = AgentSession.PendingHandOff(
                 sourceAgentId: source.id,
                 sourceProjectName: ProjectNaming.name(forCwd: source.cwd),
@@ -130,12 +171,31 @@ final class AgentManager: ObservableObject {
         }
     }
 
-    // MARK: - Hand-off (manual)
+    /// Actually run a hand-off: tag provenance on the target, decrement
+    /// budget, send the payload as a user message. The "[from X]" prefix
+    /// is added so the receiving agent knows the input is from a peer.
+    private func dispatchHandOff(from source: AgentSession,
+                                 to target: AgentSession,
+                                 payload: String,
+                                 hopsForTarget: Int,
+                                 includeProvenance: Bool) {
+        target.chainSourceId = source.id
+        target.remainingHops = hopsForTarget
+        let text: String
+        if includeProvenance {
+            let label = source.aiTitle?.isEmpty == false
+                ? source.aiTitle!
+                : ProjectNaming.name(forCwd: source.cwd)
+            text = "[Hand-off from \(label)]\n\n\(payload)"
+        } else {
+            text = payload
+        }
+        target.send(text)
+    }
 
-    /// Manual hand-off triggered from the "Send to →" message-row action.
-    /// `autoSend = true` fires immediately; `false` stages a
-    /// pendingHandOff on the target so the target's owner can review
-    /// before the prompt runs.
+    /// Manual hand-off triggered from the "Send to →" message-row action
+    /// or the popover. `autoSend = true` fires immediately; false stages
+    /// a pendingHandOff on the target (lets the user tweak the prompt).
     func handOff(from sourceId: UUID,
                  to targetId: UUID,
                  prompt: String,
@@ -144,9 +204,9 @@ final class AgentManager: ObservableObject {
               let source = sessions.first(where: { $0.id == sourceId }),
               let target = sessions.first(where: { $0.id == targetId })
         else { return }
-        // Manual hand-offs start a fresh chain — give the target a full
-        // budget allowance regardless of what state the source's chain
-        // was in.
+        // Manual hand-offs reset the budget to the source's configured
+        // value — the user is explicitly starting a chain, so they get
+        // a fresh allowance even if the source's chain had run dry.
         let hopsForTarget = max(0, source.chainHopBudget - 1)
         if autoSend {
             dispatchHandOff(from: source,
@@ -169,7 +229,7 @@ final class AgentManager: ObservableObject {
     }
 
     /// Approve the staged pending hand-off on `target`, optionally with
-    /// an edited prompt. Clears the staging state and dispatches.
+    /// edited prompt text. Clears the staging state and dispatches.
     func approvePendingHandOff(on target: AgentSession, editedPrompt: String? = nil) {
         guard let pending = target.pendingHandOff,
               let source = sessions.first(where: { $0.id == pending.sourceAgentId })
@@ -188,28 +248,6 @@ final class AgentManager: ObservableObject {
     /// Dismiss the staged pending hand-off without dispatching it.
     func dismissPendingHandOff(on target: AgentSession) {
         target.pendingHandOff = nil
-    }
-
-    /// Actually run a hand-off: tag the target with a "[Hand-off from X]"
-    /// provenance line, set its chain source / remaining-hops, and
-    /// send the payload as a user turn.
-    private func dispatchHandOff(from source: AgentSession,
-                                 to target: AgentSession,
-                                 payload: String,
-                                 hopsForTarget: Int,
-                                 includeProvenance: Bool) {
-        target.chainSourceId = source.id
-        target.remainingHops = hopsForTarget
-        let text: String
-        if includeProvenance {
-            let label = source.aiTitle?.isEmpty == false
-                ? source.aiTitle!
-                : ProjectNaming.name(forCwd: source.cwd)
-            text = "[Hand-off from \(label)]\n\n\(payload)"
-        } else {
-            text = payload
-        }
-        target.send(text)
     }
 
     // MARK: - Project grouping
@@ -323,9 +361,9 @@ final class AgentManager: ObservableObject {
             let claudeSessionId: String?
             let displayName: String
             let aiTitle: String?
-            // Optional so snapshots written before this field shipped
-            // decode cleanly. Restore picks the session-wide default
-            // when nil (see acceptPendingSnapshot).
+            /// Persisted per-session bypass toggle. Optional in the
+            /// codable shape so old snapshots without this field still
+            /// decode cleanly (defaulting to false on restore).
             let bypassPermissions: Bool?
 
             var id: String { (claudeSessionId ?? "") + cwd }
@@ -393,8 +431,12 @@ final class AgentManager: ObservableObject {
             let session = spawn(cwd: a.cwd, resumeSessionId: a.claudeSessionId)
             session.displayName = a.displayName
             session.aiTitle = a.aiTitle
-            if let saved = a.bypassPermissions {
-                session.applySaved(bypassPermissions: saved)
+            // Persisted per-session bypass toggle (nil on old snapshots
+            // that pre-date the field). Restored AFTER spawn so it
+            // overrides the AgentSession.init default that comes from
+            // the global "default for new sessions" UserDefault.
+            if let bp = a.bypassPermissions {
+                session.applySaved(bypassPermissions: bp)
             }
             if let sid = a.claudeSessionId, !sid.isEmpty {
                 let prior = TranscriptLoader.load(cwd: a.cwd, sessionId: sid)

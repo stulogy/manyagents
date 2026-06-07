@@ -11,8 +11,10 @@ struct ManyAgentsApp: App {
     init() {
         // Same binary, two modes. When `claude` re-invokes us as the
         // MCP subprocess for a coordinator session, the CLI args carry
-        // --mcp-stdio + relay socket + auth token. We skip SwiftUI
-        // entirely and run the JSON-RPC MCP loop until stdin closes.
+        // --mcp-stdio + the relay socket + an auth token; we skip
+        // SwiftUI entirely and run the JSON-RPC MCP loop until stdin
+        // closes. The SwiftUI scene below never materialises in this
+        // mode because we exit() out of run() before App.body fires.
         if let args = MCPStdioServer.parseArgs(CommandLine.arguments) {
             MCPStdioServer.run(args)
         }

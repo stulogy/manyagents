@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Per-session pipeline config — pick a chain target, toggle YOLO mode,
-/// set the hop budget. Phase-3 coordinator mode lands in a later commit.
+/// set the hop budget, and flag the session as a coordinator (which
+/// gives the model an MCP tool for dispatching other agents).
 struct ChainSettingsPopover: View {
     @ObservedObject var session: AgentSession
     @EnvironmentObject var manager: AgentManager
@@ -144,18 +145,16 @@ struct ChainSettingsPopover: View {
                     Image(systemName: "network")
                         .font(.system(size: 10))
                         .foregroundStyle(session.isCoordinator ? Color.brandOrange : .secondary)
-                    Text("Coordinator — give this agent the manyagents MCP")
+                    Text("Coordinator mode (MCP)")
                         .font(.system(size: 12, weight: .medium))
                 }
             }
             .toggleStyle(.switch)
             .controlSize(.small)
-            Text(session.isCoordinator
-                 ? "Claude can call `list_agents` and `dispatch` to talk to its peers. Coordinator role only — don't make every agent a coordinator."
-                 : "Off by default. Flip on for orchestrator-style agents that should drive a fleet of workers.")
+            Text("Gives claude two MCP tools: list_agents() and dispatch_agent(id, prompt). The model can orchestrate other open sessions itself. Takes effect on the next turn.")
                 .font(.system(size: 10.5))
                 .foregroundStyle(.tertiary)
-                .lineLimit(3)
+                .lineLimit(4)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

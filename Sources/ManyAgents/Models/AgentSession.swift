@@ -38,11 +38,23 @@ final class AgentSession: ObservableObject, Identifiable {
     /// estimate context usage based on a wrong assumption.
     @Published var model: String?
 
-    /// Total context window for the active model, derived from `model`.
-    /// Falls back to 200K — the conservative default that matches every
-    /// non-[1m] Claude release. Updates when an init event arrives.
+    /// Canonical context window for the active model, taken from the
+    /// `modelUsage[*].contextWindow` field on the last `.result` event
+    /// when present. Skips the model-id heuristic entirely — claude
+    /// is the source of truth, and this avoids flakiness when the id
+    /// reported on init doesn't carry the `[1m]` suffix even on a 1M
+    /// variant. Falls back to nil for sessions that haven't completed
+    /// a turn yet.
+    @Published var lastTurnContextWindow: Int?
+
+    /// Total context window for the active model. Prefers the canonical
+    /// value from claude's result event; falls back to a model-id-based
+    /// heuristic only when no result has landed yet.
     var contextWindowTokens: Int {
-        Self.contextWindow(for: model)
+        if let canonical = lastTurnContextWindow, canonical > 0 {
+            return canonical
+        }
+        return Self.contextWindow(for: model)
     }
 
     static func contextWindow(for model: String?) -> Int {
@@ -90,6 +102,13 @@ final class AgentSession: ObservableObject, Identifiable {
         let id = UUID()
         let text: String
         let images: [Data]
+        /// When false, dispatch() skips appending this prompt to the
+        /// visible transcript. Used for internal plumbing turns like
+        /// the compaction summariser, where the user shouldn't see
+        /// the meta-instruction sitting in the conversation as if
+        /// they typed it themselves. claude still receives the text;
+        /// only the UI transcript is bypassed.
+        var visible: Bool = true
     }
 
     /// claude called AskUserQuestion mid-turn and is now waiting for our
@@ -106,37 +125,25 @@ final class AgentSession: ObservableObject, Identifiable {
         let multiSelect: Bool
     }
 
-    /// A hand-off staged on this session — fired by another agent (via
-    /// the "Send to → Stage on target" path, or by an auto chain). The
-    /// UI renders a banner above the composer with Edit / Send /
-    /// Dismiss; AgentManager.approve/dismissPendingHandOff resolves it.
-    @Published var pendingHandOff: PendingHandOff?
-
-    struct PendingHandOff: Identifiable, Equatable {
-        let id = UUID()
-        let sourceAgentId: UUID
-        let sourceProjectName: String
-        let sourceTitle: String
-        let payload: String
-        let hopsRemaining: Int
-    }
-
     // MARK: - Chain / pipeline state
 
-    /// When the current turn lands cleanly, hand off the assistant's
-    /// last text to this agent. Set via the chain settings popover.
+    /// If set, this session is wired as the LEFT side of a chain — when
+    /// the current turn lands cleanly (`.result` with no error), the
+    /// session's last assistant text is handed off to the agent with
+    /// this id. Set via the chain settings popover.
     @Published var chainTargetId: UUID?
-    /// True → auto hand-offs fire immediately without confirmation
-    /// ("YOLO mode"). False → the target stages the hand-off as
-    /// `pendingHandOff` for the user to approve.
+    /// If true, chain hand-offs from this agent fire automatically
+    /// without confirmation. "YOLO mode." When false, the target
+    /// stages the hand-off as `pendingHandOff` and waits for the user
+    /// to approve it.
     @Published var chainYoloMode: Bool = false
-    /// Initial hop budget for a chain starting at this session.
-    /// Decrements at every hand-off; once it hits 0 the chain stops
-    /// auto-forwarding. Manual "Send to →" still works.
+    /// Initial hop budget that gets baked into a new chain starting at
+    /// this session — passed onto downstream sessions as `remainingHops`.
+    /// 5 is the default; raising it allows longer pipelines.
     @Published var chainHopBudget: Int = 5
-    /// When true, the session is given the manyagents MCP — claude can
-    /// then call `list_agents` and `dispatch` to talk to its peers. Off
-    /// by default; only flip on for orchestrator-style agents.
+    /// True when this session acts as an orchestrator — claude inside
+    /// it gets an MCP tool that can list and dispatch other agents.
+    /// Toggled on per-session; takes effect on the next turn.
     @Published var isCoordinator: Bool = false
 
     /// When true, claude is spawned with `--permission-mode bypassPermissions`
@@ -186,17 +193,59 @@ final class AgentSession: ObservableObject, Identifiable {
         ))
     }
 
-    /// Agent id that fed THIS session as part of a chain. Used for
-    /// the "from <source>" indicator and loop detection.
+    /// Agent id that fed THIS session as part of a chain. Set on hand-
+    /// off; used for visualisation (header chip) and loop detection.
     @Published var chainSourceId: UUID?
-    /// Hops left for the active chain. Decremented on each hand-off;
-    /// at 0, auto-forward stops.
+    /// Hops left before the chain stops auto-forwarding. Decrements on
+    /// each hand-off; once it hits 0, auto-forward is suppressed and
+    /// the conversation stops (a manual "Send to" still works).
     @Published var remainingHops: Int = 5
 
-    /// Fires once per clean `.result` (no error). The chain coordinator
-    /// in AgentManager subscribes to this to decide whether to auto-
-    /// forward to `chainTargetId`. Carries the assistant's last text.
+    /// A hand-off that landed on this session and is awaiting user
+    /// approval — appears as a banner above the composer with Send /
+    /// Edit / Dismiss. Skipped entirely when the source's chain is in
+    /// YOLO mode (the hand-off is dispatched immediately instead).
+    @Published var pendingHandOff: PendingHandOff?
+
+    struct PendingHandOff: Identifiable, Equatable {
+        let id = UUID()
+        let sourceAgentId: UUID
+        let sourceProjectName: String
+        let sourceTitle: String
+        let payload: String
+        let hopsRemaining: Int
+    }
+
+    /// Fires once whenever a turn resolves cleanly (`.result` without
+    /// error). The manager subscribes to this to drive auto-forwarding
+    /// for chained sessions. Carries the assistant text from the turn
+    /// that just ended (whatever the model said last).
     let turnCompleted = PassthroughSubject<String, Never>()
+
+    /// Live composer text for THIS session. Owned on the session (not
+    /// in ComposerView's @State) so flipping tabs doesn't wipe a half-
+    /// typed draft — each session remembers what its operator was
+    /// mid-keystroke on.
+    @Published var draftText: String = ""
+
+    /// The most-recently dispatched prompt — kept around so the
+    /// auto-resumer can re-send it after network comes back up.
+    /// Cleared on the next successful `.result`.
+    var lastSentPrompt: PendingPrompt?
+
+    /// True when the most recent turn failed while the network was
+    /// down. AgentManager watches NetworkMonitor.isOnline; on
+    /// transition false → true, it re-dispatches `lastSentPrompt` for
+    /// every session with this flag set, then clears the flag.
+    @Published var awaitingNetworkResume: Bool = false
+
+    /// True while a real compaction (kebab "Compact conversation") is
+    /// in flight. Phase 1 sends a summarise turn; phase 2 tears down
+    /// the claude session and seeds a fresh one with the summary. The
+    /// UI shows a banner across both phases so the user knows the tab
+    /// is intentionally between contexts, not idle.
+    @Published var isCompacting: Bool = false
+    private var compactCancellable: AnyCancellable?
 
     /// Set externally before connect() if we should resume a prior session id.
     var resumeSessionId: String?
@@ -213,7 +262,7 @@ final class AgentSession: ObservableObject, Identifiable {
         // Inherit the global default. Users who flipped "Always bypass
         // permissions for new sessions" in the kebab don't have to
         // re-flip every session. Persisted values restored via
-        // applySaved(bypassPermissions:) will overwrite this on resume.
+        // applySavedState() (next) will overwrite this on resume.
         self.bypassPermissions = UserDefaults.standard.bool(
             forKey: Self.bypassDefaultKey
         )
@@ -228,6 +277,108 @@ final class AgentSession: ObservableObject, Identifiable {
     /// by AgentManager when reopening a previously-persisted session.
     func applySaved(bypassPermissions: Bool) {
         self.bypassPermissions = bypassPermissions
+    }
+
+    /// Real conversation compaction — the kebab "Compact conversation"
+    /// action. Two phases:
+    ///   1. Ask the current claude session to produce a self-contained
+    ///      summary of everything important so far. We capture the
+    ///      assistant's last text on `turnCompleted`.
+    ///   2. Drop the claude session id + resume id + transcript + token
+    ///      state, then send the summary as turn 1 of a brand-new
+    ///      claude process (no `--resume`). The fresh process gets its
+    ///      own session_id back via the init event, and the new context
+    ///      window starts essentially empty.
+    /// Visual continuity stays — same tab, same UUID, same project, but
+    /// the model's working memory is genuinely reset.
+    func compact() {
+        guard !isCompacting, status != .running, !bridge.isBusy else { return }
+        isCompacting = true
+        // Subscribe ONCE — turnCompleted is a PassthroughSubject, so we
+        // need a dedicated cancellable rather than reusing the manager's.
+        compactCancellable = turnCompleted
+            .prefix(1)
+            .sink { [weak self] summary in
+                Task { @MainActor [weak self] in
+                    self?.finishCompact(with: summary)
+                }
+            }
+        let summarisePrompt = """
+        Compaction request from the user. Produce ONLY a self-contained \
+        brief that captures everything important from our conversation \
+        so I can resume work without scrollback. Include:
+        - Identity & scope (who, what, where).
+        - Key decisions reached, with the reasoning behind each.
+        - Files / paths / commands we've touched, with their current state.
+        - In-flight work and where we left off (next concrete step).
+        - Open questions, unresolved disagreements, things waiting on other people.
+        - Anything brittle the future-me would otherwise re-discover the hard way.
+        Format it as clean Markdown with section headings. No preamble, \
+        no apology, no "here's a summary" sentence — just the brief itself.
+        """
+        // Hidden from the visible transcript — this is internal
+        // plumbing, not something the user typed.
+        send(summarisePrompt, visible: false)
+    }
+
+    @MainActor
+    private func finishCompact(with summary: String) {
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        // If the summary came back empty or trivially short, bail out
+        // rather than blow away the transcript for nothing. Surface as
+        // an error so the user can retry.
+        guard trimmed.count > 80 else {
+            isCompacting = false
+            lastError = "Compaction failed — model returned an empty summary. Try again."
+            return
+        }
+
+        // Tear down the bridge and clear all session-id pointers so the
+        // next send() spawns a brand-new claude process with no
+        // `--resume` arg. The session_id from the new init event
+        // overwrites `claudeSessionId` automatically.
+        bridge.cancel()
+        bridge.currentSessionId = nil
+        resumeSessionId = nil
+        claudeSessionId = nil
+
+        // Drop transcript + transient state so the UI doesn't carry old
+        // tool-result rows / pending prompts into the fresh context.
+        messages.removeAll()
+        pendingPrompts.removeAll()
+        pendingAskUserQuestion = nil
+        pendingPermission = nil
+        pendingHandOff = nil
+        lastTurnContextTokens = 0
+        lastTurnContextWindow = nil
+        currentTurnOutputTokens = 0
+        inflightTokenEstimate = 0
+        currentPhase = "thinking"
+        lastError = nil
+
+        // Seed the new session with the summary. The model receives
+        // the full brief, but the user shouldn't see a giant
+        // unformatted user-role block — that just looks like noise.
+        // We append a small SYSTEM-role marker so the transcript reads
+        // "conversation compacted" + then the new assistant reply,
+        // instead of "blank → assistant suddenly answering".
+        let seed = """
+        [Compacted from prior conversation. The summary below is the entirety of our shared context — treat anything not in it as if it never happened.]
+
+        \(trimmed)
+
+        Ready to continue.
+        """
+        let charCount = trimmed.count
+        let lineCount = trimmed.components(separatedBy: "\n").count
+        let marker = "Conversation compacted — \(lineCount)-line brief (\(charCount.formatted()) chars) seeded to a fresh claude session."
+        messages.append(
+            Message(role: .system, blocks: [.text(id: UUID(), text: marker)])
+        )
+        isCompacting = false
+        compactCancellable = nil
+        // Hidden — model receives the full brief, transcript stays clean.
+        send(seed, visible: false)
     }
 
     /// Subscribe to bridge events. Idempotent and lightweight — no claude
@@ -246,15 +397,19 @@ final class AgentSession: ObservableObject, Identifiable {
         bridgeCancellable?.cancel()
         bridgeCancellable = nil
         bridge.cancel()
-        pendingPermission = nil
     }
 
     /// Send a user prompt. Spawns a fresh `claude -p` process per turn,
     /// resuming the existing session if we already have one.
     /// User submitted a prompt. Sends immediately if the agent is free;
     /// otherwise queues it for FIFO delivery once the current turn lands.
-    func send(_ text: String, images: [Data] = []) {
-        let prompt = PendingPrompt(text: text, images: images)
+    /// `visible = false` skips the visible transcript append (used by
+    /// the compaction summariser).
+    func send(_ text: String, images: [Data] = [], visible: Bool = true) {
+        // Clear any waiting-for-net state — the user just hit send
+        // again, so they're taking control back from the auto-resumer.
+        awaitingNetworkResume = false
+        let prompt = PendingPrompt(text: text, images: images, visible: visible)
         if status == .running || bridge.isBusy {
             pendingPrompts.append(prompt)
             return
@@ -273,18 +428,20 @@ final class AgentSession: ObservableObject, Identifiable {
             blocks.append(.image(id: UUID(), data: img, mediaType: "image/png"))
         }
         let userMessage = Message(role: .user, blocks: blocks)
-        messages.append(userMessage)
+        if prompt.visible {
+            messages.append(userMessage)
+        }
         status = .running
         currentTurnStartedAt = Date()
         currentTurnOutputTokens = 0
         inflightTokenEstimate = 0
         currentPhase = "thinking"
-        // Sync the bypass-permissions flag to the bridge so the next
-        // spawn picks up the current toggle state.
-        bridge.bypassPermissions = bypassPermissions
-        // Coordinator sessions write an mcp.json on each spawn pointing
-        // at the in-process relay; non-coordinator sessions skip it
-        // entirely so the subprocess overhead only affects orchestrators.
+        // Stash for the auto-resumer. Cleared on the next clean .result.
+        lastSentPrompt = prompt
+        // SAFETY ROLLBACK: only coordinator sessions wire MCP for now.
+        // The "always-on for permission prompts" flow had a runaway
+        // somewhere that filled the conversation pane with an empty
+        // user-styled block. Reverting until that's traced.
         if isCoordinator {
             do {
                 _ = try MCPRelay.shared.startIfNeeded()
@@ -296,6 +453,10 @@ final class AgentSession: ObservableObject, Identifiable {
         } else {
             bridge.mcpConfigPath = nil
         }
+        // Mirror the bypass toggle so the bridge spawns claude with the
+        // right --permission-mode arg. Cheap to write every turn; flips
+        // back to the safe acceptEdits mode the instant the toggle's off.
+        bridge.bypassPermissions = bypassPermissions
         // Kick the bridge off the main thread — process.run() + stdin
         // write was blocking SwiftUI rendering, so the "Thinking…"
         // indicator didn't appear until the spawn returned.
@@ -415,6 +576,9 @@ final class AgentSession: ObservableObject, Identifiable {
                 totalOutputTokens += u.outputTokens
                 currentTurnOutputTokens = u.outputTokens
                 lastTurnContextTokens = u.totalContextTokens
+                if let cw = u.canonicalContextWindow, cw > 0 {
+                    lastTurnContextWindow = cw
+                }
             }
             // End-of-turn: estimate should already be drained by the
             // last message_delta. Clear defensively in case the turn
@@ -425,6 +589,13 @@ final class AgentSession: ObservableObject, Identifiable {
             if isError {
                 status = .error
                 lastError = resultText
+                // If we lost the network, flag for auto-resume rather
+                // than asking the user to retype the prompt. The manager
+                // re-dispatches lastSentPrompt as soon as the path goes
+                // satisfied again.
+                if !NetworkMonitor.shared.isOnline {
+                    awaitingNetworkResume = true
+                }
             } else {
                 // Decide "waiting on you" vs "idle" by looking at the
                 // most recent assistant prose. claude is prompted (via
@@ -435,9 +606,15 @@ final class AgentSession: ObservableObject, Identifiable {
                 status = Self.endedAwaitingUserInput(lastAssistantText)
                     ? .waiting
                     : .idle
-                // Fire turnCompleted for the chain coordinator. Only on
-                // clean results — we don't want to propagate an errored
-                // turn into a downstream agent.
+                // Clean completion: the prompt landed, so the auto-
+                // resumer has nothing to retry.
+                lastSentPrompt = nil
+                awaitingNetworkResume = false
+                // Tell AgentManager a clean turn just landed so the chain
+                // coordinator can decide whether to auto-forward to a
+                // chainTargetId (or stage the hand-off on the target).
+                // Only fires for non-error completions so we don't
+                // propagate a broken state down the pipeline.
                 turnCompleted.send(lastAssistantText)
             }
             currentTurnStartedAt = nil

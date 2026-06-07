@@ -256,6 +256,15 @@ struct MessageView: View {
         return .white
     }
 
+    /// True when this tool_use is the "dispatch a subagent" tool. Claude
+    /// Code used to call it `Task`; recent versions (≥2.1.144) renamed
+    /// to `Agent`. We accept either name, and also fall back to checking
+    /// for the `subagent_type` input key so a future rename still works.
+    static func isSubagentTool(name: String, input: [String: AnyCodable]) -> Bool {
+        if name == "Task" || name == "Agent" { return true }
+        return input["subagent_type"]?.stringValue?.isEmpty == false
+    }
+
     // MARK: - Block rendering
 
     @ViewBuilder
@@ -312,13 +321,20 @@ struct MessageView: View {
             // double-rendering the same prompt.
             if name == "AskUserQuestion" {
                 EmptyView()
-            } else if name == "Task", let children = subagentChildren[toolUseId] {
-                // Task tool_use → render the parent Agent card with all
-                // subagent activity (child tool calls + results) nested
-                // inside a collapsible disclosure. Without this the
-                // subagent's steps spill into the conversation as
-                // disconnected top-level blocks.
-                TaskExpansionCard(input: input, children: children)
+            } else if Self.isSubagentTool(name: name, input: input) {
+                // Subagent dispatch tool — claude code calls this
+                // "Task" historically, "Agent" in recent versions
+                // (≥2.1.144). Either way, the input carries
+                // `subagent_type`, `description`, and `prompt`. Render
+                // the parent card whether or not children are bucketed
+                // yet — we want the "what was dispatched" header to
+                // appear even before the subagent has streamed any
+                // child activity.
+                TaskExpansionCard(
+                    input: input,
+                    children: subagentChildren[toolUseId] ?? [],
+                    sessionId: sessionId
+                )
             } else {
                 ToolUseCard(toolName: name, input: input)
             }
@@ -349,26 +365,61 @@ struct MessageView: View {
         let isError: Bool
         @State private var expanded = false
 
+        // Line budget — short multi-line output passes through; longer
+        // collapses to the first few lines.
         private static let collapsedLineCount = 3
-        private static let alwaysExpandThreshold = 5
+        private static let alwaysExpandLineThreshold = 5
+
+        // Character budget — catches `gh pr view --json` and similar
+        // one-fat-line outputs that the line budget alone misses. Any
+        // content over `alwaysExpandCharThreshold` chars gets clipped
+        // to `collapsedCharBudget` chars regardless of line count.
+        private static let collapsedCharBudget = 400
+        private static let alwaysExpandCharThreshold = 800
 
         private var lines: [String] {
             content.components(separatedBy: "\n")
         }
 
-        private var visibleText: String {
-            if expanded || lines.count <= Self.alwaysExpandThreshold {
-                return content
-            }
-            return lines.prefix(Self.collapsedLineCount).joined(separator: "\n")
+        private var exceedsLineBudget: Bool {
+            lines.count > Self.alwaysExpandLineThreshold
         }
 
-        private var hiddenLineCount: Int {
-            max(0, lines.count - Self.collapsedLineCount)
+        private var exceedsCharBudget: Bool {
+            content.count > Self.alwaysExpandCharThreshold
+        }
+
+        /// Truncate by lines first (preserves vertical structure for
+        /// multi-line dumps), then by chars (catches single-fat-line
+        /// JSON / minified blobs). Either trigger fires the disclosure.
+        private var visibleText: String {
+            if expanded { return content }
+            var trimmed = content
+            if exceedsLineBudget {
+                trimmed = lines.prefix(Self.collapsedLineCount).joined(separator: "\n")
+            }
+            if exceedsCharBudget && trimmed.count > Self.collapsedCharBudget {
+                trimmed = String(trimmed.prefix(Self.collapsedCharBudget))
+            }
+            return trimmed
+        }
+
+        /// Compact "N more lines" / "Nk more chars" label so the user
+        /// knows what's hiding without having to expand to check.
+        private var hiddenSummary: String {
+            let visibleLen = visibleText.count
+            let hiddenChars = max(0, content.count - visibleLen)
+            if exceedsLineBudget {
+                let hiddenLines = max(0, lines.count - Self.collapsedLineCount)
+                return "\(hiddenLines) more line\(hiddenLines == 1 ? "" : "s")"
+            }
+            if hiddenChars == 0 { return "" }
+            if hiddenChars < 1000 { return "\(hiddenChars) more chars" }
+            return String(format: "%.1fk more chars", Double(hiddenChars) / 1000)
         }
 
         private var shouldShowDisclosure: Bool {
-            lines.count > Self.alwaysExpandThreshold && !expanded
+            !expanded && (exceedsLineBudget || exceedsCharBudget)
         }
 
         var body: some View {
@@ -392,7 +443,7 @@ struct MessageView: View {
                             HStack(spacing: 4) {
                                 Image(systemName: "chevron.down")
                                     .font(.system(size: 9, weight: .semibold))
-                                Text("\(hiddenLineCount) more line\(hiddenLineCount == 1 ? "" : "s")")
+                                Text(hiddenSummary)
                                     .font(.system(size: 10.5, weight: .medium))
                             }
                             .foregroundStyle(.tertiary)
@@ -404,7 +455,7 @@ struct MessageView: View {
                         }
                         .buttonStyle(.plain)
                         .help("Show full output")
-                    } else if expanded && lines.count > Self.alwaysExpandThreshold {
+                    } else if expanded && (exceedsLineBudget || exceedsCharBudget) {
                         Button {
                             withAnimation(.easeOut(duration: 0.15)) { expanded = false }
                         } label: {
@@ -447,7 +498,28 @@ struct MessageView: View {
         /// Messages whose blocks all belong to this Task (parent_tool_use_id
         /// matches). Ordered as they arrived from the stream.
         let children: [Message]
-        @State private var expanded = false
+        /// User-controlled expansion. nil = "follow the running auto-
+        /// expand behavior"; non-nil = "user clicked, honor it." Stops
+        /// the card from collapsing under the user's mouse when the
+        /// session flips status mid-streaming.
+        @State private var userExpansion: Bool?
+        /// Auto-expand while session is running so the user can watch
+        /// subagent activity without clicking. Falls back to false
+        /// (collapsed) when the session is idle / waiting / errored.
+        @EnvironmentObject private var manager: AgentManager
+        var sessionId: UUID?
+
+        private var sessionRunning: Bool {
+            guard let sessionId,
+                  let s = manager.sessions.first(where: { $0.id == sessionId })
+            else { return false }
+            return s.status == .running
+        }
+
+        private var expanded: Bool {
+            if let u = userExpansion { return u }
+            return sessionRunning
+        }
 
         /// One-line prompt summary pulled from the standard Task input keys.
         private var prompt: String {
@@ -536,33 +608,78 @@ struct MessageView: View {
 
         private var header: some View {
             Button {
-                withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
+                withAnimation(.easeOut(duration: 0.15)) {
+                    userExpansion = !(userExpansion ?? expanded)
+                }
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.activeHighlight)
-                    Text(subagentName)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.activeHighlight)
-                    Text(prompt)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if !steps.isEmpty {
-                        Text("\(steps.count) step\(steps.count == 1 ? "" : "s")")
-                            .font(.system(size: 10.5, weight: .medium))
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "network")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.activeHighlight)
+                        Text(subagentName)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.activeHighlight)
+                        Text(prompt)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if sessionRunning && !expanded {
+                            // tiny pulse so a running collapsed card
+                            // doesn't read as "done."
+                            Circle()
+                                .fill(Color.activeHighlight)
+                                .frame(width: 5, height: 5)
+                                .opacity(0.9)
+                        }
+                        if !steps.isEmpty {
+                            Text("\(steps.count) step\(steps.count == 1 ? "" : "s")")
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundStyle(.tertiary)
+                        }
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.tertiary)
                     }
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+                    // Inline "what's it doing right now" line — only
+                    // when collapsed, only when there's actually a
+                    // current step worth surfacing. Means a collapsed
+                    // running subagent still telegraphs progress
+                    // ("running Bash: pnpm test") without a click.
+                    if !expanded, let preview = currentStepPreview {
+                        Text(preview)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 20)
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
             }
             .buttonStyle(.plain)
+        }
+
+        /// "running <ToolName>: <one-liner arg>" pulled from the most
+        /// recent tool step, or "<thinking text…>" / "<assistant text…>"
+        /// if the latest step is a thought rather than a tool call.
+        /// nil when there's no step yet (header alone tells the story).
+        private var currentStepPreview: String? {
+            guard let last = steps.last else { return nil }
+            switch last.kind {
+            case .tool(let name, let input, _):
+                let arg = StepRow.firstStringValue(input)
+                if arg.isEmpty { return "running \(name)" }
+                return "\(name): \(arg)"
+            case .text(let t):
+                return "\(t.prefix(80))"
+            case .thinking(let t):
+                return "thinking: \(t.prefix(70))"
+            }
         }
 
         /// One pair of (subagent action, optional result) rendered inside
@@ -646,6 +763,12 @@ struct MessageView: View {
             /// `command`, then `file_path`, then `pattern`, then first
             /// string value found. Long values truncated mid-string.
             private func oneLine(_ input: [String: AnyCodable]) -> String {
+                Self.firstStringValue(input)
+            }
+
+            /// Reusable helper — exposed so the parent card's inline
+            /// "current step" preview can build the same one-liner.
+            static func firstStringValue(_ input: [String: AnyCodable]) -> String {
                 let priority = ["command", "file_path", "path", "pattern", "url", "query", "description"]
                 for key in priority {
                     if let s = input[key]?.stringValue, !s.isEmpty {

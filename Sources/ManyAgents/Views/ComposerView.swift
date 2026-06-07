@@ -8,7 +8,14 @@ import AppKit
 struct ComposerView: View {
     @ObservedObject var session: AgentSession
     @StateObject private var voice = VoiceCapture()
-    @State private var draft: String = ""
+    /// Composer text. Persisted on `AgentSession.draftText` so a half-
+    /// typed prompt survives tab switches — previously this was a
+    /// `@State` local, which got reset every time ConversationView re-
+    /// mounted (keyed on session.id) and lost in-flight typing.
+    private var draft: Binding<String> {
+        Binding(get: { self.session.draftText },
+                set: { self.session.draftText = $0 })
+    }
     @State private var preVoiceDraft: String = ""
     @State private var pendingImages: [Data] = []
     @State private var pendingImageFingerprints: Set<String> = []
@@ -63,7 +70,7 @@ struct ComposerView: View {
         .onAppear { focused = true }
         .onChange(of: voice.liveTranscript) { _, partial in
             guard voice.isRecording else { return }
-            draft = preVoiceDraft.isEmpty
+            session.draftText = preVoiceDraft.isEmpty
                 ? partial
                 : preVoiceDraft + " " + partial
         }
@@ -107,7 +114,7 @@ struct ComposerView: View {
 
     private var editor: some View {
         PasteAwareTextEditor(
-            text: $draft,
+            text: draft,
             height: $editorHeight,
             placeholder: "Message…",
             // Bumped from 13.5 — the composer needs to read at LEAST
@@ -195,7 +202,7 @@ struct ComposerView: View {
     }
 
     private var canSubmit: Bool {
-        let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasText = !session.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         // Allow submission while running — the prompt gets queued and
         // dispatched FIFO when the current turn lands.
         return (hasText || !pendingImages.isEmpty) && !voice.isRecording
@@ -249,10 +256,10 @@ struct ComposerView: View {
 
     private func submit() {
         guard canSubmit else { return }
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = session.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
         let images = pendingImages
         session.send(text, images: images)
-        draft = ""
+        session.draftText = ""
         pendingImages = []
         pendingImageFingerprints = []
     }
@@ -261,13 +268,13 @@ struct ComposerView: View {
         if voice.isRecording {
             voice.toggle()
             if !voice.finalTranscript.isEmpty {
-                draft = preVoiceDraft.isEmpty
+                session.draftText = preVoiceDraft.isEmpty
                     ? voice.finalTranscript
                     : preVoiceDraft + " " + voice.finalTranscript
             }
             focused = true
         } else {
-            preVoiceDraft = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+            preVoiceDraft = session.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
             voice.toggle()
         }
     }

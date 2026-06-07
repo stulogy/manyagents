@@ -238,9 +238,11 @@ private struct AgentTab: View {
                 .frame(width: 7, height: 7)
             // Chain glyph — shown when this tab is part of a wired
             // pipeline (either feeding another agent or being fed by
-            // one). Visual cue only; chain settings live in the
-            // conversation header.
-            if session.isCoordinator || session.chainTargetId != nil || session.chainSourceId != nil {
+            // one) or operating as a coordinator. Visual cue only;
+            // chain settings live in the conversation header.
+            if session.chainTargetId != nil ||
+               session.chainSourceId != nil ||
+               session.isCoordinator {
                 Image(systemName: session.isCoordinator
                       ? "network"
                       : (session.chainTargetId != nil
@@ -249,11 +251,11 @@ private struct AgentTab: View {
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(Color.brandOrange.opacity(0.85))
                     .help(session.isCoordinator
-                          ? "Coordinator — can dispatch to other agents"
+                          ? "Coordinator agent — orchestrates other sessions via MCP"
                           : "Part of an active chain")
             }
-            // Pending-hand-off bell — drawn when this tab has a hand-
-            // off waiting for approval.
+            // Pending-hand-off bell — drawn instead of/alongside chain
+            // glyph when this tab has a hand-off waiting for approval.
             if session.pendingHandOff != nil {
                 Image(systemName: "envelope.badge.fill")
                     .font(.system(size: 9, weight: .semibold))

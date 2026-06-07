@@ -6,18 +6,24 @@ import Network
 /// (ManyAgents launched with --mcp-stdio) connects to this socket, auths
 /// with a per-launch random token, and translates JSON-RPC tool calls
 /// from claude into single-line JSON requests against this relay.
+///
+/// Why a Unix socket and not HTTP: the only client is a sibling
+/// subprocess on the same machine, the request shapes are tiny, and
+/// line-delimited JSON skips every line of HTTP-header parsing.
 @MainActor
 final class MCPRelay {
     static let shared = MCPRelay()
 
     /// Path of the active socket, if running. Coordinator sessions hand
     /// this to the MCP subprocess via env / args so it knows where to
-    /// connect.
+    /// connect. Lives under /tmp/manyagents/relay-<pid>.sock to keep
+    /// system temp dirs tidy on quit.
     private(set) var socketPath: String?
 
     /// Random token rotated each launch — the MCP subprocess includes
     /// it as its first auth message. Without it, anything that finds
-    /// the socket can poke our API.
+    /// the socket can poke our API. Not strong against root, but
+    /// adequate for "no rando script on this Mac can talk to it."
     private(set) var authToken: String?
 
     /// Weak handle to the manager so we don't tangle ownership. Set
@@ -32,7 +38,8 @@ final class MCPRelay {
     // MARK: - Lifecycle
 
     /// Attach the manager whose sessions the relay's operations target.
-    /// Called once by AgentManager.init.
+    /// Called once by AgentManager.init so any session can later just
+    /// call `startIfNeeded()` without needing to plumb a manager ref.
     func attach(manager: AgentManager) {
         self.manager = manager
     }
@@ -46,9 +53,13 @@ final class MCPRelay {
         let tmpDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("manyagents", isDirectory: true)
         try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        // Unix socket paths are capped at sun_path = 104 bytes on macOS.
+        // PID + uuid suffix keeps us well under that even with long temp
+        // prefixes, and rotates per-launch so stale sockets don't clash.
         let path = tmpDir.appendingPathComponent("relay-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.prefix(8)).sock").path
         try? FileManager.default.removeItem(atPath: path)
 
+        // NWEndpoint.unix is iOS/macOS 13+ — fine for our minimum target.
         let endpoint = NWEndpoint.unix(path: path)
         let params = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
         params.requiredLocalEndpoint = endpoint
@@ -93,6 +104,7 @@ final class MCPRelay {
     }
 
     private func randomToken() -> String {
+        // 24 bytes of crypto-random → base64url → 32-ish chars.
         var bytes = [UInt8](repeating: 0, count: 24)
         _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
         let data = Data(bytes)
@@ -214,12 +226,16 @@ final class MCPRelay {
         let sourceIdStr = req["source_session_id"] as? String
         let sourceUUID = sourceIdStr.flatMap(UUID.init(uuidString:))
 
-        // Snapshot how many turns are already queued ahead of ours so
-        // `awaitTurnCompletion(skip:)` doesn't return the wrong reply
-        // when the target was busy.
+        // If the target was busy when this dispatch lands, its queue
+        // already has work ahead of ours. We need to wait for those
+        // turn-completions to drain BEFORE the one that belongs to
+        // our prompt. Snapshot before send() so the count's right.
         let turnsAhead = (target.status == .running ? 1 : 0)
                        + target.pendingPrompts.count
 
+        // Treat the dispatch as a YOLO hand-off from the source (if
+        // provided) — the model already decided to call this tool, so
+        // no banner / approval is appropriate.
         if let src = sourceUUID {
             mgr.handOff(from: src, to: target.id, prompt: prompt, autoSend: true)
         } else {
@@ -230,6 +246,8 @@ final class MCPRelay {
             return ["id": id, "ok": true, "agent_id": targetIdStr, "status": "dispatched"]
         }
 
+        // Skip `turnsAhead` completions, then capture the one
+        // belonging to our prompt.
         let reply = await awaitTurnCompletion(on: target, skip: turnsAhead)
         return [
             "id": id,
@@ -240,9 +258,10 @@ final class MCPRelay {
         ]
     }
 
-    /// Suspends until the (skip+1)-th `.turnCompleted` from `target`.
-    /// Times out at 10 minutes so a hung agent doesn't pin a tool call
-    /// forever.
+    /// Suspends until the (skip+1)-th `.turnCompleted` from `target` —
+    /// i.e. wait through any in-flight + already-queued turns, then
+    /// capture the one our dispatch caused. Times out at 10 minutes
+    /// so a hung agent doesn't pin a coordinator's tool call forever.
     @MainActor
     private func awaitTurnCompletion(on target: AgentSession, skip: Int) async -> String? {
         await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
@@ -256,6 +275,8 @@ final class MCPRelay {
                         cont.resume(returning: text)
                     }
                 }
+            // Belt-and-braces timeout. The cancellable is captured by
+            // the work item so it stays alive until either path fires.
             DispatchQueue.main.asyncAfter(deadline: .now() + 600) {
                 if !resumed {
                     resumed = true
@@ -327,6 +348,8 @@ private final class ClientConnection {
         }
     }
 
+    /// Pull complete LF-terminated JSON lines out of the buffer; one
+    /// request per line, one response per line.
     private func drainLines() {
         while let nl = buffer.firstIndex(of: 0x0A) {
             let lineData = buffer.prefix(upTo: nl)
@@ -343,6 +366,7 @@ private final class ClientConnection {
         }
         let op = obj["op"] as? String ?? ""
 
+        // First message MUST be auth.
         if !authenticated {
             guard op == "auth",
                   let token = obj["token"] as? String,
@@ -357,6 +381,7 @@ private final class ClientConnection {
             return
         }
 
+        // Authenticated requests run on main; reply asynchronously.
         Task { @MainActor [weak self] in
             guard let self else { return }
             let reply = await self.relay?.handle(obj) ?? ["ok": false, "error": "relay gone"]
@@ -367,7 +392,7 @@ private final class ClientConnection {
     private func send(_ dict: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: dict, options: []) else { return }
         var out = data
-        out.append(0x0A)
+        out.append(0x0A)  // newline terminator
         raw.send(content: out, completion: .contentProcessed { _ in })
     }
 }

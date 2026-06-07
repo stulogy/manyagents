@@ -47,13 +47,27 @@ enum BridgeEvent {
         let outputTokens: Int
         let cacheReadInputTokens: Int
         let cacheCreationInputTokens: Int
+        /// Tokens in claude's context at the END of the last forward
+        /// pass of the turn — the gauge-correct number. Differs from
+        /// `inputTokens + cacheReadInputTokens + cacheCreationInputTokens`
+        /// in multi-iteration turns: aggregate cache_read_input_tokens
+        /// double-counts the same prefix across each iteration, so the
+        /// aggregate sum can exceed the context window even when the
+        /// model is only ~20% full. We pull this from the LAST entry
+        /// of `usage.iterations` when present; falls back to aggregate
+        /// for single-iteration turns where they match.
+        let lastIterationContextTokens: Int?
+        /// Model-specific window claude itself reports in modelUsage
+        /// (e.g. "claude-opus-4-7[1m]: contextWindow=1000000"). When
+        /// present this is canonical; the model-id-string heuristic
+        /// in AgentSession.contextWindow is only the fallback.
+        let canonicalContextWindow: Int?
 
-        /// Total tokens currently in claude's context for this turn —
-        /// everything the model had to chew through, whether billed full
-        /// price (input) or cheap (cache read). This is what drives the
-        /// "context %" gauge.
+        /// What we display on the gauge. Last-iteration value when
+        /// available; aggregate as a safe fallback.
         var totalContextTokens: Int {
-            inputTokens + cacheReadInputTokens + cacheCreationInputTokens
+            lastIterationContextTokens
+                ?? (inputTokens + cacheReadInputTokens + cacheCreationInputTokens)
         }
     }
 }
@@ -73,19 +87,6 @@ final class ClaudeBridge {
     /// `sendUserText` calls can resume the same conversation.
     var currentSessionId: String?
 
-    /// Set per-turn by the owning AgentSession when the session is in
-    /// coordinator mode. Path is fed to `claude --mcp-config <path>`
-    /// so the spawned subprocess knows how to expose the MCP tools
-    /// for dispatching sibling agents.
-    var mcpConfigPath: String?
-
-    /// Mirror of `AgentSession.bypassPermissions`. When true, the
-    /// `--permission-mode` arg flips from `acceptEdits` to
-    /// `bypassPermissions`, skipping the sensitive-file gate that
-    /// otherwise blocks writes to ~/.claude/projects/**/memory and
-    /// other guarded paths.
-    var bypassPermissions: Bool = false
-
     private let subject = PassthroughSubject<BridgeEvent, Never>()
     private var activeProcess: Process?
     /// Held open across the lifetime of a turn so we can post tool_result
@@ -93,6 +94,16 @@ final class ClaudeBridge {
     /// Closed in handleResult so claude exits cleanly.
     private var activeStdin: FileHandle?
     private var stdoutBuffer = Data()
+    /// Set per-turn by the owning AgentSession. Always written when an
+    /// MCP relay is up so claude has both the permission-prompt tool
+    /// (always exposed) and the coordinator dispatch tools (when the
+    /// session is in coordinator mode). Passed to `claude --mcp-config <path>`.
+    var mcpConfigPath: String?
+
+    /// Mirror of `AgentSession.bypassPermissions`. When true, the
+    /// `--permission-mode` arg flips from `acceptEdits` to
+    /// `bypassPermissions`, skipping the sensitive-file gate.
+    var bypassPermissions: Bool = false
 
     var events: AnyPublisher<BridgeEvent, Never> { subject.eraseToAnyPublisher() }
     var isBusy: Bool { activeProcess?.isRunning ?? false }
@@ -139,12 +150,12 @@ final class ClaudeBridge {
             // Hand claude the path to a manyagents-generated mcp.json.
             // The MCP server it spawns exposes a permission-prompt
             // tool (so sensitive-path writes surface in our UI) and,
-            // for coordinator sessions, list_agents + dispatch.
+            // for coordinator sessions, list_agents + dispatch_agent.
             args.append(contentsOf: ["--mcp-config", cfg])
             // Route every permission decision through our MCP tool.
-            // The name format follows claude code's `mcp__<server>__<tool>`
-            // convention; "manyagents" must match the top-level key in
-            // mcp.json (see CoordinatorConfig).
+            // Tool name format follows claude code's `mcp__<server>__<tool>`
+            // convention. The server name "manyagents" must match the
+            // top-level key in mcp.json (see CoordinatorConfig).
             args.append(contentsOf: [
                 "--permission-prompt-tool",
                 "mcp__manyagents__permission_prompt"
@@ -479,10 +490,39 @@ final class ClaudeBridge {
                   let outT = u["output_tokens"] as? Int else { return nil }
             let cacheRead = u["cache_read_input_tokens"] as? Int ?? 0
             let cacheCreate = u["cache_creation_input_tokens"] as? Int ?? 0
+            // For multi-iteration turns, the LAST iteration's totals
+            // are what represent the model's actual final context size.
+            // Aggregate cache_read sums across iterations and can
+            // far exceed the context window (sending the gauge to
+            // 100% incorrectly). Take the last iteration when present.
+            var lastIterCtx: Int? = nil
+            if let iters = u["iterations"] as? [[String: Any]], let last = iters.last {
+                let li = (last["input_tokens"] as? Int) ?? 0
+                let lcr = (last["cache_read_input_tokens"] as? Int) ?? 0
+                let lcc = (last["cache_creation_input_tokens"] as? Int) ?? 0
+                lastIterCtx = li + lcr + lcc
+            }
+            // Pull the canonical context window for the active model
+            // from modelUsage. The result event carries it for every
+            // model used during the turn — find the entry matching the
+            // active model (or just take the first non-haiku entry,
+            // which is usually the primary).
+            var canonicalWindow: Int? = nil
+            if let modelUsage = obj["modelUsage"] as? [String: Any] {
+                // Prefer the largest contextWindow reported — there are
+                // usually at most two entries (primary + a haiku helper)
+                // and the larger one is the primary that drives the gauge.
+                let windows: [Int] = modelUsage.compactMap { _, value in
+                    (value as? [String: Any])?["contextWindow"] as? Int
+                }
+                canonicalWindow = windows.max()
+            }
             return .init(inputTokens: inT,
                          outputTokens: outT,
                          cacheReadInputTokens: cacheRead,
-                         cacheCreationInputTokens: cacheCreate)
+                         cacheCreationInputTokens: cacheCreate,
+                         lastIterationContextTokens: lastIterCtx,
+                         canonicalContextWindow: canonicalWindow)
         }
         // Turn is done — close stdin so the claude process exits cleanly.
         try? activeStdin?.close()
