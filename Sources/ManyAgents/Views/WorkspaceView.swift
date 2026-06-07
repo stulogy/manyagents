@@ -236,6 +236,26 @@ private struct AgentTab: View {
             Circle()
                 .fill(dotColor)
                 .frame(width: 7, height: 7)
+            // Chain glyph — shown when this tab is part of a wired
+            // pipeline (either feeding another agent or being fed by
+            // one). Visual cue only; chain settings live in the
+            // conversation header.
+            if session.chainTargetId != nil || session.chainSourceId != nil {
+                Image(systemName: session.chainTargetId != nil
+                      ? "arrow.turn.up.right"
+                      : "arrow.turn.down.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.brandOrange.opacity(0.85))
+                    .help("Part of an active chain")
+            }
+            // Pending-hand-off bell — drawn when this tab has a hand-
+            // off waiting for approval.
+            if session.pendingHandOff != nil {
+                Image(systemName: "envelope.badge.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.brandOrange)
+                    .help("Pending hand-off from another agent")
+            }
             Text(label)
                 .font(.system(size: 12, weight: isActive ? .semibold : .medium))
                 .lineLimit(1)

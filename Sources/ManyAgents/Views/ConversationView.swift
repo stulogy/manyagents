@@ -3,6 +3,8 @@ import SwiftUI
 /// The main right-pane view — header + scrolling conversation + composer.
 struct ConversationView: View {
     @ObservedObject var session: AgentSession
+    @EnvironmentObject var manager: AgentManager
+    @State private var showingChainSettings = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -63,9 +65,11 @@ struct ConversationView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            chainHeaderChip
             if session.lastTurnContextTokens > 0 {
                 contextGauge
             }
+            chainGearButton
             if let sid = session.claudeSessionId {
                 Text(String(sid.prefix(8)))
                     .font(AppFont.mono(10))
@@ -84,6 +88,73 @@ struct ConversationView: View {
                 .frame(height: 1)
                 .frame(maxHeight: .infinity, alignment: .bottom)
         )
+    }
+
+    /// Header indicator showing this session's chain wiring at a
+    /// glance — outgoing (chain target set), incoming (chainSourceId set
+    /// because another session fed this one), or hidden otherwise.
+    /// Click opens the chain settings popover.
+    @ViewBuilder
+    private var chainHeaderChip: some View {
+        if session.chainTargetId != nil || session.chainSourceId != nil {
+            Button {
+                showingChainSettings = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: session.chainTargetId != nil
+                          ? "arrow.turn.up.right"
+                          : "arrow.turn.down.right")
+                        .font(.system(size: 9.5, weight: .semibold))
+                    Text(chainChipLabel)
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .foregroundStyle(Color.brandOrange)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule().fill(Color.brandOrange.opacity(0.12))
+                )
+            }
+            .buttonStyle(.plain)
+            .help("Chain settings")
+        }
+    }
+
+    private var chainChipLabel: String {
+        if let targetId = session.chainTargetId,
+           let target = manager.sessions.first(where: { $0.id == targetId }) {
+            let title = target.aiTitle ?? target.displayName
+            return "→ \(title)"
+        }
+        if let sourceId = session.chainSourceId,
+           let source = manager.sessions.first(where: { $0.id == sourceId }) {
+            let title = source.aiTitle ?? source.displayName
+            return "from \(title)"
+        }
+        return "chained"
+    }
+
+    /// Always-visible gear that opens the chain settings popover.
+    /// Quiet when no chain is wired, brand-tinted when it is.
+    private var chainGearButton: some View {
+        Button {
+            showingChainSettings = true
+        } label: {
+            Image(systemName: "link")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(
+                    session.chainTargetId != nil
+                        ? Color.brandOrange
+                        : Color.secondary
+                )
+                .padding(4)
+        }
+        .buttonStyle(.plain)
+        .help("Pipeline & coordination")
+        .popover(isPresented: $showingChainSettings, arrowEdge: .top) {
+            ChainSettingsPopover(session: session,
+                                 onClose: { showingChainSettings = false })
+        }
     }
 
     /// Compact "N% context" pill showing how full claude's context window

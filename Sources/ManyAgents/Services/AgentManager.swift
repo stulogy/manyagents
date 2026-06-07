@@ -53,6 +53,9 @@ final class AgentManager: ObservableObject {
                 self?.objectWillChange.send()
                 self?.sessionsDirty.send()
             }
+        // Hook the chain coordinator: every clean .result on this
+        // session triggers an evaluation of its `chainTargetId`.
+        wireChainCoordination(for: session)
         sessions.append(session)
         activeSessionId = session.id
         session.connect()
@@ -63,12 +66,61 @@ final class AgentManager: ObservableObject {
     func close(_ session: AgentSession) {
         session.disconnect()
         sessionSubscriptions.removeValue(forKey: session.id)
+        chainSubscriptions.removeValue(forKey: session.id)
+        // Any sessions chained TO this one lose their target.
+        for other in sessions where other.chainTargetId == session.id {
+            other.chainTargetId = nil
+        }
         sessions.removeAll { $0.id == session.id }
         if activeSessionId == session.id {
             let sameProject = sessions.filter { $0.cwd == session.cwd }
             activeSessionId = sameProject.last?.id ?? sessions.last?.id
         }
         persist()
+    }
+
+    // MARK: - Chain coordination
+
+    private var chainSubscriptions: [UUID: AnyCancellable] = [:]
+
+    private func wireChainCoordination(for session: AgentSession) {
+        chainSubscriptions[session.id] = session.turnCompleted
+            .sink { [weak self, weak session] lastAssistantText in
+                guard let self, let session else { return }
+                self.handleTurnCompleted(on: session, payload: lastAssistantText)
+            }
+    }
+
+    /// Called when a session's turn lands without error. Decides
+    /// whether to forward to a chain target — respecting the hop budget,
+    /// the self-loop guard, and the YOLO toggle on the source.
+    private func handleTurnCompleted(on source: AgentSession, payload: String) {
+        guard let targetId = source.chainTargetId,
+              targetId != source.id,                          // no self-loop
+              let target = sessions.first(where: { $0.id == targetId }),
+              source.remainingHops > 0
+        else { return }
+
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let hopsForTarget = max(0, source.remainingHops - 1)
+
+        if source.chainYoloMode {
+            dispatchHandOff(from: source,
+                            to: target,
+                            payload: trimmed,
+                            hopsForTarget: hopsForTarget,
+                            includeProvenance: true)
+        } else {
+            target.pendingHandOff = AgentSession.PendingHandOff(
+                sourceAgentId: source.id,
+                sourceProjectName: ProjectNaming.name(forCwd: source.cwd),
+                sourceTitle: source.aiTitle ?? source.displayName,
+                payload: trimmed,
+                hopsRemaining: hopsForTarget
+            )
+        }
     }
 
     // MARK: - Hand-off (manual)
@@ -85,10 +137,15 @@ final class AgentManager: ObservableObject {
               let source = sessions.first(where: { $0.id == sourceId }),
               let target = sessions.first(where: { $0.id == targetId })
         else { return }
+        // Manual hand-offs start a fresh chain — give the target a full
+        // budget allowance regardless of what state the source's chain
+        // was in.
+        let hopsForTarget = max(0, source.chainHopBudget - 1)
         if autoSend {
             dispatchHandOff(from: source,
                             to: target,
                             payload: prompt,
+                            hopsForTarget: hopsForTarget,
                             includeProvenance: true)
         } else {
             target.pendingHandOff = AgentSession.PendingHandOff(
@@ -96,7 +153,7 @@ final class AgentManager: ObservableObject {
                 sourceProjectName: ProjectNaming.name(forCwd: source.cwd),
                 sourceTitle: source.aiTitle ?? source.displayName,
                 payload: prompt,
-                hopsRemaining: 0
+                hopsRemaining: hopsForTarget
             )
             // Bring the target to the foreground so the banner is
             // visible — the user just initiated this, they want to see it.
@@ -117,6 +174,7 @@ final class AgentManager: ObservableObject {
         dispatchHandOff(from: source,
                         to: target,
                         payload: text,
+                        hopsForTarget: pending.hopsRemaining,
                         includeProvenance: false)
     }
 
@@ -126,11 +184,15 @@ final class AgentManager: ObservableObject {
     }
 
     /// Actually run a hand-off: tag the target with a "[Hand-off from X]"
-    /// provenance line and send the payload as a user turn.
+    /// provenance line, set its chain source / remaining-hops, and
+    /// send the payload as a user turn.
     private func dispatchHandOff(from source: AgentSession,
                                  to target: AgentSession,
                                  payload: String,
+                                 hopsForTarget: Int,
                                  includeProvenance: Bool) {
+        target.chainSourceId = source.id
+        target.remainingHops = hopsForTarget
         let text: String
         if includeProvenance {
             let label = source.aiTitle?.isEmpty == false

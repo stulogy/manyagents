@@ -107,10 +107,9 @@ final class AgentSession: ObservableObject, Identifiable {
     }
 
     /// A hand-off staged on this session — fired by another agent (via
-    /// the "Send to → Stage on target" path, or by an auto chain in a
-    /// later commit). The UI renders a banner above the composer with
-    /// Edit / Send / Dismiss; AgentManager.approve/dismissPendingHandOff
-    /// resolves it.
+    /// the "Send to → Stage on target" path, or by an auto chain). The
+    /// UI renders a banner above the composer with Edit / Send /
+    /// Dismiss; AgentManager.approve/dismissPendingHandOff resolves it.
     @Published var pendingHandOff: PendingHandOff?
 
     struct PendingHandOff: Identifiable, Equatable {
@@ -121,6 +120,35 @@ final class AgentSession: ObservableObject, Identifiable {
         let payload: String
         let hopsRemaining: Int
     }
+
+    // MARK: - Chain / pipeline state
+
+    /// When the current turn lands cleanly, hand off the assistant's
+    /// last text to this agent. Set via the chain settings popover.
+    @Published var chainTargetId: UUID?
+    /// True → auto hand-offs fire immediately without confirmation
+    /// ("YOLO mode"). False → the target stages the hand-off as
+    /// `pendingHandOff` for the user to approve.
+    @Published var chainYoloMode: Bool = false
+    /// Initial hop budget for a chain starting at this session.
+    /// Decrements at every hand-off; once it hits 0 the chain stops
+    /// auto-forwarding. Manual "Send to →" still works.
+    @Published var chainHopBudget: Int = 5
+    /// Reserved for Phase 3 — coordinator mode with MCP. Always false
+    /// in this commit; the popover doesn't expose a toggle yet.
+    @Published var isCoordinator: Bool = false
+
+    /// Agent id that fed THIS session as part of a chain. Used for
+    /// the "from <source>" indicator and loop detection.
+    @Published var chainSourceId: UUID?
+    /// Hops left for the active chain. Decremented on each hand-off;
+    /// at 0, auto-forward stops.
+    @Published var remainingHops: Int = 5
+
+    /// Fires once per clean `.result` (no error). The chain coordinator
+    /// in AgentManager subscribes to this to decide whether to auto-
+    /// forward to `chainTargetId`. Carries the assistant's last text.
+    let turnCompleted = PassthroughSubject<String, Never>()
 
     /// Set externally before connect() if we should resume a prior session id.
     var resumeSessionId: String?
@@ -323,6 +351,10 @@ final class AgentSession: ObservableObject, Identifiable {
                 status = Self.endedAwaitingUserInput(lastAssistantText)
                     ? .waiting
                     : .idle
+                // Fire turnCompleted for the chain coordinator. Only on
+                // clean results — we don't want to propagate an errored
+                // turn into a downstream agent.
+                turnCompleted.send(lastAssistantText)
             }
             currentTurnStartedAt = nil
             // Hand off to the next queued prompt on the next runloop tick so
