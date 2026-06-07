@@ -79,6 +79,13 @@ final class ClaudeBridge {
     /// for dispatching sibling agents.
     var mcpConfigPath: String?
 
+    /// Mirror of `AgentSession.bypassPermissions`. When true, the
+    /// `--permission-mode` arg flips from `acceptEdits` to
+    /// `bypassPermissions`, skipping the sensitive-file gate that
+    /// otherwise blocks writes to ~/.claude/projects/**/memory and
+    /// other guarded paths.
+    var bypassPermissions: Bool = false
+
     private let subject = PassthroughSubject<BridgeEvent, Never>()
     private var activeProcess: Process?
     /// Held open across the lifetime of a turn so we can post tool_result
@@ -120,7 +127,7 @@ final class ClaudeBridge {
             // smoothly during long single-message generations instead of
             // jumping only at message boundaries.
             "--include-partial-messages",
-            "--permission-mode", "acceptEdits",
+            "--permission-mode", bypassPermissions ? "bypassPermissions" : "acceptEdits",
             // Append a small instruction so claude consistently signals
             // "waiting on you" with a recognizable cue.
             "--append-system-prompt", Self.waitingCueSystemPrompt
@@ -129,10 +136,19 @@ final class ClaudeBridge {
             args.append(contentsOf: ["--resume", rid])
         }
         if let cfg = mcpConfigPath {
-            // Coordinator session: hand claude the path to a manyagents-
-            // generated mcp.json that wires up the list_agents +
-            // dispatch_agent tools via a child --mcp-stdio process.
+            // Hand claude the path to a manyagents-generated mcp.json.
+            // The MCP server it spawns exposes a permission-prompt
+            // tool (so sensitive-path writes surface in our UI) and,
+            // for coordinator sessions, list_agents + dispatch.
             args.append(contentsOf: ["--mcp-config", cfg])
+            // Route every permission decision through our MCP tool.
+            // The name format follows claude code's `mcp__<server>__<tool>`
+            // convention; "manyagents" must match the top-level key in
+            // mcp.json (see CoordinatorConfig).
+            args.append(contentsOf: [
+                "--permission-prompt-tool",
+                "mcp__manyagents__permission_prompt"
+            ])
         }
 
         let process = Process()

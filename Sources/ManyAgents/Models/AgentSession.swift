@@ -134,9 +134,57 @@ final class AgentSession: ObservableObject, Identifiable {
     /// Decrements at every hand-off; once it hits 0 the chain stops
     /// auto-forwarding. Manual "Send to →" still works.
     @Published var chainHopBudget: Int = 5
-    /// Reserved for Phase 3 — coordinator mode with MCP. Always false
-    /// in this commit; the popover doesn't expose a toggle yet.
+    /// When true, the session is given the manyagents MCP — claude can
+    /// then call `list_agents` and `dispatch` to talk to its peers. Off
+    /// by default; only flip on for orchestrator-style agents.
     @Published var isCoordinator: Bool = false
+
+    /// When true, claude is spawned with `--permission-mode bypassPermissions`
+    /// instead of `acceptEdits`. Skips the sensitive-file gate that
+    /// normally blocks writes to `~/.claude/projects/*/memory/`,
+    /// `settings.local.json`, etc. Off by default — flip on to unblock
+    /// a session that's stuck behind a hard-coded guard, flip off when
+    /// you're done. Takes effect on the next turn.
+    @Published var bypassPermissions: Bool = false
+
+    /// Permission prompt waiting on the user. Set by MCPRelay when
+    /// claude's permission-prompt-tool fires; cleared when the user
+    /// taps Allow or Deny in the picker. While non-nil, a banner sits
+    /// above the composer with the request details.
+    @Published var pendingPermission: PendingPermission?
+
+    struct PendingPermission: Identifiable, Equatable {
+        let id: String                    // matches MCP relay request id
+        let toolName: String
+        let toolInput: [String: AnyCodable]
+        let createdAt: Date
+
+        static func == (lhs: PendingPermission, rhs: PendingPermission) -> Bool {
+            lhs.id == rhs.id
+        }
+    }
+
+    /// Fires every time the user resolves a pending permission request.
+    /// MCPRelay subscribes to this to unblock its awaiting tool call.
+    let permissionDecisions = PassthroughSubject<PermissionDecision, Never>()
+
+    struct PermissionDecision {
+        let requestId: String
+        let allow: Bool
+        let message: String?
+    }
+
+    /// Resolve a permission prompt. Pops the banner, fires the
+    /// decision out for MCPRelay to forward back to claude.
+    func respondToPermission(allow: Bool, message: String? = nil) {
+        guard let pending = pendingPermission else { return }
+        pendingPermission = nil
+        permissionDecisions.send(PermissionDecision(
+            requestId: pending.id,
+            allow: allow,
+            message: message
+        ))
+    }
 
     /// Agent id that fed THIS session as part of a chain. Used for
     /// the "from <source>" indicator and loop detection.
@@ -162,6 +210,24 @@ final class AgentSession: ObservableObject, Identifiable {
         self.resumeSessionId = resumeSessionId
         self.displayName = ProjectNaming.name(forCwd: cwd)
         self.bridge = ClaudeBridge(cwd: cwd, resumeSessionId: resumeSessionId)
+        // Inherit the global default. Users who flipped "Always bypass
+        // permissions for new sessions" in the kebab don't have to
+        // re-flip every session. Persisted values restored via
+        // applySaved(bypassPermissions:) will overwrite this on resume.
+        self.bypassPermissions = UserDefaults.standard.bool(
+            forKey: Self.bypassDefaultKey
+        )
+    }
+
+    /// UserDefaults key for the global "default bypass permissions on
+    /// new sessions" toggle. Exposed so the kebab menu can read / write
+    /// the same key without hard-coding it twice.
+    static let bypassDefaultKey = "manyagents.bypassPermissions.defaultForNewSessions"
+
+    /// Restore the per-session bypass flag from a saved snapshot. Called
+    /// by AgentManager when reopening a previously-persisted session.
+    func applySaved(bypassPermissions: Bool) {
+        self.bypassPermissions = bypassPermissions
     }
 
     /// Subscribe to bridge events. Idempotent and lightweight — no claude
@@ -180,6 +246,7 @@ final class AgentSession: ObservableObject, Identifiable {
         bridgeCancellable?.cancel()
         bridgeCancellable = nil
         bridge.cancel()
+        pendingPermission = nil
     }
 
     /// Send a user prompt. Spawns a fresh `claude -p` process per turn,
@@ -212,6 +279,9 @@ final class AgentSession: ObservableObject, Identifiable {
         currentTurnOutputTokens = 0
         inflightTokenEstimate = 0
         currentPhase = "thinking"
+        // Sync the bypass-permissions flag to the bridge so the next
+        // spawn picks up the current toggle state.
+        bridge.bypassPermissions = bypassPermissions
         // Coordinator sessions write an mcp.json on each spawn pointing
         // at the in-process relay; non-coordinator sessions skip it
         // entirely so the subprocess overhead only affects orchestrators.

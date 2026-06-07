@@ -323,6 +323,10 @@ final class AgentManager: ObservableObject {
             let claudeSessionId: String?
             let displayName: String
             let aiTitle: String?
+            // Optional so snapshots written before this field shipped
+            // decode cleanly. Restore picks the session-wide default
+            // when nil (see acceptPendingSnapshot).
+            let bypassPermissions: Bool?
 
             var id: String { (claudeSessionId ?? "") + cwd }
         }
@@ -334,7 +338,8 @@ final class AgentManager: ObservableObject {
                 cwd: s.cwd,
                 claudeSessionId: s.claudeSessionId ?? s.resumeSessionId,
                 displayName: s.displayName,
-                aiTitle: s.aiTitle
+                aiTitle: s.aiTitle,
+                bypassPermissions: s.bypassPermissions
             )
         })
         if snap.agents.isEmpty {
@@ -388,6 +393,9 @@ final class AgentManager: ObservableObject {
             let session = spawn(cwd: a.cwd, resumeSessionId: a.claudeSessionId)
             session.displayName = a.displayName
             session.aiTitle = a.aiTitle
+            if let saved = a.bypassPermissions {
+                session.applySaved(bypassPermissions: saved)
+            }
             if let sid = a.claudeSessionId, !sid.isEmpty {
                 let prior = TranscriptLoader.load(cwd: a.cwd, sessionId: sid)
                 if !prior.isEmpty {

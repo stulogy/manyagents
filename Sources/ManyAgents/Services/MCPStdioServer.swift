@@ -240,6 +240,21 @@ private final class ServerState {
     private var toolDescriptors: [[String: Any]] {
         [
             [
+                "name": "permission_prompt",
+                "description": "Surface a sensitive-path or permission-required action to the user for Allow / Deny. Claude Code calls this automatically via --permission-prompt-tool; you generally do not call it directly. Returns the user's decision as JSON.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "tool_name": ["type": "string"],
+                        "input": [
+                            "type": "object",
+                            "additionalProperties": true
+                        ]
+                    ],
+                    "required": ["tool_name", "input"]
+                ]
+            ],
+            [
                 "name": "list_agents",
                 "description": "List every open ManyAgents session — id, project, title, status. Use the returned id when calling dispatch_agent.",
                 "inputSchema": [
@@ -281,6 +296,43 @@ private final class ServerState {
 
         do {
             switch name {
+            case "permission_prompt":
+                let toolName = arguments["tool_name"] as? String ?? "Unknown"
+                let toolInput = arguments["input"] as? [String: Any] ?? [:]
+                let res = try await awaitRelay([
+                    "op": "permission_prompt",
+                    "source_session_id": args.sourceSessionId as Any,
+                    "tool_name": toolName,
+                    "tool_input": toolInput
+                ])
+                if (res["ok"] as? Bool) == true {
+                    let decision = res["decision"] as? String ?? "deny"
+                    // Claude's permission-prompt-tool contract: return
+                    // a JSON-text content with `{behavior, ...}`. allow
+                    // → echo the input back as updatedInput; deny →
+                    // include a user-visible message.
+                    let payload: [String: Any]
+                    if decision == "allow" {
+                        payload = [
+                            "behavior": "allow",
+                            "updatedInput": toolInput
+                        ]
+                    } else {
+                        let msg = (res["message"] as? String) ?? "Denied by user."
+                        payload = [
+                            "behavior": "deny",
+                            "message": msg
+                        ]
+                    }
+                    let data = (try? JSONSerialization.data(withJSONObject: payload, options: []))
+                        ?? Data("{\"behavior\":\"deny\",\"message\":\"encode failed\"}".utf8)
+                    let text = String(data: data, encoding: .utf8) ?? ""
+                    respondToolResult(id: id, text: text)
+                } else {
+                    respondToolResult(id: id,
+                                      text: "{\"behavior\":\"deny\",\"message\":\"\((res["error"] as? String) ?? "relay error")\"}",
+                                      isError: true)
+                }
             case "list_agents":
                 let res = try await awaitRelay(["op": "list_agents",
                                                 "source_session_id": args.sourceSessionId as Any])

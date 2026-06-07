@@ -24,6 +24,20 @@ struct ConversationView: View {
                 .padding(.horizontal, 18)
                 .padding(.bottom, 8)
             }
+            // Permission picker — Allow / Deny banner for sensitive-path
+            // writes that claude routes through the manyagents MCP
+            // permission_prompt tool. Sits above the AskUserQuestion
+            // picker so it can't be missed.
+            if session.pendingPermission != nil {
+                HStack {
+                    Spacer(minLength: 0)
+                    PermissionPromptPicker(session: session)
+                        .frame(maxWidth: 760)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 8)
+            }
             // Mid-turn AskUserQuestion picker — appears between the
             // conversation and the composer when claude is waiting on a
             // user-side option pick. Disappears the instant we send the

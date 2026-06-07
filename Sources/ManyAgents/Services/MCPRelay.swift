@@ -114,8 +114,73 @@ final class MCPRelay {
             return await listAgents(id: id)
         case "dispatch":
             return await dispatch(req: req, id: id)
+        case "permission_prompt":
+            return await permissionPrompt(req: req, id: id)
         default:
             return ["id": id, "ok": false, "error": "unknown op: \(op)"]
+        }
+    }
+
+    // MARK: - Permission prompt
+
+    /// Surface a permission request from claude as a banner on the
+    /// owning session, then suspend until the user taps Allow / Deny.
+    /// Replies allow/deny in the relay protocol; MCPStdioServer
+    /// translates those into the `{behavior: ...}` JSON claude wants.
+    @MainActor
+    private func permissionPrompt(req: [String: Any], id: String) async -> [String: Any] {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        guard let sourceIdStr = req["source_session_id"] as? String,
+              let sourceUUID = UUID(uuidString: sourceIdStr),
+              let session = mgr.sessions.first(where: { $0.id == sourceUUID })
+        else { return ["id": id, "ok": false, "error": "unknown source session"] }
+        let toolName = req["tool_name"] as? String ?? "Unknown"
+        let rawInput = req["tool_input"] as? [String: Any] ?? [:]
+        let typed = rawInput.mapValues(AnyCodable.from)
+
+        // Stash on the session so the UI picker can render it. Resolve
+        // when the user taps Allow / Deny via session.respondToPermission.
+        let pending = AgentSession.PendingPermission(
+            id: id,
+            toolName: toolName,
+            toolInput: typed,
+            createdAt: Date()
+        )
+        session.pendingPermission = pending
+
+        let decision = await awaitPermissionDecision(session: session, requestId: id)
+        return [
+            "id": id,
+            "ok": true,
+            "decision": decision.allow ? "allow" : "deny",
+            "message": decision.message ?? ""
+        ]
+    }
+
+    /// Suspend until the user resolves this permission request via
+    /// `session.respondToPermission(allow:message:)`. Times out at
+    /// 30 minutes — well beyond a sane wait, but bounds the relay.
+    @MainActor
+    private func awaitPermissionDecision(session: AgentSession, requestId: String) async -> (allow: Bool, message: String?) {
+        await withCheckedContinuation { (cont: CheckedContinuation<(Bool, String?), Never>) in
+            var resumed = false
+            let cancellable = session.permissionDecisions
+                .filter { $0.requestId == requestId }
+                .prefix(1)
+                .sink { decision in
+                    if !resumed {
+                        resumed = true
+                        cont.resume(returning: (decision.allow, decision.message))
+                    }
+                }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1800) {
+                if !resumed {
+                    resumed = true
+                    cancellable.cancel()
+                    // Default to deny on timeout — safer than allow.
+                    cont.resume(returning: (false, "Permission prompt timed out."))
+                }
+            }
         }
     }
 
