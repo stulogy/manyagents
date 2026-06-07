@@ -36,6 +36,10 @@ final class AgentManager: ObservableObject {
             .debounce(for: .milliseconds(800), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in self?.persist() }
             .store(in: &cancellables)
+        // Hand the MCP relay a back-pointer so coordinator sessions
+        // can dispatch into the session list without needing to drag
+        // a manager reference around through every call.
+        MCPRelay.shared.attach(manager: self)
     }
 
     // MARK: - Sessions
@@ -71,6 +75,9 @@ final class AgentManager: ObservableObject {
         for other in sessions where other.chainTargetId == session.id {
             other.chainTargetId = nil
         }
+        // Drop any lingering coordinator mcp.json so /tmp doesn't fill
+        // up over time.
+        CoordinatorConfig.cleanup(for: session)
         sessions.removeAll { $0.id == session.id }
         if activeSessionId == session.id {
             let sameProject = sessions.filter { $0.cwd == session.cwd }

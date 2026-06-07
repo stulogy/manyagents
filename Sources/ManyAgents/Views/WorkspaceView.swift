@@ -240,13 +240,17 @@ private struct AgentTab: View {
             // pipeline (either feeding another agent or being fed by
             // one). Visual cue only; chain settings live in the
             // conversation header.
-            if session.chainTargetId != nil || session.chainSourceId != nil {
-                Image(systemName: session.chainTargetId != nil
-                      ? "arrow.turn.up.right"
-                      : "arrow.turn.down.right")
+            if session.isCoordinator || session.chainTargetId != nil || session.chainSourceId != nil {
+                Image(systemName: session.isCoordinator
+                      ? "network"
+                      : (session.chainTargetId != nil
+                         ? "arrow.turn.up.right"
+                         : "arrow.turn.down.right"))
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(Color.brandOrange.opacity(0.85))
-                    .help("Part of an active chain")
+                    .help(session.isCoordinator
+                          ? "Coordinator — can dispatch to other agents"
+                          : "Part of an active chain")
             }
             // Pending-hand-off bell — drawn when this tab has a hand-
             // off waiting for approval.

@@ -96,14 +96,12 @@ struct ConversationView: View {
     /// Click opens the chain settings popover.
     @ViewBuilder
     private var chainHeaderChip: some View {
-        if session.chainTargetId != nil || session.chainSourceId != nil {
+        if session.isCoordinator || session.chainTargetId != nil || session.chainSourceId != nil {
             Button {
                 showingChainSettings = true
             } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: session.chainTargetId != nil
-                          ? "arrow.turn.up.right"
-                          : "arrow.turn.down.right")
+                    Image(systemName: chainChipIcon)
                         .font(.system(size: 9.5, weight: .semibold))
                     Text(chainChipLabel)
                         .font(.system(size: 10, weight: .semibold))
@@ -120,7 +118,14 @@ struct ConversationView: View {
         }
     }
 
+    private var chainChipIcon: String {
+        if session.isCoordinator { return "network" }
+        if session.chainTargetId != nil { return "arrow.turn.up.right" }
+        return "arrow.turn.down.right"
+    }
+
     private var chainChipLabel: String {
+        if session.isCoordinator { return "coordinator" }
         if let targetId = session.chainTargetId,
            let target = manager.sessions.first(where: { $0.id == targetId }) {
             let title = target.aiTitle ?? target.displayName
@@ -143,7 +148,7 @@ struct ConversationView: View {
             Image(systemName: "link")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(
-                    session.chainTargetId != nil
+                    (session.isCoordinator || session.chainTargetId != nil)
                         ? Color.brandOrange
                         : Color.secondary
                 )

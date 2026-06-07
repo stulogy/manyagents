@@ -73,6 +73,12 @@ final class ClaudeBridge {
     /// `sendUserText` calls can resume the same conversation.
     var currentSessionId: String?
 
+    /// Set per-turn by the owning AgentSession when the session is in
+    /// coordinator mode. Path is fed to `claude --mcp-config <path>`
+    /// so the spawned subprocess knows how to expose the MCP tools
+    /// for dispatching sibling agents.
+    var mcpConfigPath: String?
+
     private let subject = PassthroughSubject<BridgeEvent, Never>()
     private var activeProcess: Process?
     /// Held open across the lifetime of a turn so we can post tool_result
@@ -121,6 +127,12 @@ final class ClaudeBridge {
         ]
         if let rid = currentSessionId, !rid.isEmpty {
             args.append(contentsOf: ["--resume", rid])
+        }
+        if let cfg = mcpConfigPath {
+            // Coordinator session: hand claude the path to a manyagents-
+            // generated mcp.json that wires up the list_agents +
+            // dispatch_agent tools via a child --mcp-stdio process.
+            args.append(contentsOf: ["--mcp-config", cfg])
         }
 
         let process = Process()

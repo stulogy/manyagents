@@ -26,6 +26,7 @@ struct ChainSettingsPopover: View {
                 targetSection
                 yoloSection
                 budgetSection
+                coordinatorSection
                 if session.remainingHops < session.chainHopBudget {
                     Divider().opacity(0.3)
                     chainStatusSection
@@ -132,6 +133,29 @@ struct ChainSettingsPopover: View {
                 .font(.system(size: 10.5))
                 .foregroundStyle(.tertiary)
                 .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var coordinatorSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: $session.isCoordinator) {
+                HStack(spacing: 5) {
+                    Image(systemName: "network")
+                        .font(.system(size: 10))
+                        .foregroundStyle(session.isCoordinator ? Color.brandOrange : .secondary)
+                    Text("Coordinator — give this agent the manyagents MCP")
+                        .font(.system(size: 12, weight: .medium))
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            Text(session.isCoordinator
+                 ? "Claude can call `list_agents` and `dispatch` to talk to its peers. Coordinator role only — don't make every agent a coordinator."
+                 : "Off by default. Flip on for orchestrator-style agents that should drive a fleet of workers.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.tertiary)
+                .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

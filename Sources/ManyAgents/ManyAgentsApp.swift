@@ -9,6 +9,13 @@ struct ManyAgentsApp: App {
     @State private var restored = false
 
     init() {
+        // Same binary, two modes. When `claude` re-invokes us as the
+        // MCP subprocess for a coordinator session, the CLI args carry
+        // --mcp-stdio + relay socket + auth token. We skip SwiftUI
+        // entirely and run the JSON-RPC MCP loop until stdin closes.
+        if let args = MCPStdioServer.parseArgs(CommandLine.arguments) {
+            MCPStdioServer.run(args)
+        }
         Self.registerBundledFont()
     }
 

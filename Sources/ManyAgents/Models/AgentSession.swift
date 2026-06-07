@@ -212,6 +212,20 @@ final class AgentSession: ObservableObject, Identifiable {
         currentTurnOutputTokens = 0
         inflightTokenEstimate = 0
         currentPhase = "thinking"
+        // Coordinator sessions write an mcp.json on each spawn pointing
+        // at the in-process relay; non-coordinator sessions skip it
+        // entirely so the subprocess overhead only affects orchestrators.
+        if isCoordinator {
+            do {
+                _ = try MCPRelay.shared.startIfNeeded()
+                bridge.mcpConfigPath = try CoordinatorConfig.write(for: self)
+            } catch {
+                bridge.mcpConfigPath = nil
+                lastError = "Coordinator setup failed: \(error.localizedDescription)"
+            }
+        } else {
+            bridge.mcpConfigPath = nil
+        }
         // Kick the bridge off the main thread — process.run() + stdin
         // write was blocking SwiftUI rendering, so the "Thinking…"
         // indicator didn't appear until the spawn returned.
