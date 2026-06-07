@@ -106,6 +106,22 @@ final class AgentSession: ObservableObject, Identifiable {
         let multiSelect: Bool
     }
 
+    /// A hand-off staged on this session — fired by another agent (via
+    /// the "Send to → Stage on target" path, or by an auto chain in a
+    /// later commit). The UI renders a banner above the composer with
+    /// Edit / Send / Dismiss; AgentManager.approve/dismissPendingHandOff
+    /// resolves it.
+    @Published var pendingHandOff: PendingHandOff?
+
+    struct PendingHandOff: Identifiable, Equatable {
+        let id = UUID()
+        let sourceAgentId: UUID
+        let sourceProjectName: String
+        let sourceTitle: String
+        let payload: String
+        let hopsRemaining: Int
+    }
+
     /// Set externally before connect() if we should resume a prior session id.
     var resumeSessionId: String?
 

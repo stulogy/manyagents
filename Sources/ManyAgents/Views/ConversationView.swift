@@ -8,6 +8,20 @@ struct ConversationView: View {
         VStack(spacing: 0) {
             header
             conversationScroll
+            // Pending hand-off banner — fires when another agent's
+            // "Send to → Stage on target" lands a prompt here. Sits
+            // above the AskUserQuestion picker so a chained question
+            // is still resolvable in the normal flow.
+            if session.pendingHandOff != nil {
+                HStack {
+                    Spacer(minLength: 0)
+                    PendingHandOffBanner(session: session)
+                        .frame(maxWidth: 760)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 8)
+            }
             // Mid-turn AskUserQuestion picker — appears between the
             // conversation and the composer when claude is waiting on a
             // user-side option pick. Disappears the instant we send the
@@ -142,7 +156,8 @@ struct ConversationView: View {
                     ForEach(g.top) { msg in
                         MessageView(message: msg,
                                     subagentChildren: g.children,
-                                    sessionCwd: session.cwd)
+                                    sessionCwd: session.cwd,
+                                    sessionId: session.id)
                             .id(msg.id)
                     }
                     if session.status == .running {

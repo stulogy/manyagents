@@ -17,8 +17,13 @@ struct MessageView: View {
     /// relative file paths in code spans (`notes/foo.html`) can be
     /// resolved against the project root and autolinked.
     var sessionCwd: String? = nil
+    /// Source-session id used by the "Send to →" hand-off button.
+    /// nil disables the action (e.g. transcript-only message views
+    /// where there's no owning session to hand off from).
+    var sessionId: UUID? = nil
     @State private var hover = false
     @State private var copyConfirmed = false
+    @State private var showingHandOff = false
 
     var body: some View {
         // Skip the row entirely when every block is empty/skipped —
@@ -42,10 +47,15 @@ struct MessageView: View {
                 // Always in the tree, just invisible when not hovering —
                 // so it can't disappear out from under the cursor mid-
                 // click. opacity + allowsHitTesting toggle together.
-                copyButton
-                    .opacity(hover ? 1 : 0)
-                    .allowsHitTesting(hover)
-                    .animation(.easeOut(duration: 0.12), value: hover)
+                HStack(spacing: 6) {
+                    if canHandOff {
+                        handOffButton
+                    }
+                    copyButton
+                }
+                .opacity(hover ? 1 : 0)
+                .allowsHitTesting(hover)
+                .animation(.easeOut(duration: 0.12), value: hover)
             }
             // Make the entire row's frame hit-testable for hover, not
             // just the text glyphs. Without this the cursor leaving a
@@ -55,6 +65,64 @@ struct MessageView: View {
             .onHover { h in
                 hover = h
                 if !h { copyConfirmed = false }
+            }
+        }
+    }
+
+    /// Only show the hand-off action on assistant prose — handing off
+    /// user messages or pure-tool-output rows isn't a useful gesture
+    /// (the user can already retype, the tool output isn't reply-shaped).
+    private var canHandOff: Bool {
+        guard sessionId != nil, message.role == .assistant else { return false }
+        return !flatAssistantText.isEmpty
+    }
+
+    /// Plain text payload that the hand-off picker pre-fills with —
+    /// concatenated visible text from this assistant message, stripped
+    /// of thinking blocks and tool noise.
+    private var flatAssistantText: String {
+        var pieces: [String] = []
+        for block in message.blocks {
+            if case .text(_, let t) = block {
+                let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { pieces.append(trimmed) }
+            }
+        }
+        return pieces.joined(separator: "\n\n")
+    }
+
+    @ViewBuilder
+    private var handOffButton: some View {
+        Button {
+            showingHandOff = true
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.turn.up.right")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("Send to")
+                    .font(.system(size: 10.5, weight: .semibold))
+            }
+            .foregroundStyle(Color.brandOrange)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.85))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(Color.brandOrange.opacity(0.35), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .help("Hand off this reply as a prompt to another open agent")
+        .popover(isPresented: $showingHandOff, arrowEdge: .top) {
+            if let sid = sessionId {
+                HandOffSheet(
+                    sourceSessionId: sid,
+                    initialPayload: flatAssistantText,
+                    onClose: { showingHandOff = false }
+                )
             }
         }
     }

@@ -71,6 +71,78 @@ final class AgentManager: ObservableObject {
         persist()
     }
 
+    // MARK: - Hand-off (manual)
+
+    /// Manual hand-off triggered from the "Send to →" message-row action.
+    /// `autoSend = true` fires immediately; `false` stages a
+    /// pendingHandOff on the target so the target's owner can review
+    /// before the prompt runs.
+    func handOff(from sourceId: UUID,
+                 to targetId: UUID,
+                 prompt: String,
+                 autoSend: Bool) {
+        guard sourceId != targetId,
+              let source = sessions.first(where: { $0.id == sourceId }),
+              let target = sessions.first(where: { $0.id == targetId })
+        else { return }
+        if autoSend {
+            dispatchHandOff(from: source,
+                            to: target,
+                            payload: prompt,
+                            includeProvenance: true)
+        } else {
+            target.pendingHandOff = AgentSession.PendingHandOff(
+                sourceAgentId: source.id,
+                sourceProjectName: ProjectNaming.name(forCwd: source.cwd),
+                sourceTitle: source.aiTitle ?? source.displayName,
+                payload: prompt,
+                hopsRemaining: 0
+            )
+            // Bring the target to the foreground so the banner is
+            // visible — the user just initiated this, they want to see it.
+            activeSessionId = target.id
+        }
+    }
+
+    /// Approve the staged pending hand-off on `target`, optionally with
+    /// an edited prompt. Clears the staging state and dispatches.
+    func approvePendingHandOff(on target: AgentSession, editedPrompt: String? = nil) {
+        guard let pending = target.pendingHandOff,
+              let source = sessions.first(where: { $0.id == pending.sourceAgentId })
+        else { target.pendingHandOff = nil; return }
+        let text = (editedPrompt ?? pending.payload)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { target.pendingHandOff = nil; return }
+        target.pendingHandOff = nil
+        dispatchHandOff(from: source,
+                        to: target,
+                        payload: text,
+                        includeProvenance: false)
+    }
+
+    /// Dismiss the staged pending hand-off without dispatching it.
+    func dismissPendingHandOff(on target: AgentSession) {
+        target.pendingHandOff = nil
+    }
+
+    /// Actually run a hand-off: tag the target with a "[Hand-off from X]"
+    /// provenance line and send the payload as a user turn.
+    private func dispatchHandOff(from source: AgentSession,
+                                 to target: AgentSession,
+                                 payload: String,
+                                 includeProvenance: Bool) {
+        let text: String
+        if includeProvenance {
+            let label = source.aiTitle?.isEmpty == false
+                ? source.aiTitle!
+                : ProjectNaming.name(forCwd: source.cwd)
+            text = "[Hand-off from \(label)]\n\n\(payload)"
+        } else {
+            text = payload
+        }
+        target.send(text)
+    }
+
     // MARK: - Project grouping
 
     /// Unique project list derived from session cwds, preserving the order in
