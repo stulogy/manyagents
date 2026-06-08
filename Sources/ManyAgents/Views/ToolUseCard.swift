@@ -50,8 +50,9 @@ struct ToolUseCard: View {
         case "Write": return "doc.badge.plus"
         case "Grep": return "magnifyingglass"
         case "Glob": return "folder.badge.questionmark"
-        case "WebFetch": return "globe"
-        case "Task": return "sparkles"
+        case "WebFetch", "WebSearch": return "globe"
+        case "Task", "Agent": return "sparkles"
+        case "ToolSearch": return "magnifyingglass.circle"
         default: return "wrench.and.screwdriver"
         }
     }
@@ -81,12 +82,24 @@ struct ToolUseCard: View {
             return input["pattern"]?.stringValue ?? ""
         case "WebFetch":
             return input["url"]?.stringValue ?? ""
-        case "Task":
+        case "WebSearch":
+            return input["query"]?.stringValue ?? ""
+        case "Task", "Agent":
             return input["description"]?.stringValue
                 ?? input["prompt"]?.stringValue
                 ?? ""
+        case "ToolSearch":
+            return input["query"]?.stringValue ?? ""
         default:
-            return ""
+            // Unknown tool — surface its first string input rather than
+            // rendering a naked card with just the name. Picks the
+            // most-commonly-meaningful key when present, otherwise just
+            // the first non-empty string value.
+            let priority = ["query", "url", "command", "file_path", "path", "pattern", "prompt", "description"]
+            for k in priority {
+                if let v = input[k]?.stringValue, !v.isEmpty { return v }
+            }
+            return input.values.compactMap { $0.stringValue }.first(where: { !$0.isEmpty }) ?? ""
         }
     }
 }

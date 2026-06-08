@@ -392,8 +392,15 @@ struct MessageView: View {
         /// Truncate by lines first (preserves vertical structure for
         /// multi-line dumps), then by chars (catches single-fat-line
         /// JSON / minified blobs). Either trigger fires the disclosure.
+        ///
+        /// On expand, single-line JSON payloads (e.g. `gh pr view --json`)
+        /// are re-serialised pretty-printed so they're actually readable.
+        /// The collapsed preview stays the dense inline form — more info
+        /// per pixel when you're just glancing at it.
         private var visibleText: String {
-            if expanded { return content }
+            if expanded {
+                return Self.prettyPrintedJSON(content) ?? content
+            }
             var trimmed = content
             if exceedsLineBudget {
                 trimmed = lines.prefix(Self.collapsedLineCount).joined(separator: "\n")
@@ -402,6 +409,20 @@ struct MessageView: View {
                 trimmed = String(trimmed.prefix(Self.collapsedCharBudget))
             }
             return trimmed
+        }
+
+        /// Re-serialise a JSON string with indentation. Returns nil if
+        /// the input isn't JSON, so the caller can fall back to raw.
+        /// Skips multi-MB payloads to avoid stutter on the render path.
+        private static func prettyPrintedJSON(_ s: String) -> String? {
+            guard s.count < 256_000 else { return nil }
+            let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let first = trimmed.first, first == "{" || first == "[" else { return nil }
+            guard let data = trimmed.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data, options: []),
+                  let pretty = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted])
+            else { return nil }
+            return String(data: pretty, encoding: .utf8)
         }
 
         /// Compact "N more lines" / "Nk more chars" label so the user
@@ -422,6 +443,17 @@ struct MessageView: View {
             !expanded && (exceedsLineBudget || exceedsCharBudget)
         }
 
+        /// Fallback when a tool returns no content but did set isError —
+        /// otherwise the row renders as just a `└` with nothing next to
+        /// it, and the failure becomes invisible.
+        private var displayText: String {
+            let v = visibleText
+            if v.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return isError ? "(tool error — no detail returned)" : "(empty)"
+            }
+            return v
+        }
+
         var body: some View {
             HStack(alignment: .top, spacing: 6) {
                 Text("└")
@@ -429,7 +461,7 @@ struct MessageView: View {
                     .foregroundStyle(isError ? .red.opacity(0.75) : .secondary.opacity(0.6))
                     .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(visibleText)
+                    Text(displayText)
                         .font(AppFont.mono(12))
                         .foregroundStyle(isError ? .red : .secondary)
                         .lineSpacing(2)
