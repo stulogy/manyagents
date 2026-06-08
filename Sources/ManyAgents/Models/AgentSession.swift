@@ -104,6 +104,10 @@ final class AgentSession: ObservableObject, Identifiable {
     /// replaced when `.tokenCount` lands with the canonical figure.
     /// Not @Published — internal accounting only.
     private var inflightTokenEstimate: Int = 0
+    /// Set when the user deliberately interrupts the in-flight turn (force-
+    /// send). Lets `.processExited` treat the kill as a clean stop rather
+    /// than an error, and unblocks the queue drain.
+    private var intentionalInterrupt = false
     /// What claude is doing right now — "thinking", "writing", "running Bash",
     /// etc. Derived from the most recent stream event.
     @Published var currentPhase: String = "thinking"
@@ -502,6 +506,7 @@ final class AgentSession: ObservableObject, Identifiable {
         if status == .running || bridge.isBusy {
             // Terminate the running process; .processExited triggers
             // drainQueueIfReady which will pop our prompt from the front.
+            intentionalInterrupt = true
             bridge.cancel()
         } else {
             // Idle path — just dispatch directly.
@@ -650,14 +655,24 @@ final class AgentSession: ObservableObject, Identifiable {
             )
             currentPhase = "waiting on you"
         case .processExited(let exitCode):
-            // Each turn is its own process. A non-zero exit during a turn
-            // (status == .running) is an error; an exit after a successful
-            // result has already landed the .waiting status, so just keep it.
-            if exitCode != 0 && status == .running {
-                status = .error
-                lastError = "claude exited (\(exitCode))"
+            // Each turn is its own process. If status is STILL .running here,
+            // no .result landed — the turn was force-cancelled or the process
+            // died. Move OFF .running regardless of exit code; otherwise
+            // drainQueueIfReady (guarded on `status != .running`) can never
+            // fire the queued/forced prompt — the force-send "nothing happens"
+            // bug. A successful turn already set .waiting via .result, so the
+            // `status == .running` check leaves it untouched.
+            if status == .running {
+                if intentionalInterrupt || exitCode == 0 {
+                    status = .idle          // clean stop (force-send / normal exit)
+                } else {
+                    status = .error
+                    lastError = "claude exited (\(exitCode))"
+                }
             }
-            // Whether the previous turn succeeded or errored, try to drain.
+            intentionalInterrupt = false
+            // Whether the previous turn succeeded, errored, or was cancelled,
+            // drain the next queued prompt.
             DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
         case .systemError(let message):
             status = .error
