@@ -51,7 +51,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     /// An agent just stopped working. Decides — per the user's settings —
     /// whether to surface a banner and/or play a sound.
-    func agentFinished(projectName: String, title: String, status: AgentStatus) {
+    func agentFinished(sessionId: UUID, projectName: String, title: String, status: AgentStatus) {
         let d = UserDefaults.standard
         guard d.bool(forKey: Keys.enabled) else { return }
 
@@ -80,6 +80,9 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
             let content = UNMutableNotificationContent()
             content.title = "\(projectName) · \(title)"
             content.body = body
+            // Carry the session id so clicking the banner can jump straight
+            // to that agent's conversation.
+            content.userInfo = ["sessionId": sessionId.uuidString]
             // Sound is handled by NSSound above; leave the banner silent so
             // we don't double up.
             let request = UNNotificationRequest(
@@ -104,5 +107,24 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner])
+    }
+
+    /// User clicked the banner — bring the app forward and focus the agent it
+    /// was about. AgentManager listens for `.maFocusSession`.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let info = response.notification.request.content.userInfo
+        if let raw = info["sessionId"] as? String, let id = UUID(uuidString: raw) {
+            DispatchQueue.main.async {
+                NSApp.activate(ignoringOtherApps: true)
+                NotificationCenter.default.post(
+                    name: .maFocusSession, object: nil, userInfo: ["sessionId": id]
+                )
+            }
+        }
+        completionHandler()
     }
 }

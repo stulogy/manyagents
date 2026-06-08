@@ -158,4 +158,5 @@ extension Notification.Name {
     static let maToggleViewMode   = Notification.Name("ManyAgents.toggleViewMode")
     static let maShowShortcuts    = Notification.Name("ManyAgents.showShortcuts")
     static let maFind             = Notification.Name("ManyAgents.find")
+    static let maFocusSession     = Notification.Name("ManyAgents.focusSession")
 }

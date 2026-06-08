@@ -94,6 +94,18 @@ final class AgentManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.resumeOfflineFailures() }
             .store(in: &cancellables)
+
+        // Clicking a "agent finished" notification focuses that agent.
+        NotificationCenter.default.publisher(for: .maFocusSession)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] note in
+                guard let self,
+                      let id = note.userInfo?["sessionId"] as? UUID,
+                      self.sessions.contains(where: { $0.id == id })
+                else { return }
+                self.activeSessionId = id
+            }
+            .store(in: &cancellables)
     }
 
     /// Re-dispatch every session that was flagged as awaiting network.
@@ -187,6 +199,7 @@ final class AgentManager: ObservableObject {
             .sink { [weak session] status in
                 guard let session else { return }
                 NotificationService.shared.agentFinished(
+                    sessionId: session.id,
                     projectName: ProjectNaming.name(forCwd: session.cwd),
                     title: session.aiTitle ?? session.displayName,
                     status: status
@@ -424,6 +437,10 @@ final class AgentManager: ObservableObject {
             let claudeSessionId: String?
             let displayName: String
             let aiTitle: String?
+            /// Queued-but-not-yet-sent prompts, persisted so a relaunch or
+            /// crash never loses a staged stack. Optional for back-compat
+            /// with snapshots written before this field existed.
+            let pendingPrompts: [AgentSession.PendingPrompt]?
 
             var id: String { (claudeSessionId ?? "") + cwd }
         }
@@ -435,7 +452,8 @@ final class AgentManager: ObservableObject {
                 cwd: s.cwd,
                 claudeSessionId: s.claudeSessionId ?? s.resumeSessionId,
                 displayName: s.displayName,
-                aiTitle: s.aiTitle
+                aiTitle: s.aiTitle,
+                pendingPrompts: s.pendingPrompts.isEmpty ? nil : s.pendingPrompts
             )
         })
         if snap.agents.isEmpty {
@@ -489,6 +507,10 @@ final class AgentManager: ObservableObject {
             let session = spawn(cwd: a.cwd, resumeSessionId: a.claudeSessionId)
             session.displayName = a.displayName
             session.aiTitle = a.aiTitle
+            // Restore the queued stack as STAGED items (visible in the strip,
+            // not auto-fired) — so reopening can't trigger a surprise burst;
+            // they drain normally on the next turn. Never lose staged work.
+            session.pendingPrompts = a.pendingPrompts ?? []
             if let sid = a.claudeSessionId, !sid.isEmpty {
                 let prior = TranscriptLoader.load(cwd: a.cwd, sessionId: sid)
                 if !prior.isEmpty {

@@ -112,7 +112,7 @@ final class AgentSession: ObservableObject, Identifiable {
     /// the queued-messages UX in the Claude Code TUI.
     @Published var pendingPrompts: [PendingPrompt] = []
 
-    struct PendingPrompt: Identifiable, Equatable {
+    struct PendingPrompt: Identifiable, Equatable, Codable {
         let id = UUID()
         let text: String
         let images: [Data]
