@@ -155,19 +155,15 @@ final class ClaudeBridge {
             args.append(contentsOf: ["--resume", rid])
         }
         if let cfg = mcpConfigPath {
-            // Hand claude the path to a manyagents-generated mcp.json.
-            // The MCP server it spawns exposes a permission-prompt
-            // tool (so sensitive-path writes surface in our UI) and,
-            // for coordinator sessions, list_agents + dispatch_agent.
+            // Hand claude the manyagents-generated mcp.json — it exposes
+            // list_agents + dispatch_agent for coordinator/orchestrator mode.
             args.append(contentsOf: ["--mcp-config", cfg])
-            // Route every permission decision through our MCP tool.
-            // Tool name format follows claude code's `mcp__<server>__<tool>`
-            // convention. The server name "manyagents" must match the
-            // top-level key in mcp.json (see CoordinatorConfig).
-            args.append(contentsOf: [
-                "--permission-prompt-tool",
-                "mcp__manyagents__permission_prompt"
-            ])
+            // NB: deliberately NO --permission-prompt-tool. We always run
+            // --permission-mode bypassPermissions, so there are no permission
+            // prompts to route. Passing the prompt-tool alongside bypass is
+            // contradictory and made claude try to call a permission tool it
+            // couldn't see ("mcp__manyagents__permission_prompt not found"),
+            // which broke the orchestrator's tool loading.
         }
 
         let process = Process()
