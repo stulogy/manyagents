@@ -13,6 +13,9 @@ struct MarkdownText: View {
     /// `notes/quiz_mockup.html`) so we can autolink them. nil → only
     /// absolute paths and http(s) URLs get autolinked.
     var sessionCwd: String? = nil
+    /// Active ⌘F query. When non-empty, matching substrings get a highlight
+    /// background across every inline run (and inside code blocks).
+    var highlight: String = ""
 
     private var blocks: [MdBlock] { MdBlock.parse(raw) }
 
@@ -93,7 +96,7 @@ struct MarkdownText: View {
                         .frame(maxHeight: .infinity, alignment: .bottom)
                 )
                 ScrollView(.horizontal, showsIndicators: false) {
-                    Text(code)
+                    Text(SearchHighlight.attributed(code, query: highlight))
                         .font(.system(size: 12.5, design: .monospaced))
                         .foregroundStyle(.primary)
                         .textSelection(.enabled)
@@ -264,6 +267,8 @@ struct MarkdownText: View {
                 str[run.range].underlineStyle = .single
             }
         }
+        // Find highlight goes on last so it sits over code/link styling.
+        SearchHighlight.apply(highlight, to: &str)
         return str
     }
 }

@@ -5,14 +5,19 @@ struct ConversationView: View {
     @ObservedObject var session: AgentSession
     @EnvironmentObject var manager: AgentManager
     @State private var showingChainSettings = false
+    @State private var showingOrchestrator = false
     @State private var showingRename = false
     @State private var renameDraft = ""
-    /// Global default for the "Bypass permissions" toggle — applied to
-    /// every newly-spawned session. Stored in UserDefaults under the
-    /// same key AgentSession reads at init time, so flipping it here
-    /// inherits cleanly into future sessions without extra plumbing.
-    @AppStorage("manyagents.bypassPermissions.defaultForNewSessions")
-    private var bypassDefaultForNewSessions: Bool = false
+    // In-conversation find (⌘F).
+    @State private var findVisible = false
+    @State private var findQuery = ""
+    @FocusState private var findFocused: Bool
+    /// Ids of messages whose text matches the query, in conversation order.
+    @State private var matchIds: [UUID] = []
+    /// Index into `matchIds` for the match currently framed + scrolled to.
+    @State private var currentMatch = 0
+    /// Bumped to ask the ScrollViewReader to scroll to the current match.
+    @State private var findScrollTick = 0
     /// Scroll-tracking metrics. Driven by GeometryReader-derived
     /// preferences on each scroll/layout pass. We compute "near the
     /// bottom" as (content - scrollY - viewport < tolerance) — a real
@@ -38,10 +43,120 @@ struct ConversationView: View {
         return distanceFromBottom <= Self.nearBottomTolerance
     }
 
+    // MARK: - Find (⌘F)
+
+    private var findBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+            TextField("Find in conversation", text: $findQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12.5))
+                .focused($findFocused)
+                .onSubmit { advanceMatch(forward: true) }
+                .frame(maxWidth: .infinity)
+            Text(matchLabel)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(matchIds.isEmpty && !trimmedQuery.isEmpty ? .red : .secondary)
+                .frame(minWidth: 46, alignment: .trailing)
+            Divider().frame(height: 14)
+            Button { advanceMatch(forward: false) } label: {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(.plain).disabled(matchIds.isEmpty)
+            .help("Previous match (⇧⏎)")
+            Button { advanceMatch(forward: true) } label: {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.plain).disabled(matchIds.isEmpty)
+            .help("Next match (⏎)")
+            Button { closeFind() } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .help("Close (Esc)")
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(width: 360)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .windowBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.primary.opacity(0.15), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.30), radius: 12, y: 4)
+        .padding(.top, 12)
+        .padding(.trailing, 16)
+        .zIndex(1)
+    }
+
+    private var trimmedQuery: String {
+        findQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var matchLabel: String {
+        if trimmedQuery.isEmpty { return "" }
+        if matchIds.isEmpty { return "0/0" }
+        return "\(currentMatch + 1)/\(matchIds.count)"
+    }
+
+    private func openFind() {
+        findVisible = true
+        recomputeMatches()
+        DispatchQueue.main.async { findFocused = true }
+    }
+
+    private func closeFind() {
+        findVisible = false
+        findFocused = false
+        findQuery = ""
+        matchIds = []
+        currentMatch = 0
+    }
+
+    private func recomputeMatches() {
+        let q = trimmedQuery
+        guard !q.isEmpty else { matchIds = []; currentMatch = 0; return }
+        let ids = session.messages
+            .filter { $0.flatText.range(of: q, options: .caseInsensitive) != nil }
+            .map(\.id)
+        matchIds = ids
+        if ids.isEmpty {
+            currentMatch = 0
+        } else {
+            currentMatch = min(currentMatch, ids.count - 1)
+            findScrollTick += 1
+        }
+    }
+
+    private func advanceMatch(forward: Bool) {
+        guard !matchIds.isEmpty else { return }
+        currentMatch = (currentMatch + (forward ? 1 : -1) + matchIds.count) % matchIds.count
+        findScrollTick += 1
+    }
+
+    private var highlightQuery: String { findVisible ? trimmedQuery : "" }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             conversationScroll
+                .overlay(alignment: .topTrailing) {
+                    if findVisible { findBar }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .maFind)) { _ in
+                    if findVisible { findFocused = true } else { openFind() }
+                }
+                .onChange(of: findQuery) { _, _ in recomputeMatches() }
+                .onChange(of: session.messages.count) { _, _ in
+                    if findVisible { recomputeMatches() }
+                }
             // Pending hand-off banner — appears when another agent's
             // chain (or a manual "Send to → Stage on target") staged
             // a prompt on this session. Sits ABOVE the
@@ -170,6 +285,10 @@ struct ConversationView: View {
             ChainSettingsPopover(session: session,
                                  onClose: { showingChainSettings = false })
         }
+        .popover(isPresented: $showingOrchestrator, arrowEdge: .top) {
+            OrchestratorPanel(session: session,
+                              onClose: { showingOrchestrator = false })
+        }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
         .background(
@@ -258,11 +377,15 @@ struct ConversationView: View {
     private var chainHeaderChip: some View {
         if session.chainTargetId != nil || session.chainSourceId != nil || session.isCoordinator {
             Button {
-                showingChainSettings = true
+                // The chip opens whichever surface its state belongs to:
+                // orchestrator state → the Orchestrator panel, chain wiring
+                // → the Hand-off popover.
+                if session.isCoordinator { showingOrchestrator = true }
+                else { showingChainSettings = true }
             } label: {
                 HStack(spacing: 4) {
                     if session.isCoordinator {
-                        Image(systemName: "network")
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
                             .font(.system(size: 9.5, weight: .semibold))
                     } else if session.chainTargetId != nil {
                         Image(systemName: "arrow.turn.up.right")
@@ -282,13 +405,13 @@ struct ConversationView: View {
                 )
             }
             .buttonStyle(.plain)
-            .help("Chain settings")
+            .help(session.isCoordinator ? "Orchestrator" : "Hand-off")
         }
     }
 
     private var chainChipLabel: String {
         if session.isCoordinator {
-            return "coordinator"
+            return "orchestrator"
         }
         if let targetId = session.chainTargetId,
            let target = manager.sessions.first(where: { $0.id == targetId }) {
@@ -344,41 +467,21 @@ struct ConversationView: View {
             Divider()
 
             Button {
-                session.bypassPermissions.toggle()
-            } label: {
-                Label(
-                    session.bypassPermissions
-                        ? "Bypass permissions  ✓"
-                        : "Bypass permissions",
-                    systemImage: session.bypassPermissions
-                        ? "shield.lefthalf.filled.slash"
-                        : "shield"
-                )
-            }
-            .help("Spawn claude with --permission-mode bypassPermissions so sensitive-file gates (auto-memory dir, settings.local.json, etc.) get skipped. Off by default. Use to unblock a stuck session; switch back when done. Takes effect on the next turn.")
-
-            Button {
-                bypassDefaultForNewSessions.toggle()
-            } label: {
-                Label(
-                    bypassDefaultForNewSessions
-                        ? "Bypass by default (new sessions)  ✓"
-                        : "Bypass by default (new sessions)",
-                    systemImage: "checkmark.shield"
-                )
-            }
-            .help("When on, every NEW session you spawn from here on starts with the bypass already enabled. Existing sessions keep their current per-session setting. Persists across app launches.")
-
-            Button {
                 showingChainSettings = true
             } label: {
                 Label(
-                    chainMenuLabel,
-                    systemImage: session.isCoordinator
-                        ? "network"
-                        : (session.chainTargetId != nil
-                            ? "arrow.turn.up.right"
-                            : "link")
+                    session.chainTargetId != nil ? "Hand-off · on" : "Hand-off…",
+                    systemImage: session.chainTargetId != nil
+                        ? "arrow.turn.up.right" : "arrow.turn.down.right"
+                )
+            }
+
+            Button {
+                showingOrchestrator = true
+            } label: {
+                Label(
+                    session.isCoordinator ? "Orchestrator · on" : "Orchestrator…",
+                    systemImage: "point.3.connected.trianglepath.dotted"
                 )
             }
 
@@ -398,14 +501,6 @@ struct ConversationView: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Session menu")
-    }
-
-    /// Label for the chain settings menu item — reflects whether
-    /// anything's already wired so the user can tell at a glance.
-    private var chainMenuLabel: String {
-        if session.isCoordinator { return "Pipeline & coordination · coordinator" }
-        if session.chainTargetId != nil { return "Pipeline & coordination · chained" }
-        return "Pipeline & coordination…"
     }
 
     /// Real conversation compaction. Hands off to AgentSession.compact()
@@ -487,7 +582,11 @@ struct ConversationView: View {
                         MessageView(message: msg,
                                     subagentChildren: g.children,
                                     sessionCwd: session.cwd,
-                                    sessionId: session.id)
+                                    sessionId: session.id,
+                                    highlight: highlightQuery,
+                                    isCurrentMatch: findVisible
+                                        && currentMatch < matchIds.count
+                                        && matchIds[currentMatch] == msg.id)
                             .id(msg.id)
                     }
                     if session.status == .running {
@@ -559,6 +658,13 @@ struct ConversationView: View {
             .onChange(of: session.status) { _, _ in
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
                     if nearBottom { scrollToLatest(proxy) }
+                }
+            }
+            // Find: scroll the current match to the middle of the viewport.
+            .onChange(of: findScrollTick) { _, _ in
+                guard currentMatch < matchIds.count else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(matchIds[currentMatch], anchor: .center)
                 }
             }
             // Restore-from-snapshot bug: ConversationView is keyed on

@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Per-session pipeline config — pick a chain target, toggle YOLO mode,
-/// set the hop budget, and flag the session as a coordinator (which
-/// gives the model an MCP tool for dispatching other agents).
+/// Per-session hand-off config — pick which agent this one's reply flows to
+/// when it finishes, whether it sends automatically, and a safety limit on
+/// chain length. Orchestrator/coordinator mode lives in its own panel
+/// (`OrchestratorPanel`), kept separate so the two ideas don't blur together.
 struct ChainSettingsPopover: View {
     @ObservedObject var session: AgentSession
     @EnvironmentObject var manager: AgentManager
@@ -27,7 +28,6 @@ struct ChainSettingsPopover: View {
                 targetSection
                 yoloSection
                 budgetSection
-                coordinatorSection
                 if session.remainingHops < session.chainHopBudget {
                     Divider().opacity(0.3)
                     chainStatusSection
@@ -42,10 +42,10 @@ struct ChainSettingsPopover: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: "link")
+            Image(systemName: "arrow.turn.down.right")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Color.brandOrange)
-            Text("Pipeline & coordination")
+            Text("Hand-off")
                 .font(.system(size: 12.5, weight: .semibold))
             Spacer()
             Button {
@@ -64,7 +64,7 @@ struct ChainSettingsPopover: View {
 
     private var targetSection: some View {
         VStack(alignment: .leading, spacing: 5) {
-            sectionLabel("Auto-hand-off target")
+            sectionLabel("Hand off to")
             Picker("Target", selection: targetBinding) {
                 Text("None — no auto hand-off").tag(UUID?.none)
                 ForEach(candidates) { c in
@@ -99,7 +99,7 @@ struct ChainSettingsPopover: View {
                     Image(systemName: "bolt.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(session.chainYoloMode ? Color.brandOrange : .secondary)
-                    Text("YOLO — auto-send without confirmation")
+                    Text("Send automatically")
                         .font(.system(size: 12, weight: .medium))
                 }
             }
@@ -119,9 +119,9 @@ struct ChainSettingsPopover: View {
     private var budgetSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                sectionLabel("Hop budget")
+                sectionLabel("Stop after")
                 Spacer()
-                Text("\(session.chainHopBudget)")
+                Text("\(session.chainHopBudget) hand-offs")
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
@@ -130,7 +130,7 @@ struct ChainSettingsPopover: View {
                 set: { session.chainHopBudget = Int($0.rounded()) }
             ), in: 1...20, step: 1)
             .controlSize(.small)
-            Text("Max hand-offs before a chain auto-stops. Prevents A → B → A loops from running away.")
+            Text("A safety limit — the chain stops itself after this many hand-offs so two agents can't keep passing work back and forth forever.")
                 .font(.system(size: 10.5))
                 .foregroundStyle(.tertiary)
                 .lineLimit(2)
@@ -138,37 +138,17 @@ struct ChainSettingsPopover: View {
         }
     }
 
-    private var coordinatorSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Toggle(isOn: $session.isCoordinator) {
-                HStack(spacing: 5) {
-                    Image(systemName: "network")
-                        .font(.system(size: 10))
-                        .foregroundStyle(session.isCoordinator ? Color.brandOrange : .secondary)
-                    Text("Coordinator mode (MCP)")
-                        .font(.system(size: 12, weight: .medium))
-                }
-            }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            Text("Gives claude two MCP tools: list_agents() and dispatch_agent(id, prompt). The model can orchestrate other open sessions itself. Takes effect on the next turn.")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.tertiary)
-                .lineLimit(4)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
 
     private var chainStatusSection: some View {
         HStack(spacing: 6) {
             Image(systemName: "link.circle.fill")
                 .font(.system(size: 11))
                 .foregroundStyle(Color.brandOrange.opacity(0.85))
-            Text("Mid-chain — \(session.remainingHops) hop\(session.remainingHops == 1 ? "" : "s") left")
+            Text("In a chain — \(session.remainingHops) hand-off\(session.remainingHops == 1 ? "" : "s") left")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.primary)
             Spacer()
-            Button("Reset budget") {
+            Button("Reset") {
                 session.remainingHops = session.chainHopBudget
                 session.chainSourceId = nil
             }

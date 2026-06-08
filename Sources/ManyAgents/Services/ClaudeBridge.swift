@@ -24,9 +24,10 @@ enum BridgeEvent {
     /// "Preparing Bash") even when no completed assistant event has
     /// landed yet, so long extended-thinking sequences don't look stuck.
     case partialBlockKind(String)
-    /// claude called the AskUserQuestion tool. The owning session is
-    /// expected to render a native picker and reply via
-    /// `submitToolResult(toolUseId:, content:)` so the turn can continue.
+    /// claude called the AskUserQuestion tool. The owning session renders a
+    /// native picker; the chosen answer is delivered as a new user turn
+    /// (headless `--print` auto-denies the tool and ends the turn, so there's
+    /// no open tool_result to fulfil — see `AgentSession.answerQuestion`).
     case askUserQuestion(toolUseId: String, prompt: AskPrompt)
 
     struct AskPrompt: Equatable {
@@ -89,21 +90,21 @@ final class ClaudeBridge {
 
     private let subject = PassthroughSubject<BridgeEvent, Never>()
     private var activeProcess: Process?
-    /// Held open across the lifetime of a turn so we can post tool_result
-    /// payloads (e.g. AskUserQuestion answers) back to claude mid-stream.
-    /// Closed in handleResult so claude exits cleanly.
+    /// Held open for the duration of a turn: the initial user payload is
+    /// written here, and it's closed in handleResult so claude exits cleanly.
     private var activeStdin: FileHandle?
     private var stdoutBuffer = Data()
+    /// tool_use ids of AskUserQuestion calls seen this turn. In headless
+    /// `--print` mode the CLI auto-denies AskUserQuestion and emits an
+    /// is_error "Answer questions?" tool_result for it — pure noise, since the
+    /// native picker/chip already represents the question. We track the ids so
+    /// `handleUserMessage` can drop that result instead of rendering an error.
+    private var askUserQuestionIds: Set<String> = []
     /// Set per-turn by the owning AgentSession. Always written when an
     /// MCP relay is up so claude has both the permission-prompt tool
     /// (always exposed) and the coordinator dispatch tools (when the
     /// session is in coordinator mode). Passed to `claude --mcp-config <path>`.
     var mcpConfigPath: String?
-
-    /// Mirror of `AgentSession.bypassPermissions`. When true, the
-    /// `--permission-mode` arg flips from `acceptEdits` to
-    /// `bypassPermissions`, skipping the sensitive-file gate.
-    var bypassPermissions: Bool = false
 
     var events: AnyPublisher<BridgeEvent, Never> { subject.eraseToAnyPublisher() }
     var isBusy: Bool { activeProcess?.isRunning ?? false }
@@ -138,10 +139,17 @@ final class ClaudeBridge {
             // smoothly during long single-message generations instead of
             // jumping only at message boundaries.
             "--include-partial-messages",
-            "--permission-mode", bypassPermissions ? "bypassPermissions" : "acceptEdits",
+            // Always bypass the sensitive-file permission gate — this is a
+            // local dev tool driving the user's own sessions; the prompts just
+            // got in the way. (Previously a per-tab / global toggle.)
+            "--permission-mode", "bypassPermissions",
             // Append a small instruction so claude consistently signals
             // "waiting on you" with a recognizable cue.
-            "--append-system-prompt", Self.waitingCueSystemPrompt
+            "--append-system-prompt", Self.waitingCueSystemPrompt,
+            // WebSearch / WebFetch are read-only research tools the user always
+            // wants to flow — never block them on a permission prompt. An
+            // --allowedTools rule bypasses the prompt even under acceptEdits.
+            "--allowedTools", "WebSearch,WebFetch"
         ]
         if let rid = currentSessionId, !rid.isEmpty {
             args.append(contentsOf: ["--resume", rid])
@@ -177,9 +185,16 @@ final class ClaudeBridge {
         env["TERM"] = "dumb"
         env["NO_COLOR"] = "1"
         env["MANYAGENTS"] = "1"
+        // A GUI app launched from Finder/Xcode inherits launchd's minimal PATH
+        // (/usr/bin:/bin:…), so the agent's Bash tool can't find node (nvm /
+        // homebrew) and shebang scripts like `./dev/query_db.sh` fail, forcing
+        // absolute paths. Hand the child the user's real login-shell PATH so
+        // dev tooling and relative scripts resolve exactly as in their terminal.
+        env["PATH"] = Self.userPath
         process.environment = env
 
         stdoutBuffer.removeAll()
+        askUserQuestionIds.removeAll()
         activeProcess = process
 
         process.terminationHandler = { [weak self] proc in
@@ -215,9 +230,8 @@ final class ClaudeBridge {
             return
         }
 
-        // Write the user prompt. stdin is kept OPEN so we can inject
-        // tool_result responses (e.g. AskUserQuestion answers) mid-turn.
-        // It's closed in handleResult once the turn fully resolves.
+        // Write the user prompt, then keep stdin until handleResult closes it
+        // so claude reads the payload and exits cleanly at end of turn.
         activeStdin = stdin.fileHandleForWriting
         var content: [[String: Any]] = []
         if !text.isEmpty {
@@ -236,22 +250,6 @@ final class ClaudeBridge {
         writeUserPayload([
             "type": "user",
             "message": ["role": "user", "content": content]
-        ])
-    }
-
-    /// Post a tool_result back to claude mid-turn. Used by AgentSession
-    /// when the user answers an in-flight AskUserQuestion prompt.
-    func submitToolResult(toolUseId: String, content: String) {
-        writeUserPayload([
-            "type": "user",
-            "message": [
-                "role": "user",
-                "content": [[
-                    "type": "tool_result",
-                    "tool_use_id": toolUseId,
-                    "content": content
-                ]]
-            ]
         ])
     }
 
@@ -407,6 +405,7 @@ final class ClaudeBridge {
                     // block so the transcript records the call, but the
                     // MessageView will skip drawing AskUserQuestion cards.
                     if name == "AskUserQuestion" {
+                        askUserQuestionIds.insert(id)
                         if let parsed = Self.parseAskUserQuestion(input: rawInput) {
                             emit(.askUserQuestion(toolUseId: id, prompt: parsed))
                         }
@@ -437,6 +436,10 @@ final class ClaudeBridge {
         let parentToolUseId = obj["parent_tool_use_id"] as? String
         for raw in content where raw["type"] as? String == "tool_result" {
             let toolUseId = raw["tool_use_id"] as? String ?? ""
+            // Drop the CLI's auto-deny result for AskUserQuestion — the picker
+            // (and the post-answer chip) already represent it; a red error row
+            // is just confusing noise.
+            if askUserQuestionIds.contains(toolUseId) { continue }
             let isError = raw["is_error"] as? Bool ?? false
             let text = Self.flattenToolResultContent(raw["content"])
             emit(.toolResult(toolUseId: toolUseId,
@@ -594,5 +597,60 @@ final class ClaudeBridge {
             return path
         }
         return nil
+    }
+
+    // MARK: - PATH resolution
+
+    /// The user's interactive-login-shell PATH, resolved once per app launch
+    /// (statics are lazy + thread-safe). A GUI process otherwise only sees
+    /// launchd's bare PATH, hiding Homebrew, nvm node, and anything else the
+    /// user wired up in their shell rc files.
+    static let userPath: String = computeUserPath()
+
+    private static func computeUserPath() -> String {
+        let base = probeLoginShellPath()
+            ?? ProcessInfo.processInfo.environment["PATH"]
+            ?? ""
+        // Guarantee the common dirs are present (and ahead of launchd's) even
+        // if the probe came back thin, then de-dupe while preserving order.
+        let guaranteed = ["/opt/homebrew/bin", "/usr/local/bin",
+                          "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        var seen = Set<String>()
+        return (base.split(separator: ":").map(String.init) + guaranteed)
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+            .joined(separator: ":")
+    }
+
+    /// Run the user's interactive login shell to capture the PATH their
+    /// terminal would have (Homebrew shellenv in .zprofile, nvm in .zshrc,
+    /// etc.). A sentinel brackets the value so rc-file chatter can't corrupt
+    /// it, and a 5s watchdog guards against an rc that blocks on input.
+    /// Returns nil on any failure so the caller can fall back.
+    private static func probeLoginShellPath() -> String? {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: shell)
+        p.arguments = ["-ilc", "printf '__MA_PATH__%s__END__' \"$PATH\""]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()          // swallow shell noise
+        p.standardInput = FileHandle.nullDevice
+        var env = ProcessInfo.processInfo.environment
+        env["TERM"] = "dumb"
+        p.environment = env
+
+        do { try p.run() } catch { return nil }
+        let deadline = Date().addingTimeInterval(5)
+        while p.isRunning && Date() < deadline { usleep(50_000) }
+        if p.isRunning { p.terminate(); return nil }
+
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        guard let s = String(data: data, encoding: .utf8),
+              let start = s.range(of: "__MA_PATH__"),
+              let end = s.range(of: "__END__"),
+              start.upperBound <= end.lowerBound
+        else { return nil }
+        let path = String(s[start.upperBound..<end.lowerBound])
+        return path.isEmpty ? nil : path
     }
 }

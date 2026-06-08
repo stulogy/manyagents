@@ -12,6 +12,11 @@ enum TranscriptLoader {
             return []
         }
         var out: [Message] = []
+        // Track AskUserQuestion tool_use ids so the CLI's auto-deny
+        // "Answer questions?" error tool_result (headless `--print` behaviour)
+        // can be dropped when it lands on the following user line — matching
+        // how the live bridge suppresses it.
+        var askUserQuestionIds = Set<String>()
         raw.enumerateLines { line, _ in
             guard let lineData = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
@@ -19,8 +24,16 @@ enum TranscriptLoader {
             else { return }
             switch type {
             case "user":
-                if let m = parseUser(obj) { out.append(m) }
+                if let m = parseUser(obj, askUserQuestionIds: askUserQuestionIds) { out.append(m) }
             case "assistant":
+                if let msg = obj["message"] as? [String: Any],
+                   let content = msg["content"] as? [[String: Any]] {
+                    for c in content
+                    where (c["type"] as? String) == "tool_use"
+                        && (c["name"] as? String) == "AskUserQuestion" {
+                        if let id = c["id"] as? String { askUserQuestionIds.insert(id) }
+                    }
+                }
                 if let m = parseAssistant(obj) { out.append(m) }
             default:
                 break
@@ -43,7 +56,8 @@ enum TranscriptLoader {
 
     // MARK: - Parsers
 
-    private static func parseUser(_ obj: [String: Any]) -> Message? {
+    private static func parseUser(_ obj: [String: Any],
+                                  askUserQuestionIds: Set<String>) -> Message? {
         guard let msg = obj["message"] as? [String: Any] else { return nil }
         // When present, tags every tool_result in this user message as
         // a subagent's tool feedback so the renderer can nest it under
@@ -82,6 +96,8 @@ enum TranscriptLoader {
                     }
                 } else if ct == "tool_result" {
                     let toolUseId = c["tool_use_id"] as? String ?? ""
+                    // Skip the AskUserQuestion auto-deny result (see load()).
+                    if askUserQuestionIds.contains(toolUseId) { continue }
                     let isError = c["is_error"] as? Bool ?? false
                     let text = flattenToolResultContent(c["content"])
                     blocks.append(.toolResult(id: UUID(),

@@ -23,6 +23,51 @@ final class AgentManager: ObservableObject {
     /// to confirm restoration via the sheet. Cleared on Reopen / Start fresh.
     @Published var pendingRestore: Snapshot?
 
+    // MARK: - Orchestrator dispatch log
+
+    /// One coordinator → agent dispatch, surfaced live in the Orchestrator
+    /// panel so the user can watch an orchestration unfold.
+    struct DispatchRecord: Identifiable, Equatable {
+        enum State: Equatable { case running, done, failed }
+        let id = UUID()
+        let coordinatorId: UUID?
+        let targetId: UUID
+        let targetLabel: String
+        let promptSummary: String
+        var state: State
+        let startedAt: Date
+    }
+
+    /// Newest-last list of dispatches, capped so it can't grow unbounded.
+    @Published private(set) var dispatchLog: [DispatchRecord] = []
+
+    /// Record the start of a dispatch; returns the record id for the
+    /// completion update. Called from `MCPRelay.dispatch` (main actor).
+    func recordDispatchStart(coordinatorId: UUID?, target: AgentSession,
+                             prompt: String) -> UUID {
+        let summary = prompt
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+            .prefix(80)
+        let record = DispatchRecord(
+            coordinatorId: coordinatorId,
+            targetId: target.id,
+            targetLabel: target.aiTitle ?? target.displayName,
+            promptSummary: String(summary),
+            state: .running,
+            startedAt: Date()
+        )
+        dispatchLog.append(record)
+        if dispatchLog.count > 50 { dispatchLog.removeFirst(dispatchLog.count - 50) }
+        return record.id
+    }
+
+    /// Mark a previously-started dispatch as done or failed.
+    func recordDispatchEnd(_ recordId: UUID, success: Bool) {
+        guard let idx = dispatchLog.firstIndex(where: { $0.id == recordId }) else { return }
+        dispatchLog[idx].state = success ? .done : .failed
+    }
+
     init() {
         // Persist on any session-array change (add/remove) AND on any inner
         // session @Published change (aiTitle rename, claudeSessionId arrival,
@@ -379,10 +424,6 @@ final class AgentManager: ObservableObject {
             let claudeSessionId: String?
             let displayName: String
             let aiTitle: String?
-            /// Persisted per-session bypass toggle. Optional in the
-            /// codable shape so old snapshots without this field still
-            /// decode cleanly (defaulting to false on restore).
-            let bypassPermissions: Bool?
 
             var id: String { (claudeSessionId ?? "") + cwd }
         }
@@ -394,8 +435,7 @@ final class AgentManager: ObservableObject {
                 cwd: s.cwd,
                 claudeSessionId: s.claudeSessionId ?? s.resumeSessionId,
                 displayName: s.displayName,
-                aiTitle: s.aiTitle,
-                bypassPermissions: s.bypassPermissions
+                aiTitle: s.aiTitle
             )
         })
         if snap.agents.isEmpty {
@@ -449,13 +489,6 @@ final class AgentManager: ObservableObject {
             let session = spawn(cwd: a.cwd, resumeSessionId: a.claudeSessionId)
             session.displayName = a.displayName
             session.aiTitle = a.aiTitle
-            // Persisted per-session bypass toggle (nil on old snapshots
-            // that pre-date the field). Restored AFTER spawn so it
-            // overrides the AgentSession.init default that comes from
-            // the global "default for new sessions" UserDefault.
-            if let bp = a.bypassPermissions {
-                session.applySaved(bypassPermissions: bp)
-            }
             if let sid = a.claudeSessionId, !sid.isEmpty {
                 let prior = TranscriptLoader.load(cwd: a.cwd, sessionId: sid)
                 if !prior.isEmpty {

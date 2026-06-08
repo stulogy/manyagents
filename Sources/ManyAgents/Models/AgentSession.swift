@@ -139,6 +139,12 @@ final class AgentSession: ObservableObject, Identifiable {
         let multiSelect: Bool
     }
 
+    /// The most recently answered AskUserQuestion. Kept so the picker can
+    /// render a compact "✓ <answer>" confirmation chip (with the original
+    /// question) in place of the options until the next turn's assistant
+    /// output supersedes it. Cleared on the next `.assistantBlocks` and reset.
+    @Published var answeredAsk: (state: AskState, answer: String)?
+
     // MARK: - Chain / pipeline state
 
     /// If set, this session is wired as the LEFT side of a chain — when
@@ -159,14 +165,6 @@ final class AgentSession: ObservableObject, Identifiable {
     /// it gets an MCP tool that can list and dispatch other agents.
     /// Toggled on per-session; takes effect on the next turn.
     @Published var isCoordinator: Bool = false
-
-    /// When true, claude is spawned with `--permission-mode bypassPermissions`
-    /// instead of `acceptEdits`. Skips the sensitive-file gate that
-    /// normally blocks writes to `~/.claude/projects/*/memory/`,
-    /// `settings.local.json`, etc. Off by default — flip on to unblock
-    /// a session that's stuck behind a hard-coded guard, flip off when
-    /// you're done. Takes effect on the next turn.
-    @Published var bypassPermissions: Bool = false
 
     /// Permission prompt waiting on the user. Set by MCPRelay when
     /// claude's permission-prompt-tool fires; cleared when the user
@@ -273,24 +271,6 @@ final class AgentSession: ObservableObject, Identifiable {
         self.resumeSessionId = resumeSessionId
         self.displayName = ProjectNaming.name(forCwd: cwd)
         self.bridge = ClaudeBridge(cwd: cwd, resumeSessionId: resumeSessionId)
-        // Inherit the global default. Users who flipped "Always bypass
-        // permissions for new sessions" in the kebab don't have to
-        // re-flip every session. Persisted values restored via
-        // applySavedState() (next) will overwrite this on resume.
-        self.bypassPermissions = UserDefaults.standard.bool(
-            forKey: Self.bypassDefaultKey
-        )
-    }
-
-    /// UserDefaults key for the global "default bypass permissions on
-    /// new sessions" toggle. Exposed so the kebab menu can read / write
-    /// the same key without hard-coding it twice.
-    static let bypassDefaultKey = "manyagents.bypassPermissions.defaultForNewSessions"
-
-    /// Restore the per-session bypass flag from a saved snapshot. Called
-    /// by AgentManager when reopening a previously-persisted session.
-    func applySaved(bypassPermissions: Bool) {
-        self.bypassPermissions = bypassPermissions
     }
 
     /// Real conversation compaction — the kebab "Compact conversation"
@@ -361,6 +341,7 @@ final class AgentSession: ObservableObject, Identifiable {
         messages.removeAll()
         pendingPrompts.removeAll()
         pendingAskUserQuestion = nil
+        answeredAsk = nil
         pendingPermission = nil
         pendingHandOff = nil
         lastTurnContextTokens = 0
@@ -467,10 +448,6 @@ final class AgentSession: ObservableObject, Identifiable {
         } else {
             bridge.mcpConfigPath = nil
         }
-        // Mirror the bypass toggle so the bridge spawns claude with the
-        // right --permission-mode arg. Cheap to write every turn; flips
-        // back to the safe acceptEdits mode the instant the toggle's off.
-        bridge.bypassPermissions = bypassPermissions
         // Kick the bridge off the main thread — process.run() + stdin
         // write was blocking SwiftUI rendering, so the "Thinking…"
         // indicator didn't appear until the spawn returned.
@@ -502,14 +479,17 @@ final class AgentSession: ObservableObject, Identifiable {
     func answerQuestion(_ answer: String) {
         guard let q = pendingAskUserQuestion else { return }
         pendingAskUserQuestion = nil
-        // Render the user's pick in the transcript so the conversation
-        // history reads cleanly on replay.
-        messages.append(Message(
-            role: .user,
-            blocks: [.text(id: UUID(), text: answer)]
-        ))
-        currentPhase = "thinking"
-        bridge.submitToolResult(toolUseId: q.toolUseId, content: answer)
+        // Keep a record so the picker shows a "✓ <answer>" confirmation chip
+        // (with the original question) until the next turn's output lands.
+        answeredAsk = (state: q, answer: answer)
+        // In headless `--print` mode the CLI auto-denies AskUserQuestion and
+        // ends the turn — there's no open tool_result to fulfil and stdin is
+        // already closed, so the old `submitToolResult` path silently no-oped
+        // (the bug: "click does nothing, stuck on Thinking…"). Deliver the
+        // choice as a normal new user turn instead; the resumed session still
+        // holds the question context, so a plain follow-up continues cleanly.
+        // visible:false keeps it out of the bubble flow — the chip stands in.
+        send(answer, visible: false)
     }
 
     /// "Send now" — move a queued prompt to the front of the line and
@@ -543,6 +523,8 @@ final class AgentSession: ObservableObject, Identifiable {
                 self.model = model
             }
         case .assistantBlocks(let blocks):
+            // A fresh assistant turn supersedes any answered-question chip.
+            answeredAsk = nil
             // Either append to an in-progress assistant message or start a
             // new one. The CLI emits each assistant *message* as a single
             // event (not per-delta) when streaming is off.

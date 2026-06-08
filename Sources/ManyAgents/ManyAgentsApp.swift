@@ -45,6 +45,12 @@ struct ManyAgentsApp: App {
         .commands {
             // File menu additions — keep the sidebar's New Session ⌘N
             // working by adding via after-newItem rather than replacing.
+            CommandGroup(after: .textEditing) {
+                Button("Find…") {
+                    NotificationCenter.default.post(name: .maFind, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: .command)
+            }
             CommandGroup(after: .newItem) {
                 Button("New Tab in Project") {
                     NotificationCenter.default.post(name: .maNewTab, object: nil)
@@ -114,4 +120,5 @@ extension Notification.Name {
     static let maCycleTab         = Notification.Name("ManyAgents.cycleTab")
     static let maToggleViewMode   = Notification.Name("ManyAgents.toggleViewMode")
     static let maShowShortcuts    = Notification.Name("ManyAgents.showShortcuts")
+    static let maFind             = Notification.Name("ManyAgents.find")
 }

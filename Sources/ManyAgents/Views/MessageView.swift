@@ -21,6 +21,12 @@ struct MessageView: View {
     /// nil disables the action (e.g. transcript-only message views
     /// where there's no owning session to hand off from).
     var sessionId: UUID? = nil
+    /// Active ⌘F query — matching substrings in this message's text get a
+    /// highlight background. Empty when find is closed.
+    var highlight: String = ""
+    /// True when this message is the one the find bar is currently parked on,
+    /// so it gets a framed background to stand out from other matches.
+    var isCurrentMatch: Bool = false
     @State private var hover = false
     @State private var copyConfirmed = false
     @State private var showingHandOff = false
@@ -66,6 +72,17 @@ struct MessageView: View {
                 hover = h
                 if !h { copyConfirmed = false }
             }
+            // Frame the message the find bar is currently parked on.
+            .padding(isCurrentMatch ? 8 : 0)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.brandOrange.opacity(isCurrentMatch ? 0.10 : 0))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.brandOrange.opacity(isCurrentMatch ? 0.45 : 0), lineWidth: 1)
+            )
+            .animation(.easeOut(duration: 0.15), value: isCurrentMatch)
         }
     }
 
@@ -273,7 +290,7 @@ struct MessageView: View {
         case .text(_, let text):
             switch message.role {
             case .user:
-                Text(text)
+                Text(SearchHighlight.attributed(text, query: highlight))
                     .userTextStyle()
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
@@ -290,10 +307,10 @@ struct MessageView: View {
                 // blockquotes, inline code, links. Inline `code` spans
                 // get a tinted monospace treatment so they actually
                 // look like code in flowing text.
-                MarkdownText(raw: text, sessionCwd: sessionCwd)
+                MarkdownText(raw: text, sessionCwd: sessionCwd, highlight: highlight)
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .system:
-                Text(text)
+                Text(SearchHighlight.attributed(text, query: highlight))
                     .font(AppFont.mono(11.5))
                     .foregroundStyle(.secondary)
             }

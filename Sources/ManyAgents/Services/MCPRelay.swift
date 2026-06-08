@@ -233,6 +233,10 @@ final class MCPRelay {
         let turnsAhead = (target.status == .running ? 1 : 0)
                        + target.pendingPrompts.count
 
+        // Surface this dispatch in the Orchestrator panel.
+        let recordId = mgr.recordDispatchStart(coordinatorId: sourceUUID,
+                                               target: target, prompt: prompt)
+
         // Treat the dispatch as a YOLO hand-off from the source (if
         // provided) — the model already decided to call this tool, so
         // no banner / approval is appropriate.
@@ -243,12 +247,14 @@ final class MCPRelay {
         }
 
         if !wait {
+            mgr.recordDispatchEnd(recordId, success: true)
             return ["id": id, "ok": true, "agent_id": targetIdStr, "status": "dispatched"]
         }
 
         // Skip `turnsAhead` completions, then capture the one
         // belonging to our prompt.
         let reply = await awaitTurnCompletion(on: target, skip: turnsAhead)
+        mgr.recordDispatchEnd(recordId, success: reply != nil)
         return [
             "id": id,
             "ok": true,

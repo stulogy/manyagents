@@ -12,31 +12,79 @@ struct AskUserQuestionPicker: View {
 
     var body: some View {
         if let q = session.pendingAskUserQuestion {
-            VStack(alignment: .leading, spacing: 12) {
-                header(for: q)
-                optionList(q)
-                if q.multiSelect {
-                    submitMultiButton(q)
-                }
-                customRow(q)
+            picker(for: q)
+        } else if let answered = session.answeredAsk {
+            confirmation(for: answered.state, answer: answered.answer)
+        }
+    }
+
+    @ViewBuilder
+    private func picker(for q: AgentSession.AskState) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header(for: q)
+            optionList(q)
+            if q.multiSelect {
+                submitMultiButton(q)
             }
-            .padding(14)
+            customRow(q)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.brandOrange.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.brandOrange.opacity(0.35), lineWidth: 1)
+        )
+        // Pin selection state to the toolUseId so switching questions
+        // (or another picker landing) resets it.
+        .id(q.toolUseId)
+        .onChange(of: q.toolUseId) { _, _ in
+            selected.removeAll()
+            customDraft = ""
+        }
+    }
+
+    /// Shown the instant the user picks an option: the question stays put and
+    /// the options collapse to a single "✓ <answer>" chip, so the choice is
+    /// visible (and not echoed as a raw chat bubble) while the agent resumes.
+    /// Cleared by the session once the next assistant output lands.
+    @ViewBuilder
+    private func confirmation(for q: AgentSession.AskState, answer: String) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header(for: q)
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.brandOrange)
+                    .padding(.top, 1)
+                Text(answer)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.brandOrange.opacity(0.08))
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.brandOrange.opacity(0.12))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.brandOrange.opacity(0.35), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.brandOrange.opacity(0.35), lineWidth: 0.5)
             )
-            // Pin selection state to the toolUseId so switching questions
-            // (or another picker landing) resets it.
-            .id(q.toolUseId)
-            .onChange(of: q.toolUseId) { _, _ in
-                selected.removeAll()
-                customDraft = ""
-            }
         }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.brandOrange.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.brandOrange.opacity(0.25), lineWidth: 1)
+        )
     }
 
     @ViewBuilder
