@@ -356,7 +356,7 @@ struct MessageView: View {
                 ToolUseCard(toolName: name, input: input)
             }
         case .toolResult(_, _, let content, let isError, _):
-            ToolResultRow(content: content, isError: isError)
+            ToolResultRow(content: content, isError: isError, sessionCwd: sessionCwd)
         case .image(_, let data, _):
             if let img = NSImage(data: data) {
                 Image(nsImage: img)
@@ -380,7 +380,20 @@ struct MessageView: View {
     private struct ToolResultRow: View {
         let content: String
         let isError: Bool
+        var sessionCwd: String? = nil
         @State private var expanded = false
+
+        /// Sub-agent / Task reports come back as a tool result full of
+        /// markdown prose (headings, bold, bullets); Bash/Grep/Read output
+        /// doesn't. A markdown heading line is the tell — when present we
+        /// render the whole thing formatted instead of as raw monospace,
+        /// so a delegated investigation reads like the summary it is.
+        private var rendersAsMarkdown: Bool {
+            guard !isError else { return false }
+            let c = content
+            return c.hasPrefix("# ") || c.hasPrefix("## ") || c.hasPrefix("### ")
+                || c.contains("\n# ") || c.contains("\n## ") || c.contains("\n### ")
+        }
 
         // Line budget — short multi-line output passes through; longer
         // collapses to the first few lines.
@@ -478,6 +491,12 @@ struct MessageView: View {
                     .foregroundStyle(isError ? .red.opacity(0.75) : .secondary.opacity(0.6))
                     .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 4) {
+                    if rendersAsMarkdown {
+                        // Format the report; show it in full (no collapse) —
+                        // the whole point is to read it as a summary.
+                        MarkdownText(raw: content, sessionCwd: sessionCwd)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
                     Text(displayText)
                         .font(AppFont.mono(12))
                         .foregroundStyle(isError ? .red : .secondary)
@@ -522,6 +541,7 @@ struct MessageView: View {
                             )
                         }
                         .buttonStyle(.plain)
+                    }
                     }
                 }
             }
