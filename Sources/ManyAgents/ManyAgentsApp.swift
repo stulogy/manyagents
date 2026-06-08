@@ -34,6 +34,9 @@ struct ManyAgentsApp: App {
                     readiness.refresh()
                     manager.loadPendingSnapshot()
                     autoNamer.attach(manager: manager)
+                    // Register the notification delegate + request permission
+                    // so "agent finished" banners can fire.
+                    NotificationService.shared.bootstrap()
                 }
         }
         .windowStyle(.titleBar)
@@ -79,6 +82,11 @@ struct ManyAgentsApp: App {
                 }
                 .keyboardShortcut("/", modifiers: .command)
             }
+        }
+
+        // Standard macOS preferences window (⌘,). Houses notification settings.
+        Settings {
+            SettingsView()
         }
     }
 

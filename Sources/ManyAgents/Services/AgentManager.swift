@@ -90,6 +90,7 @@ final class AgentManager: ObservableObject {
         // triggers an evaluation of its `chainTargetId`. Tracked in a
         // separate map so we can tear down independently if needed.
         wireChainCoordination(for: session)
+        wireFinishNotifications(for: session)
         sessions.append(session)
         activeSessionId = session.id
         session.connect()
@@ -101,6 +102,7 @@ final class AgentManager: ObservableObject {
         session.disconnect()
         sessionSubscriptions.removeValue(forKey: session.id)
         chainSubscriptions.removeValue(forKey: session.id)
+        notifySubscriptions.removeValue(forKey: session.id)
         // Any sessions chained TO this one lose their target.
         for other in sessions where other.chainTargetId == session.id {
             other.chainTargetId = nil
@@ -128,6 +130,22 @@ final class AgentManager: ObservableObject {
             .sink { [weak self, weak session] lastAssistantText in
                 guard let self, let session else { return }
                 self.handleTurnCompleted(on: session, payload: lastAssistantText)
+            }
+    }
+
+    /// Per-session subscription that fires a system notification / sound when
+    /// the agent stops working (settings permitting).
+    private var notifySubscriptions: [UUID: AnyCancellable] = [:]
+
+    private func wireFinishNotifications(for session: AgentSession) {
+        notifySubscriptions[session.id] = session.finishedWorking
+            .sink { [weak session] status in
+                guard let session else { return }
+                NotificationService.shared.agentFinished(
+                    projectName: ProjectNaming.name(forCwd: session.cwd),
+                    title: session.aiTitle ?? session.displayName,
+                    status: status
+                )
             }
     }
 

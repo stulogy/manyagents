@@ -20,7 +20,21 @@ final class AgentSession: ObservableObject, Identifiable {
     @Published var displayName: String
     @Published var aiTitle: String?
     @Published var messages: [Message] = []
-    @Published var status: AgentStatus = .idle
+    @Published var status: AgentStatus = .idle {
+        didSet {
+            // Fire once when the agent hands control back to the user
+            // (running → idle/waiting/error). Same-state writes during a
+            // turn (running → running) don't qualify. Drives finish
+            // notifications. didSet never fires on the initial value.
+            if oldValue == .running && status != .running {
+                finishedWorking.send(status)
+            }
+        }
+    }
+
+    /// Emits the terminal status each time the agent stops working. The
+    /// manager subscribes to drive system notifications / sounds.
+    let finishedWorking = PassthroughSubject<AgentStatus, Never>()
     @Published var claudeSessionId: String?
     @Published var lastError: String?
     @Published var totalInputTokens: Int = 0
