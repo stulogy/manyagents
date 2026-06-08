@@ -86,6 +86,30 @@ The ailogy.co `/manyagents` landing page points at the `latest`
 endpoint, so a new release goes live the moment `gh release create`
 finishes — no website redeploy needed.
 
+## Auto-update (Sparkle)
+
+From 0.5.0 on, the app updates itself via [Sparkle](https://sparkle-project.org).
+`release.sh --publish` EdDSA-signs the DMG and appends an `<item>` to
+`docs/appcast.xml`, which is served from **GitHub Pages** at
+<https://stulogy.github.io/manyagents/appcast.xml> (enable Pages once: repo
+**Settings → Pages → Source: `main` / `/docs`**). The app polls that feed; the
+DMGs themselves stay on Releases.
+
+Two things to keep in mind every release:
+
+- **Bump `CFBundleVersion`** in `Resources/Info.plist` (the `sparkle:version`).
+  It must strictly increase or Sparkle won't see the update.
+- **Protect the EdDSA private key.** It lives in your login keychain (created
+  once with Sparkle's `generate_keys`; the matching public key is `SUPublicEDKey`
+  in `Info.plist`). If it's lost, you can't sign updates and existing users go
+  stuck — back it up (`generate_keys -x key.priv`) and store it as a CI secret
+  when you automate releases.
+
+> Note: app-specific notary passwords (step 3) expire periodically. If
+> notarization starts failing with `401 Invalid credentials`, switch
+> `store-credentials` to an App Store Connect API key (`--key … --key-id … --issuer …`),
+> which doesn't expire.
+
 ## Troubleshooting
 
 | Symptom                                            | Fix                                                                                       |

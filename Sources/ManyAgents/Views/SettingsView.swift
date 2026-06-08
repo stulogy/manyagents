@@ -14,9 +14,20 @@ struct SettingsView: View {
     private var onlyWhenInactive = true
     @AppStorage(NotificationService.Keys.notifyOnError)
     private var notifyOnError = true
+    @EnvironmentObject private var updater: UpdaterViewModel
 
     var body: some View {
         Form {
+            Section {
+                Toggle("Automatically check for updates", isOn: $updater.automaticallyChecksForUpdates)
+            } header: {
+                Text("Updates")
+            } footer: {
+                Text("ManyAgents updates itself in place when a new version is available. You can also check any time from the ManyAgents menu.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 Toggle("Notify when an agent finishes", isOn: $enabled)
 

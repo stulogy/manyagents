@@ -30,5 +30,13 @@
     <string>ManyAgents uses speech recognition for hold-to-talk voice input to Claude agents.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>ManyAgents captures microphone input for voice prompts to Claude agents.</string>
+    <key>SUFeedURL</key>
+    <string>https://stulogy.github.io/manyagents/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>FZx6rPTkPw+AgP/wDXGF19LQ5/k2kavCLKVuTmnMiJw=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
 </dict>
 </plist>

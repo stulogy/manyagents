@@ -1,11 +1,42 @@
 import SwiftUI
 import AppKit
+import Sparkle
+
+/// Wraps Sparkle's updater so SwiftUI can drive a "Check for Updates…" menu
+/// item and reflect whether a check is currently possible. Created lazily as a
+/// @StateObject, so it never spins up in the headless MCP-subprocess mode
+/// (that path exits in `init` before any view — hence no Sparkle there).
+final class UpdaterViewModel: ObservableObject {
+    @Published var canCheckForUpdates = false
+    /// Bound to the Settings toggle. Mirrors Sparkle's own persisted setting.
+    @Published var automaticallyChecksForUpdates: Bool {
+        didSet {
+            controller.updater.automaticallyChecksForUpdates = automaticallyChecksForUpdates
+        }
+    }
+    private let controller: SPUStandardUpdaterController
+
+    init() {
+        let controller = SPUStandardUpdaterController(
+            startingUpdater: true,
+            updaterDelegate: nil,
+            userDriverDelegate: nil
+        )
+        self.controller = controller
+        self.automaticallyChecksForUpdates = controller.updater.automaticallyChecksForUpdates
+        controller.updater.publisher(for: \.canCheckForUpdates)
+            .assign(to: &$canCheckForUpdates)
+    }
+
+    func checkForUpdates() { controller.updater.checkForUpdates() }
+}
 
 @main
 struct ManyAgentsApp: App {
     @StateObject private var manager = AgentManager()
     @StateObject private var autoNamer = AutoNamer()
     @StateObject private var readiness = ClaudeReadiness()
+    @StateObject private var updater = UpdaterViewModel()
     @State private var restored = false
 
     init() {
@@ -43,6 +74,11 @@ struct ManyAgentsApp: App {
         .windowToolbarStyle(.unified(showsTitle: true))
         .defaultSize(width: 1240, height: 820)
         .commands {
+            // "Check for Updates…" in the app menu, right under About.
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
+            }
             // File menu additions — keep the sidebar's New Session ⌘N
             // working by adding via after-newItem rather than replacing.
             CommandGroup(after: .textEditing) {
@@ -90,9 +126,10 @@ struct ManyAgentsApp: App {
             }
         }
 
-        // Standard macOS preferences window (⌘,). Houses notification settings.
+        // Standard macOS preferences window (⌘,). Houses notification + update settings.
         Settings {
             SettingsView()
+                .environmentObject(updater)
         }
     }
 

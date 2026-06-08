@@ -200,6 +200,40 @@ EOF
         --title "ManyAgents $VERSION" \
         --notes-file "$NOTES_FILE"
     ok "released — https://github.com/stulogy/manyagents/releases/tag/$TAG"
+
+    # ── Sparkle appcast ───────────────────────────────────────────────
+    # EdDSA-sign the DMG and append an <item> to the GitHub-Pages appcast so
+    # existing users auto-update. The enclosure points at the Release asset
+    # we just uploaded; only the small XML lives on Pages.
+    # NOTE: CFBundleVersion (sparkle:version) MUST increase every release for
+    # Sparkle to detect the update — bump it in Resources/Info.plist.
+    b "Updating Sparkle appcast"
+    SIGN_UPDATE="$BUILD_DIR/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update"
+    [[ -x "$SIGN_UPDATE" ]] || die "sign_update not found at $SIGN_UPDATE (build first)"
+    SIG_ATTRS="$("$SIGN_UPDATE" "$DMG_PATH")"   # -> sparkle:edSignature="…" length="…"
+    BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP_PATH/Contents/Info.plist")"
+    PUBDATE="$(date -u +'%a, %d %b %Y %H:%M:%S +0000')"
+    DL_URL="https://github.com/stulogy/manyagents/releases/download/$TAG/$SCHEME-$VERSION.dmg"
+    APPCAST="$ROOT/docs/appcast.xml"
+    ITEM="$(cat <<EOF
+    <item>
+      <title>$VERSION</title>
+      <sparkle:version>$BUILD_NUMBER</sparkle:version>
+      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+      <link>https://github.com/stulogy/manyagents/releases/tag/$TAG</link>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>$PUBDATE</pubDate>
+      <enclosure url="$DL_URL" $SIG_ATTRS type="application/octet-stream"/>
+    </item>
+EOF
+)"
+    # Insert newest item just after the channel's <language> line.
+    awk -v item="$ITEM" '{print} /<language>en<\/language>/{print item}' \
+        "$APPCAST" > "$APPCAST.tmp" && mv "$APPCAST.tmp" "$APPCAST"
+    git add "$APPCAST"
+    git commit -m "appcast: ManyAgents $VERSION" >/dev/null
+    git push origin HEAD
+    ok "appcast updated + pushed — https://stulogy.github.io/manyagents/appcast.xml"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────

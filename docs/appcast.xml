@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>ManyAgents</title>
+    <link>https://stulogy.github.io/manyagents/appcast.xml</link>
+    <description>Auto-update feed for ManyAgents.</description>
+    <language>en</language>
+    <!--
+      No release items yet. The first <item> is appended by Scripts/release.sh
+      when 0.5.0 ships — the first EdDSA-signed, Sparkle-enabled build.
+      0.4.0 and earlier predate Sparkle and intentionally aren't in this feed
+      (users on those do one last manual download of 0.5.0, then auto-update).
+    -->
+  </channel>
+</rss>

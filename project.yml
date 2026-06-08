@@ -14,11 +14,18 @@ settings:
     SWIFT_VERSION: "5.10"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
 
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.6.0"
+
 targets:
   ManyAgents:
     type: application
     platform: macOS
     deploymentTarget: "14.0"
+    dependencies:
+      - package: Sparkle
     entitlements:
       path: Resources/ManyAgents.entitlements
       properties:
