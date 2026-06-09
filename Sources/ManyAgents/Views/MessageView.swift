@@ -586,8 +586,10 @@ struct MessageView: View {
         }
 
         private var expanded: Bool {
-            if let u = userExpansion { return u }
-            return sessionRunning
+            // Collapsed by default — the header shows the subagent + step count;
+            // click to expand. (Previously auto-expanded while the session ran,
+            // which dumped dozens of nested steps into the transcript.)
+            userExpansion ?? false
         }
 
         /// One-line prompt summary pulled from the standard Task input keys.
