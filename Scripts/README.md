@@ -21,23 +21,24 @@ optionally publishes a downloadable DMG.
     security find-identity -v -p codesigning | grep "Developer ID Application"
     ```
 
-3. **Stash an app-specific password for notarytool.** Generate one at
-   <https://appleid.apple.com> → Sign-In and Security → App-Specific
-   Passwords. Then save it to the keychain under the profile name the
-   script looks for:
+3. **Stash an App Store Connect API key for notarytool.** App-specific
+   passwords expire and silently start returning `401`; an API key doesn't.
+   Create one at App Store Connect → Users and Access → Integrations →
+   App Store Connect API (download the `AuthKey_<KEYID>.p8`, note the Key ID
+   and the Issuer ID), then save it under the profile the script looks for:
 
     ```sh
-    xcrun notarytool store-credentials manyagents-notary \
-        --apple-id "you@example.com" \
-        --team-id  "44KY89SZJD"
-    # paste the app-specific password when prompted
+    xcrun notarytool store-credentials manyagents-notary-key \
+        --key    ~/Downloads/AuthKey_<KEYID>.p8 \
+        --key-id <KEYID> \
+        --issuer <ISSUER-UUID>
     ```
 
-    That's a one-shot — the profile lives in the login keychain
-    forever. Verify:
+    That's a one-shot — the profile lives in the login keychain forever.
+    Verify:
 
     ```sh
-    xcrun notarytool history --keychain-profile manyagents-notary
+    xcrun notarytool history --keychain-profile manyagents-notary-key
     ```
 
 4. **Authenticate `gh`** if you want `--publish` to upload to GitHub
@@ -105,16 +106,15 @@ Two things to keep in mind every release:
   stuck — back it up (`generate_keys -x key.priv`) and store it as a CI secret
   when you automate releases.
 
-> Note: app-specific notary passwords (step 3) expire periodically. If
-> notarization starts failing with `401 Invalid credentials`, switch
-> `store-credentials` to an App Store Connect API key (`--key … --key-id … --issuer …`),
-> which doesn't expire.
+> Note: the notary profile is keyed on an App Store Connect API key (step 3),
+> which doesn't expire. A `401 Invalid credentials` means the stored key was
+> revoked or the issuer/key-id is wrong — re-run step 3.
 
 ## Troubleshooting
 
 | Symptom                                            | Fix                                                                                       |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `notarytool profile 'manyagents-notary' missing`   | Re-run step 3 above.                                                                      |
+| `notarytool profile 'manyagents-notary-key' missing` / `401 Invalid credentials` | Re-run step 3 (the API-key profile). 401 means the stored key/issuer is wrong or revoked. |
 | Notarization rejected, mentions hardened runtime   | Already on — but a nested binary may need it too. Run `codesign -dvv` on each `.dylib`.   |
 | Notarization rejected, mentions secure timestamp   | The script passes `--timestamp` — make sure you're online; the timestamp service is live. |
 | Gatekeeper still blocks on someone else's Mac      | Check `xcrun stapler validate ManyAgents.app` returns `The validate action worked!`.      |

@@ -17,7 +17,7 @@ set -euo pipefail
 DEVELOPER_ID="Developer ID Application: AILOGY LLC (44KY89SZJD)"
 TEAM_ID="44KY89SZJD"
 BUNDLE_ID="app.manyagents"
-NOTARY_PROFILE="manyagents-notary"  # see Scripts/README.md to create
+NOTARY_PROFILE="manyagents-notary-key"  # App Store Connect API key — see Scripts/README.md
 SCHEME="ManyAgents"
 CONFIG="Release"
 
