@@ -85,6 +85,27 @@ xcodebuild \
 test -d "$APP_PATH" || die "build did not produce $APP_PATH"
 ok "built $APP_PATH"
 
+# ── Re-sign Sparkle's nested helpers ──────────────────────────────────
+# xcodebuild signs the app + Sparkle.framework, but NOT the helper
+# executables buried inside it (Autoupdate, Updater.app, XPC services) with
+# a secure timestamp + Developer ID — Apple's notary rejects those. Re-sign
+# inside-out, then re-seal the framework and the app (with entitlements).
+SPARKLE="$APP_PATH/Contents/Frameworks/Sparkle.framework"
+if [[ -d "$SPARKLE" ]]; then
+    b "Re-signing Sparkle helpers (hardened runtime + timestamp)"
+    SIGN=(codesign -f -o runtime --timestamp -s "$DEVELOPER_ID")
+    V="$SPARKLE/Versions/Current"
+    for xpc in "$V/XPCServices/"*.xpc; do
+        [[ -e "$xpc" ]] && "${SIGN[@]}" "$xpc"
+    done
+    [[ -e "$V/Updater.app/Contents/MacOS/Updater" ]] && "${SIGN[@]}" "$V/Updater.app/Contents/MacOS/Updater"
+    [[ -e "$V/Updater.app" ]] && "${SIGN[@]}" "$V/Updater.app"
+    [[ -e "$V/Autoupdate" ]] && "${SIGN[@]}" "$V/Autoupdate"
+    "${SIGN[@]}" "$SPARKLE"
+    "${SIGN[@]}" --entitlements "$ROOT/Resources/ManyAgents.entitlements" "$APP_PATH"
+    ok "Sparkle helpers re-signed"
+fi
+
 # ── Verify signature ──────────────────────────────────────────────────
 b "Verifying signature"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH" 2>&1 | tail -3
