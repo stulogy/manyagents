@@ -107,7 +107,11 @@ final class ClaudeBridge {
     var mcpConfigPath: String?
 
     var events: AnyPublisher<BridgeEvent, Never> { subject.eraseToAnyPublisher() }
-    var isBusy: Bool { activeProcess?.isRunning ?? false }
+    /// True while a turn is in flight (a user message was sent and its
+    /// `.result` hasn't landed). With the persistent process, "busy" is about
+    /// the turn, not whether the process exists (it's almost always running).
+    var isBusy: Bool { turnInFlight }
+    private var turnInFlight = false
 
     init(cwd: String, resumeSessionId: String? = nil) {
         self.cwd = cwd
@@ -117,13 +121,13 @@ final class ClaudeBridge {
     /// Back-compat shim — most callers send plain text.
     func sendUserText(_ text: String) { send(text: text, imagesPng: []) }
 
-    /// Spawn claude, pipe one user message in (text + optional images),
-    /// stream events out, let the process exit.
-    func send(text: String, imagesPng: [Data]) {
-        guard !isBusy else {
-            emit(.systemError("Previous turn still in flight."))
-            return
-        }
+    /// Ensure the session's persistent claude process is running. Spawned once
+    /// (lazily, on first send) and kept alive across turns — each user message
+    /// is fed over the held-open stdin instead of paying claude's cold start
+    /// every turn. `--resume <currentSessionId>` is applied only on (re)spawn
+    /// to restore the conversation; the warm process holds it in memory after.
+    private func ensureProcess() {
+        if let p = activeProcess, p.isRunning { return }
         guard let claudePath = Self.resolveClaudePath() else {
             emit(.systemError("claude binary not found on PATH"))
             return
@@ -194,13 +198,16 @@ final class ClaudeBridge {
         process.environment = env
 
         stdoutBuffer.removeAll()
-        askUserQuestionIds.removeAll()
         activeProcess = process
 
         process.terminationHandler = { [weak self] proc in
             let code = proc.terminationStatus
             DispatchQueue.main.async {
+                // The persistent process is gone (cancel / teardown / crash).
+                // Clear state so isBusy frees up and the next send() respawns.
                 self?.activeProcess = nil
+                self?.activeStdin = nil
+                self?.turnInFlight = false
                 self?.subject.send(.processExited(exitCode: code))
             }
         }
@@ -224,15 +231,29 @@ final class ClaudeBridge {
 
         do {
             try process.run()
+            // Held open for the session lifetime; we write every turn's user
+            // message here. Closed only on teardown/cancel (`cancel()`), never
+            // per turn — that's what keeps the process warm.
+            activeStdin = stdin.fileHandleForWriting
         } catch {
             activeProcess = nil
             emit(.systemError("Failed to spawn claude: \(error.localizedDescription)"))
+        }
+    }
+
+    /// Send a user message. Spawns the persistent process on first use, then
+    /// writes the message to its stdin — no respawn, no cold start on turns 2+.
+    /// The turn ends when claude emits `.result` (handleResult flips
+    /// `turnInFlight` off); stdin stays open for the next message.
+    func send(text: String, imagesPng: [Data]) {
+        guard !turnInFlight else {
+            emit(.systemError("Previous turn still in flight."))
             return
         }
-
-        // Write the user prompt, then keep stdin until handleResult closes it
-        // so claude reads the payload and exits cleanly at end of turn.
-        activeStdin = stdin.fileHandleForWriting
+        ensureProcess()
+        guard activeStdin != nil else { return }   // ensureProcess emitted the error
+        askUserQuestionIds.removeAll()              // per-turn, not per-process
+        turnInFlight = true
         var content: [[String: Any]] = []
         if !text.isEmpty {
             content.append(["type": "text", "text": text])
@@ -527,9 +548,9 @@ final class ClaudeBridge {
                          lastIterationContextTokens: lastIterCtx,
                          canonicalContextWindow: canonicalWindow)
         }
-        // Turn is done — close stdin so the claude process exits cleanly.
-        try? activeStdin?.close()
-        activeStdin = nil
+        // Turn is done — but the process + stdin stay warm for the next turn
+        // (that's the whole point). Just free the in-flight flag.
+        turnInFlight = false
         emit(.result(usage: usage, costUsd: cost, isError: isError, text: text))
     }
 
