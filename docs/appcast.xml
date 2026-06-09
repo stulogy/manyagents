@@ -5,11 +5,17 @@
     <link>https://stulogy.github.io/manyagents/appcast.xml</link>
     <description>Auto-update feed for ManyAgents.</description>
     <language>en</language>
-    <!--
-      No release items yet. The first <item> is appended by Scripts/release.sh
-      when 0.5.0 ships — the first EdDSA-signed, Sparkle-enabled build.
-      0.4.0 and earlier predate Sparkle and intentionally aren't in this feed
-      (users on those do one last manual download of 0.5.0, then auto-update).
-    -->
+    <item>
+      <title>0.5.0</title>
+      <sparkle:version>5</sparkle:version>
+      <sparkle:shortVersionString>0.5.0</sparkle:shortVersionString>
+      <link>https://github.com/stulogy/manyagents/releases/tag/v0.5.0</link>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Tue, 09 Jun 2026 14:53:54 +0000</pubDate>
+      <enclosure url="https://github.com/stulogy/manyagents/releases/download/v0.5.0/ManyAgents-0.5.0.dmg" sparkle:edSignature="RO0xKX2fqS5R9WOwGKzL4dg4GNpXzHpGYauNyCPNOWmMI3WngPuYHKrjcwI/V0oXt+JzobbK6LwIMnr9rNyBDA==" length="2449043" type="application/octet-stream"/>
+    </item>
+    <!-- Newest <item> first; appended automatically by Scripts/release.sh on
+         --publish. 0.4.0 and earlier predate Sparkle and aren't in this feed
+         (users on those do one last manual download, then auto-update). -->
   </channel>
 </rss>

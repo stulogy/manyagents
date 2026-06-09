@@ -248,9 +248,16 @@ EOF
     </item>
 EOF
 )"
-    # Insert newest item just after the channel's <language> line.
-    awk -v item="$ITEM" '{print} /<language>en<\/language>/{print item}' \
-        "$APPCAST" > "$APPCAST.tmp" && mv "$APPCAST.tmp" "$APPCAST"
+    # Insert newest item just after the channel's <language> line. Read the
+    # item from a temp file (not `awk -v`, which can't take a multi-line
+    # value — it errors "newline in string").
+    ITEM_FILE="$(mktemp)"
+    printf '%s\n' "$ITEM" > "$ITEM_FILE"
+    awk 'FNR==NR { buf = buf $0 ORS; next }
+         { print }
+         /<language>en<\/language>/ { printf "%s", buf }' \
+        "$ITEM_FILE" "$APPCAST" > "$APPCAST.tmp" && mv "$APPCAST.tmp" "$APPCAST"
+    rm -f "$ITEM_FILE"
     git add "$APPCAST"
     git commit -m "appcast: ManyAgents $VERSION" >/dev/null
     git push origin HEAD
