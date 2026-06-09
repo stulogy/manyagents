@@ -40,11 +40,6 @@ final class AgentSession: ObservableObject, Identifiable {
     @Published var totalInputTokens: Int = 0
     @Published var totalOutputTokens: Int = 0
     @Published var totalCostUsd: Double = 0
-    /// Cumulative wall-clock the agent has spent working this session (sum of
-    /// completed turn durations). Drives the "session" half of the live
-    /// indicator — it never resets when you post a new message, unlike the
-    /// per-turn timer.
-    @Published var sessionElapsedSeconds: TimeInterval = 0
     /// Total tokens claude saw in its context window on the LAST completed
     /// turn (input + cache_read + cache_creation). This is the right number
     /// to compare against the model's context window to compute "how full
@@ -113,6 +108,10 @@ final class AgentSession: ObservableObject, Identifiable {
     /// send). Lets `.processExited` treat the kill as a clean stop rather
     /// than an error, and unblocks the queue drain.
     private var intentionalInterrupt = false
+    /// Captured on a force-send so the interrupting turn keeps the original
+    /// turn's start time instead of resetting the timer to 0 — interrupting a
+    /// thinking turn shouldn't make it look like the wait started over.
+    private var carryOverTurnStart: Date?
     /// What claude is doing right now — "thinking", "writing", "running Bash",
     /// etc. Derived from the most recent stream event.
     @Published var currentPhase: String = "thinking"
@@ -436,7 +435,10 @@ final class AgentSession: ObservableObject, Identifiable {
             messages.append(userMessage)
         }
         status = .running
-        currentTurnStartedAt = Date()
+        // Normally a fresh turn starts the timer now; but a force-send carries
+        // the interrupted turn's start time so the timer continues unbroken.
+        currentTurnStartedAt = carryOverTurnStart ?? Date()
+        carryOverTurnStart = nil
         currentTurnOutputTokens = 0
         inflightTokenEstimate = 0
         currentPhase = "thinking"
@@ -512,6 +514,9 @@ final class AgentSession: ObservableObject, Identifiable {
             // Terminate the running process; .processExited triggers
             // drainQueueIfReady which will pop our prompt from the front.
             intentionalInterrupt = true
+            // Carry the in-flight turn's start time into the forced turn so the
+            // timer keeps counting instead of resetting to 0 on the interrupt.
+            carryOverTurnStart = currentTurnStartedAt
             bridge.cancel()
         } else {
             // Idle path — just dispatch directly.
@@ -622,10 +627,6 @@ final class AgentSession: ObservableObject, Identifiable {
                 // Only fires for non-error completions so we don't
                 // propagate a broken state down the pipeline.
                 turnCompleted.send(lastAssistantText)
-            }
-            // Roll this turn's duration into the session total before clearing.
-            if let start = currentTurnStartedAt {
-                sessionElapsedSeconds += Date().timeIntervalSince(start)
             }
             currentTurnStartedAt = nil
             // Hand off to the next queued prompt on the next runloop tick so

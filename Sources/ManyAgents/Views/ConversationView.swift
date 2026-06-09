@@ -910,27 +910,17 @@ struct ConversationView: View {
         }
 
         private func statusLine(now: Date) -> String {
+            // Per-turn only: verb + this turn's elapsed + this turn's tokens.
+            // The timer is preserved across a force-send (see AgentSession),
+            // so interrupting a thinking turn doesn't snap it back to 0.
             let e = elapsed(now: now)
-            // Per-turn: the verb + this turn's elapsed (resets each message).
-            var line = "\(verb(elapsed: e))…"
-            if e >= 1 { line += " (\(elapsedLabel(e)))" }
-            // Session: cumulative time + tokens for the whole conversation —
-            // grows live and never resets when you post a new message.
-            let sessSecs = session.sessionElapsedSeconds + e
-            let sessTokens = session.totalOutputTokens + session.currentTurnOutputTokens
-            if sessSecs >= 1 {
-                var seg = "session \(elapsedLabel(sessSecs))"
-                if let t = sessionTokensLabel(sessTokens) { seg += " · \(t)" }
-                line += "  ·  \(seg)"
+            var parts: [String] = ["\(verb(elapsed: e))…"]
+            if e >= 1 {
+                var meta: [String] = [elapsedLabel(e)]
+                if let t = tokenLabel { meta.append(t) }
+                parts.append("(\(meta.joined(separator: " · ")))")
             }
-            return line
-        }
-
-        private func sessionTokensLabel(_ n: Int) -> String? {
-            guard n > 0 else { return nil }
-            if n < 1000 { return "\(n) tokens" }
-            if n < 10_000 { return String(format: "%.1fk tokens", Double(n) / 1000) }
-            return String(format: "%.0fk tokens", Double(n) / 1000)
+            return parts.joined(separator: " ")
         }
     }
 

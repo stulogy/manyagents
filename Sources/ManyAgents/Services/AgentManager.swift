@@ -441,13 +441,6 @@ final class AgentManager: ObservableObject {
             /// crash never loses a staged stack. Optional for back-compat
             /// with snapshots written before this field existed.
             let pendingPrompts: [AgentSession.PendingPrompt]?
-            /// Cumulative session totals, persisted so the "session" half of
-            /// the live indicator (time + tokens) survives relaunch instead of
-            /// resetting to 0. Optional for back-compat with older snapshots.
-            var sessionElapsedSeconds: TimeInterval?
-            var totalInputTokens: Int?
-            var totalOutputTokens: Int?
-            var totalCostUsd: Double?
 
             var id: String { (claudeSessionId ?? "") + cwd }
         }
@@ -460,11 +453,7 @@ final class AgentManager: ObservableObject {
                 claudeSessionId: s.claudeSessionId ?? s.resumeSessionId,
                 displayName: s.displayName,
                 aiTitle: s.aiTitle,
-                pendingPrompts: s.pendingPrompts.isEmpty ? nil : s.pendingPrompts,
-                sessionElapsedSeconds: s.sessionElapsedSeconds,
-                totalInputTokens: s.totalInputTokens,
-                totalOutputTokens: s.totalOutputTokens,
-                totalCostUsd: s.totalCostUsd
+                pendingPrompts: s.pendingPrompts.isEmpty ? nil : s.pendingPrompts
             )
         })
         if snap.agents.isEmpty {
@@ -522,12 +511,6 @@ final class AgentManager: ObservableObject {
             // not auto-fired) — so reopening can't trigger a surprise burst;
             // they drain normally on the next turn. Never lose staged work.
             session.pendingPrompts = a.pendingPrompts ?? []
-            // Restore cumulative session totals so the "session" indicator
-            // continues across relaunch rather than resetting to 0.
-            session.sessionElapsedSeconds = a.sessionElapsedSeconds ?? 0
-            session.totalInputTokens = a.totalInputTokens ?? 0
-            session.totalOutputTokens = a.totalOutputTokens ?? 0
-            session.totalCostUsd = a.totalCostUsd ?? 0
             if let sid = a.claudeSessionId, !sid.isEmpty {
                 let prior = TranscriptLoader.load(cwd: a.cwd, sessionId: sid)
                 if !prior.isEmpty {
