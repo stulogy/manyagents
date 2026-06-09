@@ -14,8 +14,8 @@
       <pubDate>Tue, 09 Jun 2026 14:53:54 +0000</pubDate>
       <enclosure url="https://github.com/stulogy/manyagents/releases/download/v0.5.0/ManyAgents-0.5.0.dmg" sparkle:edSignature="RO0xKX2fqS5R9WOwGKzL4dg4GNpXzHpGYauNyCPNOWmMI3WngPuYHKrjcwI/V0oXt+JzobbK6LwIMnr9rNyBDA==" length="2449043" type="application/octet-stream"/>
     </item>
-    <!-- Newest <item> first; appended automatically by Scripts/release.sh on
-         --publish. 0.4.0 and earlier predate Sparkle and aren't in this feed
-         (users on those do one last manual download, then auto-update). -->
+    <!-- Newest item first; appended automatically by the release script when
+         publishing. 0.4.0 and earlier predate Sparkle and are not in this feed
+         (users on those download 0.5.0 once, then auto-update). -->
   </channel>
 </rss>
