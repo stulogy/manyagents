@@ -150,6 +150,9 @@ final class ClaudeBridge {
             // Append a small instruction so claude consistently signals
             // "waiting on you" with a recognizable cue.
             "--append-system-prompt", Self.waitingCueSystemPrompt,
+            // Keep answers concise; offer (don't dump) long reports. Pairs with
+            // the waiting cue so the offer surfaces as a "waiting on you" state.
+            "--append-system-prompt", Self.brevitySystemPrompt,
             // WebSearch / WebFetch are read-only research tools the user always
             // wants to flow — never block them on a permission prompt. An
             // --allowedTools rule bypasses the prompt even under acceptEdits.
@@ -601,6 +604,21 @@ final class ClaudeBridge {
     in a plain statement without a question mark or those cue phrases. \
     Vary the cue phrasing naturally. This is read by the wrapping UI to \
     distinguish "waiting on you" from "idle."
+    """
+
+    /// Keeps responses tight by default and makes the model OFFER a deep report
+    /// instead of dumping one unprompted — Stu found long auto-generated
+    /// "Comprehensive Reports" flooded the chat. Pairs with the waiting cue so
+    /// the offer reads as a "waiting on you" turn.
+    private static let brevitySystemPrompt = """
+    Default to concise, direct answers: lead with the conclusion and keep it as \
+    short as the question allows. Do NOT volunteer long structured reports, \
+    comparison tables, or exhaustive write-ups on your own. When a task would \
+    genuinely benefit from that depth — a comparison, audit, architecture \
+    review, migration plan, or similar — briefly name what a full report would \
+    cover and ask whether I want it, then produce the comprehensive version \
+    only if I say yes. If I explicitly asked for a report or full detail, just \
+    write it.
     """
 
     /// Appended only for coordinator/orchestrator sessions. Steers the model
