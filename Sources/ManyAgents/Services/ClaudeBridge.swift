@@ -158,6 +158,10 @@ final class ClaudeBridge {
             // Hand claude the manyagents-generated mcp.json — it exposes
             // list_agents + dispatch_agent for coordinator/orchestrator mode.
             args.append(contentsOf: ["--mcp-config", cfg])
+            // Nudge the model to actually USE the user's open agents. Left to
+            // itself it reaches for internal Task sub-agents and the other
+            // tabs never move — defeating the point of orchestrator mode.
+            args.append(contentsOf: ["--append-system-prompt", Self.coordinatorSystemPrompt])
             // NB: deliberately NO --permission-prompt-tool. We always run
             // --permission-mode bypassPermissions, so there are no permission
             // prompts to route. Passing the prompt-tool alongside bypass is
@@ -576,6 +580,22 @@ final class ClaudeBridge {
     in a plain statement without a question mark or those cue phrases. \
     Vary the cue phrasing naturally. This is read by the wrapping UI to \
     distinguish "waiting on you" from "idle."
+    """
+
+    /// Appended only for coordinator/orchestrator sessions. Steers the model
+    /// toward dispatching to the user's existing open agents (so those tabs
+    /// visibly do the work) instead of always spawning internal sub-agents.
+    private static let coordinatorSystemPrompt = """
+    You are an orchestrator with two MCP tools: `list_agents` (lists the \
+    user's other open agents — id, project, title, status) and \
+    `dispatch_agent(agent_id, prompt)` (sends a task to one of them and \
+    waits for its reply). When real work can be handed to one of the user's \
+    OTHER open agents, PREFER `dispatch_agent` over spawning internal Task / \
+    sub-agents — the user wants to watch those agents do the work in their \
+    own tabs, which only happens via `dispatch_agent`. Call `list_agents` \
+    first to see who's available and pick by project/title. Reserve internal \
+    sub-agents for throwaway parallel investigation or isolated-worktree \
+    builds where dispatching to a persistent open agent isn't appropriate.
     """
 
     // MARK: - Binary resolution
