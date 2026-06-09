@@ -18,6 +18,8 @@ struct ConversationView: View {
     @State private var currentMatch = 0
     /// Bumped to ask the ScrollViewReader to scroll to the current match.
     @State private var findScrollTick = 0
+    /// Bumped to jump back to the live turn when the sticky turn-bar is tapped.
+    @State private var stickyScrollTick = 0
     /// Scroll-tracking metrics. Driven by GeometryReader-derived
     /// preferences on each scroll/layout pass. We compute "near the
     /// bottom" as (content - scrollY - viewport < tolerance) — a real
@@ -143,10 +145,79 @@ struct ConversationView: View {
 
     private var highlightQuery: String { findVisible ? trimmedQuery : "" }
 
+    // MARK: - Sticky turn bar
+
+    /// Pinned summary shown while a turn runs and the user has scrolled up:
+    /// "↑ <your prompt>     <what it's doing> · <elapsed>". Tap to jump back.
+    private var turnStickyBar: some View {
+        Button {
+            stickyScrollTick += 1
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Color.brandOrange)
+                Text(stickyPromptText.isEmpty ? "Working…" : stickyPromptText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 12)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(stickyStatusText(now: context.date))
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .frame(maxWidth: 760)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(nsColor: .windowBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.brandOrange.opacity(0.30), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 10)
+        .padding(.horizontal, 18)
+        .help("Jump to the live turn")
+    }
+
+    private var stickyPromptText: String {
+        if let t = session.lastSentPrompt?.text, !t.isEmpty { return t }
+        return session.messages.last(where: { $0.role == .user })?.flatText ?? ""
+    }
+
+    private func stickyStatusText(now: Date) -> String {
+        let phase = session.currentPhase.isEmpty ? "working" : session.currentPhase
+        guard let start = session.currentTurnStartedAt else { return "\(phase)…" }
+        let s = max(0, Int(now.timeIntervalSince(start)))
+        let elapsed = s < 60 ? "\(s)s" : "\(s / 60)m \(s % 60)s"
+        return "\(phase)… · \(elapsed)"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             conversationScroll
+                .overlay(alignment: .top) {
+                    // Sticky turn bar — only while running AND scrolled up
+                    // (when near the bottom the live indicator is visible, so
+                    // it would just duplicate). Keeps "what did I ask / what's
+                    // it doing" pinned when you've scrolled away to read.
+                    if session.status == .running && !nearBottom {
+                        turnStickyBar
+                    }
+                }
                 .overlay(alignment: .topTrailing) {
                     if findVisible { findBar }
                 }
@@ -665,6 +736,12 @@ struct ConversationView: View {
                 guard currentMatch < matchIds.count else { return }
                 withAnimation(.easeInOut(duration: 0.2)) {
                     proxy.scrollTo(matchIds[currentMatch], anchor: .center)
+                }
+            }
+            // Sticky turn bar tapped → jump back to the live turn.
+            .onChange(of: stickyScrollTick) { _, _ in
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    scrollToLatest(proxy)
                 }
             }
             // Restore-from-snapshot bug: ConversationView is keyed on
