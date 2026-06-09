@@ -29,11 +29,9 @@ struct ConversationView: View {
     @State private var contentHeight: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
     @State private var scrollY: CGFloat = 0
-    /// Pixels from the bottom under which we still consider the user "at the
-    /// bottom" and keep auto-scrolling. Small on purpose: scrolling up even a
-    /// little should disengage auto-scroll so we never yank the user back down
-    /// while they're reading. Re-engages when they scroll back to the bottom.
-    private static let nearBottomTolerance: CGFloat = 100
+    /// Pixels from the bottom under which we still auto-scroll. ~300px
+    /// is roughly "the last screen-ish worth of content is visible".
+    private static let nearBottomTolerance: CGFloat = 300
 
     /// True when the user is within `nearBottomTolerance` of the
     /// trailing edge. While true, programmatic scrolling tracks new
@@ -685,15 +683,13 @@ struct ConversationView: View {
                         ThinkingIndicator(session: session)
                             .id("thinking")
                     }
-                    // Bottom anchor — a spacer the height of the bottom
-                    // padding. We scroll to THIS (not the last row), so the
-                    // padding stays visible at rest and the thinking indicator
-                    // isn't clipped under the input bar. Scrolling to the last
-                    // row instead pinned it flush to the edge.
-                    Color.clear.frame(height: 28).id("bottom")
+                    // Bottom anchor — empty spacer at the very end so we
+                    // have a stable id to scroll to even when there are
+                    // zero messages or the thinking indicator isn't showing.
+                    Color.clear.frame(height: 1).id("bottom")
                 }
                 .padding(.horizontal, 24)
-                .padding(.top, 20)
+                .padding(.vertical, 20)
                 .frame(maxWidth: 1180, alignment: .leading)
                 .frame(maxWidth: .infinity)
                 // Content size + position tracker. Lives in a background
@@ -783,12 +779,16 @@ struct ConversationView: View {
         Task { @MainActor in
             for nanos in [50_000_000, 200_000_000, 500_000_000, 1_000_000_000] {
                 try? await Task.sleep(nanoseconds: UInt64(nanos))
-                // Don't gate on nearBottom here: on mount / tab-switch the
-                // intent is always to land at the bottom, and the LazyVStack
-                // often hasn't laid out the trailing rows yet (the "blank until
-                // I nudge it" bug). Scrolling to the trailing spacer forces
-                // that layout and lands at the true bottom every retry.
-                proxy.scrollTo("bottom", anchor: .bottom)
+                // If the user has scrolled up while we were waiting for
+                // the next kick, stop chasing the bottom — the whole
+                // point of this loop is to land at the bottom on first
+                // mount, not to fight a deliberate scroll.
+                guard nearBottom else { return }
+                if let lastId = session.messages.last?.id {
+                    proxy.scrollTo(lastId, anchor: .bottom)
+                } else {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
             }
         }
     }
@@ -801,11 +801,13 @@ struct ConversationView: View {
     /// prompt with the indicator clipped below the fold.
     private func scrollToLatest(_ proxy: ScrollViewProxy) {
         withAnimation(.easeOut(duration: 0.25)) {
-            // Always target the trailing spacer: positioning it at the bottom
-            // forces the LazyVStack to lay out the rows above it (so nothing
-            // stays blank) AND keeps the bottom padding visible — scrolling to
-            // the last row instead pins it flush to the input bar.
-            proxy.scrollTo("bottom", anchor: .bottom)
+            if session.status == .running {
+                proxy.scrollTo("thinking", anchor: .bottom)
+            } else if let lastId = session.messages.last?.id {
+                proxy.scrollTo(lastId, anchor: .bottom)
+            } else {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
         }
     }
 
