@@ -99,6 +99,11 @@ final class AgentSession: ObservableObject, Identifiable {
     /// rolled back into the canonical count by `.tokenCount` events at
     /// each message boundary, so the displayed number self-corrects.
     @Published var currentTurnOutputTokens: Int = 0
+    /// Output tokens carried over from turn(s) interrupted by a force-send, so
+    /// the displayed count continues across the interrupt instead of dropping
+    /// to 0. The indicator shows `carriedTurnTokens + currentTurnOutputTokens`.
+    /// Accumulates on each force-send; reset to 0 when a turn completes.
+    @Published var carriedTurnTokens: Int = 0
     /// chars-÷-4 estimate of how much we've over-counted the current
     /// in-flight message via partial-text deltas. Subtracted then
     /// replaced when `.tokenCount` lands with the canonical figure.
@@ -514,9 +519,11 @@ final class AgentSession: ObservableObject, Identifiable {
             // Terminate the running process; .processExited triggers
             // drainQueueIfReady which will pop our prompt from the front.
             intentionalInterrupt = true
-            // Carry the in-flight turn's start time into the forced turn so the
-            // timer keeps counting instead of resetting to 0 on the interrupt.
+            // Carry the in-flight turn's start time AND token count into the
+            // forced turn so the timer and token count continue across the
+            // interrupt instead of snapping back to 0.
             carryOverTurnStart = currentTurnStartedAt
+            carriedTurnTokens += currentTurnOutputTokens
             bridge.cancel()
         } else {
             // Idle path — just dispatch directly.
@@ -629,6 +636,9 @@ final class AgentSession: ObservableObject, Identifiable {
                 turnCompleted.send(lastAssistantText)
             }
             currentTurnStartedAt = nil
+            // The logical turn finished — clear any carried token base so the
+            // next fresh turn starts its count from 0.
+            carriedTurnTokens = 0
             // Hand off to the next queued prompt on the next runloop tick so
             // any UI bound to .result has settled before the new turn flips
             // status back to .running.
