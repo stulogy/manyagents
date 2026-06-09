@@ -13,6 +13,10 @@ struct MessageView: View {
     /// nested-card renderer can show every subagent step in place.
     /// Defaults to empty so the type stays drop-in.
     var subagentChildren: [String: [Message]] = [:]
+    /// Tool-use ids of Task/Agent (sub-agent) calls. A tool result whose id is
+    /// in here is a sub-agent report and gets markdown-formatted; all other
+    /// results (Bash/Grep/Read/…) render monospace.
+    var subagentToolUseIds: Set<String> = []
     /// cwd of the owning session — passed through to MarkdownText so
     /// relative file paths in code spans (`notes/foo.html`) can be
     /// resolved against the project root and autolinked.
@@ -355,8 +359,9 @@ struct MessageView: View {
             } else {
                 ToolUseCard(toolName: name, input: input)
             }
-        case .toolResult(_, _, let content, let isError, _):
-            ToolResultRow(content: content, isError: isError, sessionCwd: sessionCwd)
+        case .toolResult(_, let toolUseId, let content, let isError, _):
+            ToolResultRow(content: content, isError: isError, sessionCwd: sessionCwd,
+                          isSubagentResult: subagentToolUseIds.contains(toolUseId))
         case .image(_, let data, _):
             if let img = NSImage(data: data) {
                 Image(nsImage: img)
@@ -381,19 +386,14 @@ struct MessageView: View {
         let content: String
         let isError: Bool
         var sessionCwd: String? = nil
+        /// True only when this result came from a Task/Agent sub-agent — those
+        /// are markdown prose reports worth formatting. Everything else stays
+        /// monospace, so shell output (e.g. `=== banner ===` lines, `#`
+        /// comments) isn't parsed into giant setext/ATX headings.
+        var isSubagentResult: Bool = false
         @State private var expanded = false
 
-        /// Sub-agent / Task reports come back as a tool result full of
-        /// markdown prose (headings, bold, bullets); Bash/Grep/Read output
-        /// doesn't. A markdown heading line is the tell — when present we
-        /// render the whole thing formatted instead of as raw monospace,
-        /// so a delegated investigation reads like the summary it is.
-        private var rendersAsMarkdown: Bool {
-            guard !isError else { return false }
-            let c = content
-            return c.hasPrefix("# ") || c.hasPrefix("## ") || c.hasPrefix("### ")
-                || c.contains("\n# ") || c.contains("\n## ") || c.contains("\n### ")
-        }
+        private var rendersAsMarkdown: Bool { isSubagentResult && !isError }
 
         // Line budget — short multi-line output passes through; longer
         // collapses to the first few lines.

@@ -641,6 +641,23 @@ struct ConversationView: View {
         return (top, children)
     }
 
+    /// Tool-use ids of every Task/Agent (sub-agent) call in the conversation.
+    /// A tool RESULT whose id is in here is a sub-agent report and renders as
+    /// markdown; everything else (Bash/Grep/Read/…) stays monospace — so shell
+    /// output with `===` banners isn't mangled into giant setext headings.
+    private var subagentToolUseIds: Set<String> {
+        var ids: Set<String> = []
+        for msg in session.messages {
+            for block in msg.blocks {
+                if case .toolUse(_, let toolUseId, let name, let input, _) = block,
+                   MessageView.isSubagentTool(name: name, input: input) {
+                    ids.insert(toolUseId)
+                }
+            }
+        }
+        return ids
+    }
+
     private var conversationScroll: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -649,9 +666,11 @@ struct ConversationView: View {
                         emptyState
                     }
                     let g = grouped
+                    let subIds = subagentToolUseIds
                     ForEach(g.top) { msg in
                         MessageView(message: msg,
                                     subagentChildren: g.children,
+                                    subagentToolUseIds: subIds,
                                     sessionCwd: session.cwd,
                                     sessionId: session.id,
                                     highlight: highlightQuery,
