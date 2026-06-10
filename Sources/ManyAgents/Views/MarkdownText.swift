@@ -39,7 +39,7 @@ struct MarkdownText: View {
     private func view(for block: MdBlock) -> some View {
         switch block {
         case .heading(let level, let text):
-            Text(inline(text))
+            Text(inline(text, size: headingSize(level)))
                 .font(.system(size: headingSize(level), weight: .semibold))
                 .padding(.top, level <= 2 ? 4 : 2)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -141,7 +141,7 @@ struct MarkdownText: View {
             // Header row.
             HStack(alignment: .top, spacing: 0) {
                 ForEach(0..<columnCount, id: \.self) { i in
-                    Text(inline(i < header.count ? header[i] : ""))
+                    Text(inline(i < header.count ? header[i] : "", size: 12.5))
                         .font(.system(size: 12.5, weight: .semibold))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 10)
@@ -159,7 +159,7 @@ struct MarkdownText: View {
             ForEach(Array(rows.enumerated()), id: \.offset) { ridx, row in
                 HStack(alignment: .top, spacing: 0) {
                     ForEach(0..<columnCount, id: \.self) { i in
-                        Text(inline(i < row.count ? row[i] : ""))
+                        Text(inline(i < row.count ? row[i] : "", size: 12.5))
                             .font(.system(size: 12.5))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 10)
@@ -233,7 +233,12 @@ struct MarkdownText: View {
 
     /// Inline pass — bold, italic, code spans, links — with code spans
     /// styled so they actually look like code (monospace + tinted bg).
-    private func inline(_ text: String) -> AttributedString {
+    /// `size` must match the surrounding text's point size: SwiftUI draws a
+    /// code span's background blob at that run's own font metrics, so a
+    /// hardcoded size inside a larger line (body, headings) leaves the blob
+    /// vertically misaligned. Matching the context size keeps the baseline
+    /// and box height in step with the rest of the line.
+    private func inline(_ text: String, size: CGFloat = 14.5) -> AttributedString {
         var str: AttributedString
         if let parsed = try? AttributedString(
             markdown: text,
@@ -246,13 +251,14 @@ struct MarkdownText: View {
         }
         // Inline code spans live on `inlinePresentationIntent` (not the
         // block-level `presentationIntent`). Tint them orange in a
-        // monospace face with a faint background fill. Then autolink
-        // any span that looks like a URL or a file path so Cmd-clicking
-        // it opens in the default app — Finder for directories, the
-        // user's editor for files, browser for http(s).
+        // monospace face (at the surrounding text's size, so the bg blob
+        // lines up) with a faint background fill. Then autolink any span
+        // that looks like a URL or a file path so Cmd-clicking it opens in
+        // the default app — Finder for directories, the user's editor for
+        // files, browser for http(s).
         for run in str.runs {
             if run.inlinePresentationIntent?.contains(.code) == true {
-                str[run.range].font = .system(size: 12.5, weight: .medium, design: .monospaced)
+                str[run.range].font = .system(size: size, weight: .medium, design: .monospaced)
                 str[run.range].foregroundColor = Color.brandOrange
                 str[run.range].backgroundColor = Color.brandOrange.opacity(0.12)
                 let spanText = String(str[run.range].characters)

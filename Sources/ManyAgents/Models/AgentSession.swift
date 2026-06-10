@@ -158,6 +158,19 @@ final class AgentSession: ObservableObject, Identifiable {
     /// output supersedes it. Cleared on the next `.assistantBlocks` and reset.
     @Published var answeredAsk: (state: AskState, answer: String)?
 
+    /// Every AskUserQuestion the user has answered this session, keyed by
+    /// the question's tool_use id. Unlike `answeredAsk` (a single transient
+    /// chip that clears on the next turn), this persists for the life of
+    /// the session so the transcript can render a permanent "you chose X"
+    /// card where the question was asked — the decision stays in history
+    /// instead of vanishing once the agent resumes.
+    @Published var answeredQuestions: [String: AnsweredAsk] = [:]
+
+    struct AnsweredAsk: Equatable {
+        let state: AskState
+        let answer: String
+    }
+
     // MARK: - Chain / pipeline state
 
     /// If set, this session is wired as the LEFT side of a chain — when
@@ -488,24 +501,42 @@ final class AgentSession: ObservableObject, Identifiable {
         pendingPrompts.removeAll { $0.id == id }
     }
 
-    /// User picked an option from the AskUserQuestion picker. Post the
-    /// result back to claude as a tool_result on the still-open stdin so
-    /// the turn continues. Multi-select callers pass the comma-joined
-    /// labels.
+    /// User picked an option from the AskUserQuestion picker. Interrupts the
+    /// (auto-denied, dead-end) question turn and delivers the choice as the
+    /// resumed session's next turn, so the agent actually receives it without
+    /// a manual force-push. Multi-select callers pass the comma-joined labels.
     func answerQuestion(_ answer: String) {
         guard let q = pendingAskUserQuestion else { return }
         pendingAskUserQuestion = nil
         // Keep a record so the picker shows a "✓ <answer>" confirmation chip
         // (with the original question) until the next turn's output lands.
         answeredAsk = (state: q, answer: answer)
-        // In headless `--print` mode the CLI auto-denies AskUserQuestion and
-        // ends the turn — there's no open tool_result to fulfil and stdin is
-        // already closed, so the old `submitToolResult` path silently no-oped
-        // (the bug: "click does nothing, stuck on Thinking…"). Deliver the
-        // choice as a normal new user turn instead; the resumed session still
-        // holds the question context, so a plain follow-up continues cleanly.
-        // visible:false keeps it out of the bubble flow — the chip stands in.
-        send(answer, visible: false)
+        // Durable record (keyed by tool_use id) so the transcript can render
+        // a permanent card where the question was asked — survives the next
+        // turn, unlike the transient chip above.
+        answeredQuestions[q.toolUseId] = AnsweredAsk(state: q, answer: answer)
+        // The CLI auto-denies AskUserQuestion in `--print` mode, but the turn
+        // does NOT cleanly end — the process keeps running after the denial.
+        // So a plain `send()` would queue the answer behind a turn that never
+        // drains (the bug: "stuck on Thinking, answer sits in the queue until
+        // I force-push"). Deliver it like a force-send instead: stage the
+        // answer at the FRONT of the queue and interrupt the dead-end turn so
+        // the resumed session — which still holds the question context — picks
+        // the answer up immediately as its next turn. visible:false keeps it
+        // out of the bubble flow; the chip + historical card stand in for it.
+        let prompt = PendingPrompt(text: answer, images: [], visible: false)
+        if status == .running || bridge.isBusy {
+            pendingPrompts.insert(prompt, at: 0)
+            intentionalInterrupt = true
+            // Carry the interrupted turn's start + tokens so the timer/gauge
+            // continue unbroken into the answer's turn (mirrors forceSend).
+            carryOverTurnStart = currentTurnStartedAt
+            carriedTurnTokens += currentTurnOutputTokens
+            bridge.cancel()
+        } else {
+            // Turn already ended — just dispatch the answer now.
+            dispatch(prompt)
+        }
     }
 
     /// "Send now" — move a queued prompt to the front of the line and

@@ -6,6 +6,12 @@ import SwiftUI
 struct ToolUseCard: View {
     let toolName: String
     let input: [String: AnyCodable]
+    /// Set for file-edit tools (Edit/Write/…) once their result has
+    /// arrived: `true` when the edit succeeded — the verbose
+    /// "…updated successfully" result row is suppressed and folded into a
+    /// ✓ here instead. `nil` for everything else (pending, errors, or
+    /// non-edit tools, which keep their own result row).
+    var succeeded: Bool? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -39,6 +45,12 @@ struct ToolUseCard: View {
                 .font(.system(size: 11.5, weight: .semibold))
                 .foregroundStyle(toolTint)
             Spacer(minLength: 0)
+            if succeeded == true {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .help("Updated successfully")
+            }
         }
     }
 

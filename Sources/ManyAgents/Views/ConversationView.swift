@@ -658,6 +658,34 @@ struct ConversationView: View {
         return ids
     }
 
+    /// Outcome of each file-edit tool call (Edit/Write/…), keyed by its
+    /// tool_use id: `true` = errored, `false` = succeeded. tool_use and its
+    /// result live in separate messages, so we correlate them here in one
+    /// pass. MessageView uses this to fold a *successful* edit's verbose
+    /// "…updated successfully" result into a ✓ on the tool card, while real
+    /// errors ("File has not been read yet") still render as their own row.
+    private var fileEditOutcomes: [String: Bool] {
+        var editIds: Set<String> = []
+        var errorById: [String: Bool] = [:]
+        for msg in session.messages {
+            for block in msg.blocks {
+                switch block {
+                case .toolUse(_, let id, let name, _, _):
+                    if MessageView.isFileEditTool(name) { editIds.insert(id) }
+                case .toolResult(_, let id, _, let isError, _):
+                    errorById[id] = isError
+                default:
+                    break
+                }
+            }
+        }
+        var outcomes: [String: Bool] = [:]
+        for id in editIds {
+            if let isError = errorById[id] { outcomes[id] = isError }
+        }
+        return outcomes
+    }
+
     private var conversationScroll: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -667,10 +695,14 @@ struct ConversationView: View {
                     }
                     let g = grouped
                     let subIds = subagentToolUseIds
+                    let editOutcomes = fileEditOutcomes
+                    let answered = session.answeredQuestions
                     ForEach(g.top) { msg in
                         MessageView(message: msg,
                                     subagentChildren: g.children,
                                     subagentToolUseIds: subIds,
+                                    fileEditOutcomes: editOutcomes,
+                                    answeredQuestions: answered,
                                     sessionCwd: session.cwd,
                                     sessionId: session.id,
                                     highlight: highlightQuery,

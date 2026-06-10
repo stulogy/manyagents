@@ -230,3 +230,57 @@ struct AskUserQuestionPicker: View {
         session.answerQuestion(trimmed)
     }
 }
+
+/// Permanent transcript record of an AskUserQuestion the user answered.
+/// Rendered inline where the question was asked (in place of the skipped
+/// tool_use block) so the decision stays visible in history after the live
+/// picker's transient "✓" chip clears on the next turn. Compact by design —
+/// the question plus the chosen answer, not the full option list.
+struct AnsweredQuestionCard: View {
+    let state: AgentSession.AskState
+    let answer: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if let h = state.header, !h.isEmpty {
+                Text(h.uppercased())
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(Color.brandOrange.opacity(0.8))
+            }
+            Text(state.question)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.leading)
+            HStack(alignment: .top, spacing: 7) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.brandOrange)
+                    .padding(.top, 1)
+                Text(answer)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.brandOrange.opacity(0.12))
+            )
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.brandOrange.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.brandOrange.opacity(0.22), lineWidth: 1)
+        )
+    }
+}

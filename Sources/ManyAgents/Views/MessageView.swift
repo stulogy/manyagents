@@ -17,6 +17,18 @@ struct MessageView: View {
     /// in here is a sub-agent report and gets markdown-formatted; all other
     /// results (Bash/Grep/Read/…) render monospace.
     var subagentToolUseIds: Set<String> = []
+    /// Outcome of each file-edit tool call (Edit/Write/…), keyed by its
+    /// tool_use id: `true` = errored, `false` = succeeded. Built across
+    /// messages by ConversationView (tool_use and its result live in
+    /// separate messages). A *successful* edit's verbose result row is
+    /// suppressed and shown as a ✓ on the tool card instead; errors like
+    /// "File has not been read yet" still render as their own row.
+    var fileEditOutcomes: [String: Bool] = [:]
+    /// AskUserQuestion answers the user has given this session, keyed by the
+    /// question's tool_use id. Lets us render a permanent "you chose X" card
+    /// where the (otherwise skipped) AskUserQuestion tool_use sits, so the
+    /// decision stays in the transcript after the live picker chip clears.
+    var answeredQuestions: [String: AgentSession.AnsweredAsk] = [:]
     /// cwd of the owning session — passed through to MarkdownText so
     /// relative file paths in code spans (`notes/foo.html`) can be
     /// resolved against the project root and autolinked.
@@ -219,8 +231,16 @@ struct MessageView: View {
             switch block {
             case .text(_, let t):     return t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             case .thinking(_, let t): return t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            case .toolUse:            return false
-            case .toolResult(_, _, let c, _, _):
+            case .toolUse(_, let id, let name, _, _):
+                // An unanswered AskUserQuestion renders nothing (the live
+                // picker owns it), so a message holding only one is empty.
+                // Every other tool_use renders a card → never empty.
+                return name == "AskUserQuestion" && answeredQuestions[id] == nil
+            case .toolResult(_, let id, let c, _, _):
+                // Suppressed edit-success results render nothing, so a
+                // message holding only one must count as empty — otherwise
+                // it leaves an orphan marker dot with nothing beside it.
+                if fileEditOutcomes[id] == false { return true }
                 return c.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             case .image:              return false
             }
@@ -286,6 +306,13 @@ struct MessageView: View {
         return input["subagent_type"]?.stringValue?.isEmpty == false
     }
 
+    /// File-mutating tools whose success confirmation ("…updated
+    /// successfully") is noise the tool card already conveys — we fold a
+    /// successful result into a ✓ on the card rather than a separate row.
+    static func isFileEditTool(_ name: String) -> Bool {
+        name == "Edit" || name == "Write" || name == "MultiEdit" || name == "NotebookEdit"
+    }
+
     // MARK: - Block rendering
 
     @ViewBuilder
@@ -341,7 +368,14 @@ struct MessageView: View {
             // conversation, so skip the raw tool-use card here to avoid
             // double-rendering the same prompt.
             if name == "AskUserQuestion" {
-                EmptyView()
+                // While pending, the live picker (below the conversation)
+                // owns the question — render nothing here. Once answered,
+                // leave a permanent record of the choice in the transcript.
+                if let answered = answeredQuestions[toolUseId] {
+                    AnsweredQuestionCard(state: answered.state, answer: answered.answer)
+                } else {
+                    EmptyView()
+                }
             } else if Self.isSubagentTool(name: name, input: input) {
                 // Subagent dispatch tool — claude code calls this
                 // "Task" historically, "Agent" in recent versions
@@ -357,11 +391,23 @@ struct MessageView: View {
                     sessionId: sessionId
                 )
             } else {
-                ToolUseCard(toolName: name, input: input)
+                // For file-edit tools, fold a successful result into a ✓
+                // on the card (succeeded: true). `nil` for pending edits,
+                // edit errors, and every non-edit tool — those are
+                // unaffected.
+                ToolUseCard(toolName: name, input: input,
+                            succeeded: fileEditOutcomes[toolUseId] == false ? true : nil)
             }
         case .toolResult(_, let toolUseId, let content, let isError, _):
-            ToolResultRow(content: content, isError: isError, sessionCwd: sessionCwd,
-                          isSubagentResult: subagentToolUseIds.contains(toolUseId))
+            // A successful file-edit result ("…updated successfully") is
+            // redundant with the tool card's ✓ — suppress it. Edit *errors*
+            // (isError → outcome true) and all non-edit results still render.
+            if fileEditOutcomes[toolUseId] == false {
+                EmptyView()
+            } else {
+                ToolResultRow(content: content, isError: isError, sessionCwd: sessionCwd,
+                              isSubagentResult: subagentToolUseIds.contains(toolUseId))
+            }
         case .image(_, let data, _):
             if let img = NSImage(data: data) {
                 Image(nsImage: img)
@@ -484,6 +530,63 @@ struct MessageView: View {
             return v
         }
 
+        /// Markdown counterpart to `visibleText`: when collapsed and over
+        /// budget, render only the first few lines as a teaser. Truncate by
+        /// line only (never mid-character) so the preview's markdown still
+        /// parses cleanly.
+        private var markdownPreview: String {
+            guard !expanded, exceedsLineBudget || exceedsCharBudget else { return content }
+            return lines.prefix(Self.collapsedLineCount).joined(separator: "\n")
+        }
+
+        /// Expand-button text. Reports get a friendlier "Show full report"
+        /// with the size hint appended; raw output keeps the bare hint.
+        private var expandLabel: String {
+            guard rendersAsMarkdown else { return hiddenSummary }
+            let hint = hiddenSummary
+            return hint.isEmpty ? "Show full report" : "Show full report · \(hint)"
+        }
+
+        /// Expand / collapse pill, shared by the markdown and raw-output
+        /// branches so both fold long content the same way.
+        @ViewBuilder
+        private var disclosureControls: some View {
+            if shouldShowDisclosure {
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { expanded = true }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(expandLabel)
+                            .font(.system(size: 10.5, weight: .medium))
+                    }
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.primary.opacity(0.05)))
+                }
+                .buttonStyle(.plain)
+                .help("Show full output")
+            } else if expanded && (exceedsLineBudget || exceedsCharBudget) {
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { expanded = false }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("Collapse")
+                            .font(.system(size: 10.5, weight: .medium))
+                    }
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.primary.opacity(0.05)))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+
         var body: some View {
             HStack(alignment: .top, spacing: 6) {
                 Text("└")
@@ -492,57 +595,22 @@ struct MessageView: View {
                     .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 4) {
                     if rendersAsMarkdown {
-                        // Format the report; show it in full (no collapse) —
-                        // the whole point is to read it as a summary.
-                        MarkdownText(raw: content, sessionCwd: sessionCwd)
+                        // Subagent reports are often two screens tall — they
+                        // shouldn't dominate the transcript. Collapse to a
+                        // teaser by default (same line/char budget as raw
+                        // output); expand to read the whole summary.
+                        MarkdownText(raw: markdownPreview, sessionCwd: sessionCwd)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                    Text(displayText)
-                        .font(AppFont.mono(12))
-                        .foregroundStyle(isError ? .red : .secondary)
-                        .lineSpacing(2)
-                        .multilineTextAlignment(.leading)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if shouldShowDisclosure {
-                        Button {
-                            withAnimation(.easeOut(duration: 0.15)) { expanded = true }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "chevron.down")
-                                    .font(.system(size: 9, weight: .semibold))
-                                Text(hiddenSummary)
-                                    .font(.system(size: 10.5, weight: .medium))
-                            }
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(
-                                Capsule().fill(Color.primary.opacity(0.05))
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .help("Show full output")
-                    } else if expanded && (exceedsLineBudget || exceedsCharBudget) {
-                        Button {
-                            withAnimation(.easeOut(duration: 0.15)) { expanded = false }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "chevron.up")
-                                    .font(.system(size: 9, weight: .semibold))
-                                Text("Collapse")
-                                    .font(.system(size: 10.5, weight: .medium))
-                            }
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(
-                                Capsule().fill(Color.primary.opacity(0.05))
-                            )
-                        }
-                        .buttonStyle(.plain)
+                        Text(displayText)
+                            .font(AppFont.mono(12))
+                            .foregroundStyle(isError ? .red : .secondary)
+                            .lineSpacing(2)
+                            .multilineTextAlignment(.leading)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    }
+                    disclosureControls
                 }
             }
         }
