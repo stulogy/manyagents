@@ -53,7 +53,7 @@ die() { printf "\033[1;31m✗ %s\033[0m\n" "$*" >&2; exit 1; }
 # ── Preflight ─────────────────────────────────────────────────────────
 b "Preflight"
 command -v xcodegen >/dev/null   || die "xcodegen missing — \`brew install xcodegen\`"
-command -v create-dmg >/dev/null || die "create-dmg missing — \`brew install create-dmg\`"
+command -v create-dmg >/dev/null || printf "\033[1;33m! create-dmg missing — will build a plain hdiutil DMG (\`brew install create-dmg\` for the styled one)\033[0m\n"
 command -v xcrun >/dev/null      || die "xcrun missing — install Xcode CLT"
 security find-identity -v -p codesigning | grep -q "$DEVELOPER_ID" \
     || die "Cert not in keychain: $DEVELOPER_ID"
@@ -150,7 +150,15 @@ rm -f "$DMG_PATH"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 cp -R "$APP_PATH" "$STAGE/"
-create-dmg \
+# Preferred path: create-dmg gives a styled window (icon layout +
+# Applications drop target). It styles the window by scripting Finder over
+# AppleScript, which only works from an interactive GUI (Aqua) session — it
+# fails (-10006) under SSH / CI / any shell not attached to the desktop.
+# Fall back to a plain hdiutil image in that case so the release still
+# completes unattended; the DMG is unstyled but functionally identical
+# (drag the app onto the Applications symlink). Wrapped in `if` so
+# create-dmg's non-zero exit doesn't trip `set -e`.
+if command -v create-dmg >/dev/null && create-dmg \
     --volname "ManyAgents $VERSION" \
     --window-pos 200 120 \
     --window-size 600 360 \
@@ -160,8 +168,23 @@ create-dmg \
     --app-drop-link 440 180 \
     --no-internet-enable \
     "$DMG_PATH" \
-    "$STAGE" >/dev/null
-ok "DMG: $DMG_PATH"
+    "$STAGE" >/dev/null 2>&1 && [[ -f "$DMG_PATH" ]]; then
+    ok "DMG: $DMG_PATH (styled)"
+else
+    b "create-dmg styling unavailable (no Finder automation) — plain hdiutil DMG"
+    rm -f "$DMG_PATH"
+    # create-dmg may leave its temp image mounted after an AppleScript abort.
+    hdiutil detach "/Volumes/ManyAgents $VERSION" >/dev/null 2>&1 || true
+    ln -sf /Applications "$STAGE/Applications"
+    hdiutil create \
+        -volname "ManyAgents $VERSION" \
+        -srcfolder "$STAGE" \
+        -fs HFS+ \
+        -format UDZO \
+        -ov \
+        "$DMG_PATH" >/dev/null
+    ok "DMG: $DMG_PATH (plain)"
+fi
 
 # ── Sign + staple the DMG itself ──────────────────────────────────────
 # Notarizing the DMG (separate from the .app) means Gatekeeper trusts
