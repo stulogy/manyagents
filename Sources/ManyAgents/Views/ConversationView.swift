@@ -764,6 +764,22 @@ struct ConversationView: View {
             // grows, and the initial position lands at the bottom — no
             // more "scroll up a little to see anything" on restore.
             .defaultScrollAnchor(.bottom)
+            // Blank-on-tab-switch fix. Each switch builds a fresh view
+            // (WorkspaceView .id(session.id)s us), and a LazyVStack under
+            // .defaultScrollAnchor(.bottom) frequently renders blank until
+            // the first real scroll event — so kick it to the always-present
+            // "bottom" spacer once on appear, forcing the rows to lay out and
+            // landing us at the latest message. Non-animated (no visible
+            // jump) and one-shot on mount, so unlike the reverted 0.6.3
+            // rework it never fires mid-stream and can't bring back the
+            // streaming jumpiness. Two passes: trailing rows often aren't
+            // measured on the first runloop tick.
+            .onAppear {
+                DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            }
             // Belt-and-braces: also call scrollTo on content changes so
             // active streams stay pinned to the latest token even if the
             // anchor logic decides we're "scrolled away" from the bottom.
