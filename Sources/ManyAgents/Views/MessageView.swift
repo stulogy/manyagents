@@ -374,6 +374,7 @@ struct MessageView: View {
         /// comments) isn't parsed into giant setext/ATX headings.
         var isSubagentResult: Bool = false
         @State private var expanded = false
+        @State private var showingReportSheet = false
 
         private var rendersAsMarkdown: Bool { isSubagentResult && !isError }
 
@@ -531,12 +532,14 @@ struct MessageView: View {
                     .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 4) {
                     if rendersAsMarkdown {
-                        // Subagent reports are often two screens tall — they
-                        // shouldn't dominate the transcript. Collapse to a
-                        // teaser by default (same line/char budget as raw
-                        // output); expand to read the whole summary.
+                        // Subagent reports are often two screens tall — keep
+                        // only a teaser in the transcript and open the full
+                        // thing in a focused modal (never dump it inline).
                         MarkdownText(raw: markdownPreview, sessionCwd: sessionCwd)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                        if shouldShowDisclosure {
+                            reportButton
+                        }
                     } else {
                         Text(displayText)
                             .font(AppFont.mono(12))
@@ -545,10 +548,77 @@ struct MessageView: View {
                             .multilineTextAlignment(.leading)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                        disclosureControls
                     }
-                    disclosureControls
                 }
             }
+            .sheet(isPresented: $showingReportSheet) {
+                ReportSheet(markdown: content, sessionCwd: sessionCwd)
+            }
+        }
+
+        /// Pill under a report teaser that opens the full report in a modal.
+        private var reportButton: some View {
+            Button { showingReportSheet = true } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text(hiddenSummary.isEmpty ? "Read full report" : "Read full report · \(hiddenSummary)")
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color.primary.opacity(0.05)))
+            }
+            .buttonStyle(.plain)
+            .help("Open the full report in a window")
+        }
+    }
+
+    /// Focused modal reading view for a long sub-agent report — keeps the
+    /// transcript clean while giving the full markdown a scrollable surface.
+    private struct ReportSheet: View {
+        let markdown: String
+        var sessionCwd: String? = nil
+        @Environment(\.dismiss) private var dismiss
+        @State private var copied = false
+
+        var body: some View {
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Image(systemName: "doc.text")
+                        .foregroundStyle(Color.brandOrange)
+                    Text("Report")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(markdown, forType: .string)
+                        withAnimation { copied = true }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                            withAnimation { copied = false }
+                        }
+                    } label: {
+                        Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(copied ? .green : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                Divider()
+                ScrollView {
+                    MarkdownText(raw: markdown, sessionCwd: sessionCwd)
+                        .padding(18)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(width: 720, height: 580)
         }
     }
 
