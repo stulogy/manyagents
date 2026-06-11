@@ -622,13 +622,18 @@ struct ConversationView: View {
                         ThinkingIndicator(session: session)
                             .id("thinking")
                     }
-                    // Bottom anchor — empty spacer at the very end so we
-                    // have a stable id to scroll to even when there are
-                    // zero messages or the thinking indicator isn't showing.
-                    Color.clear.frame(height: 1).id("bottom")
+                    // Bottom anchor — a trailing spacer that doubles as the
+                    // breathing room above the composer. Auto-follow does
+                    // scrollTo("bottom", anchor: .bottom), which aligns THIS
+                    // view's bottom to the viewport bottom; making it tall
+                    // means the last line lands a comfortable gap above the
+                    // composer instead of butting against it. It's the very
+                    // last element (no padding below it), so the auto-scroll
+                    // position and the manual scroll-to-end position match.
+                    Color.clear.frame(height: 32).id("bottom")
                 }
                 .padding(.horizontal, 24)
-                .padding(.vertical, 20)
+                .padding(.top, 20)
                 .frame(maxWidth: 1180, alignment: .leading)
                 .frame(maxWidth: .infinity)
                 // Content size + position tracker. Lives in a background
