@@ -659,44 +659,32 @@ struct ConversationView: View {
             .onPreferenceChange(ContentHeightKey.self) { contentHeight = $0 }
             .onPreferenceChange(ScrollYKey.self) { scrollY = $0 }
             .onPreferenceChange(ViewportHeightKey.self) { viewportHeight = $0 }
-            // macOS 14+: tell SwiftUI this is a chat-style scroll view.
-            // The scroll position naturally tracks the bottom as content
-            // grows, and the initial position lands at the bottom — no
-            // more "scroll up a little to see anything" on restore.
-            .defaultScrollAnchor(.bottom)
-            // Blank-on-tab-switch fix. Each switch builds a fresh view
-            // (WorkspaceView .id(session.id)s us), and a LazyVStack under
-            // .defaultScrollAnchor(.bottom) frequently renders blank until
-            // the first real scroll event — so kick it to the always-present
-            // "bottom" spacer once on appear, forcing the rows to lay out and
-            // landing us at the latest message. Non-animated (no visible
-            // jump) and one-shot on mount, so unlike the reverted 0.6.3
-            // rework it never fires mid-stream and can't bring back the
-            // streaming jumpiness. Two passes: trailing rows often aren't
-            // measured on the first runloop tick.
+            // NOTE: we deliberately do NOT use .defaultScrollAnchor(.bottom).
+            // It re-pins to the bottom on EVERY content-size change,
+            // unconditionally — so a growing stream (or a new message) yanked
+            // the viewport down even while the user was scrolled up reading
+            // earlier text. The default top anchor instead holds the user's
+            // position when content is added below; we follow the bottom
+            // ourselves, but only when they're already there (see below).
+            // Land at the bottom on first mount (also forces the LazyVStack to
+            // materialize its trailing rows — the blank-on-tab-switch fix).
+            // Two passes: trailing rows often aren't measured on the first tick.
             .onAppear {
                 DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
-            // Belt-and-braces: also call scrollTo on content changes so
-            // active streams stay pinned to the latest token even if the
-            // anchor logic decides we're "scrolled away" from the bottom.
-            // GATED on `nearBottom` — if the user has scrolled up to
-            // read something, every partial-message event would yank
-            // them back down. With this gate, programmatic scrolling
-            // only fires while they're already at the trailing edge.
-            .onChange(of: session.messages.count) { _, _ in
-                if nearBottom { scrollToLatest(proxy) }
-            }
-            .onChange(of: totalBlocks) { _, _ in
-                if nearBottom { scrollToLatest(proxy) }
-            }
-            .onChange(of: session.status) { _, _ in
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                    if nearBottom { scrollToLatest(proxy) }
-                }
+            // Follow new/streamed content ONLY when the user is already at the
+            // trailing edge. `contentHeight` updates as the stream grows the
+            // last message, so this pins us to the latest token while at the
+            // bottom — and does nothing when scrolled up (`nearBottom` is
+            // false), so reading earlier text is never interrupted. This is
+            // the single follow trigger; it covers new messages, streaming
+            // tokens, and the thinking indicator (all change content height).
+            // Non-animated to avoid animation pile-up mid-stream.
+            .onChange(of: contentHeight) { _, _ in
+                if nearBottom { pinToBottom(proxy) }
             }
             // Find: scroll the current match to the middle of the viewport.
             .onChange(of: findScrollTick) { _, _ in
@@ -759,8 +747,17 @@ struct ConversationView: View {
         }
     }
 
-    private var totalBlocks: Int {
-        session.messages.reduce(0) { $0 + $1.blocks.count }
+    /// Non-animated bottom-follow used during streaming — same targets as
+    /// `scrollToLatest` but without the animation, so rapid content-height
+    /// changes don't queue overlapping animations (the old jumpiness).
+    private func pinToBottom(_ proxy: ScrollViewProxy) {
+        if session.status == .running {
+            proxy.scrollTo("thinking", anchor: .bottom)
+        } else if let lastId = session.messages.last?.id {
+            proxy.scrollTo(lastId, anchor: .bottom)
+        } else {
+            proxy.scrollTo("bottom", anchor: .bottom)
+        }
     }
 
     /// Inline status line that mirrors Claude Code's progress UX —
