@@ -31,16 +31,23 @@ struct ConversationView: View {
     /// is roughly "the last screen-ish worth of content is visible".
     private static let nearBottomTolerance: CGFloat = 300
 
-    /// True when the user is within `nearBottomTolerance` of the
-    /// trailing edge. While true, programmatic scrolling tracks new
-    /// content. While false, the user is reading further up and we
-    /// leave them alone.
-    private var nearBottom: Bool {
-        // Until the first layout pass we default to "yes" so the
-        // initial kickToBottom + first message land at the bottom.
-        guard contentHeight > 0 && viewportHeight > 0 else { return true }
-        let distanceFromBottom = contentHeight - scrollY - viewportHeight
-        return distanceFromBottom <= Self.nearBottomTolerance
+    /// Whether the user is parked at (near) the bottom. STORED, and
+    /// recomputed only when the user actually scrolls (ScrollYKey / viewport
+    /// changes) — NOT when content grows. That distinction is the whole fix:
+    /// when content is appended below a top-anchored scroll view the scroll
+    /// offset doesn't move, so a freshly-computed distance would read as
+    /// "scrolled away by the size of the new content" and auto-follow would
+    /// break for anything bigger than the tolerance. Pinning the flag to the
+    /// user's last real scroll position means we follow the bottom while
+    /// they're there and hold still while they read up. Defaults true so the
+    /// first content lands at the bottom.
+    @State private var atBottom = true
+
+    /// Recompute `atBottom` from the current scroll metrics. Call ONLY from
+    /// scroll/viewport preference changes, never from content-height changes.
+    private func recomputeAtBottom() {
+        guard contentHeight > 0, viewportHeight > 0 else { atBottom = true; return }
+        atBottom = (contentHeight - scrollY - viewportHeight) <= Self.nearBottomTolerance
     }
 
     // MARK: - Find (⌘F)
@@ -212,7 +219,7 @@ struct ConversationView: View {
                     // (when near the bottom the live indicator is visible, so
                     // it would just duplicate). Keeps "what did I ask / what's
                     // it doing" pinned when you've scrolled away to read.
-                    if session.status == .running && !nearBottom {
+                    if session.status == .running && !atBottom {
                         turnStickyBar
                     }
                 }
@@ -656,9 +663,11 @@ struct ConversationView: View {
                         )
                 }
             )
+            // Content height changes do NOT update `atBottom` — only the
+            // follow trigger reads it. Scroll / viewport changes do.
             .onPreferenceChange(ContentHeightKey.self) { contentHeight = $0 }
-            .onPreferenceChange(ScrollYKey.self) { scrollY = $0 }
-            .onPreferenceChange(ViewportHeightKey.self) { viewportHeight = $0 }
+            .onPreferenceChange(ScrollYKey.self) { scrollY = $0; recomputeAtBottom() }
+            .onPreferenceChange(ViewportHeightKey.self) { viewportHeight = $0; recomputeAtBottom() }
             // NOTE: we deliberately do NOT use .defaultScrollAnchor(.bottom).
             // It re-pins to the bottom on EVERY content-size change,
             // unconditionally — so a growing stream (or a new message) yanked
@@ -684,7 +693,7 @@ struct ConversationView: View {
             // tokens, and the thinking indicator (all change content height).
             // Non-animated to avoid animation pile-up mid-stream.
             .onChange(of: contentHeight) { _, _ in
-                if nearBottom { pinToBottom(proxy) }
+                if atBottom { pinToBottom(proxy) }
             }
             // Find: scroll the current match to the middle of the viewport.
             .onChange(of: findScrollTick) { _, _ in
@@ -719,7 +728,7 @@ struct ConversationView: View {
                 // the next kick, stop chasing the bottom — the whole
                 // point of this loop is to land at the bottom on first
                 // mount, not to fight a deliberate scroll.
-                guard nearBottom else { return }
+                guard atBottom else { return }
                 if let lastId = session.messages.last?.id {
                     proxy.scrollTo(lastId, anchor: .bottom)
                 } else {
