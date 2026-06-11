@@ -42,10 +42,19 @@ struct ConversationView: View {
     /// they're there and hold still while they read up. Defaults true so the
     /// first content lands at the bottom.
     @State private var atBottom = true
+    /// False until the initial mount/tab-switch bottom-landing finishes. The
+    /// first layout pass reports a TOP scroll offset, which would otherwise
+    /// flip `atBottom` false and make the kick bail — so on a switch to a
+    /// running tab we'd never reach the bottom and the thinking indicator
+    /// would sit off-screen. While false we stay pinned to the bottom.
+    @State private var didInitialScroll = false
 
     /// Recompute `atBottom` from the current scroll metrics. Call ONLY from
     /// scroll/viewport preference changes, never from content-height changes.
     private func recomputeAtBottom() {
+        // Don't let the initial top-offset layout pass be mistaken for the
+        // user scrolling away — stay pinned until the first landing is done.
+        guard didInitialScroll else { atBottom = true; return }
         guard contentHeight > 0, viewportHeight > 0 else { atBottom = true; return }
         atBottom = (contentHeight - scrollY - viewportHeight) <= Self.nearBottomTolerance
     }
@@ -737,17 +746,16 @@ struct ConversationView: View {
         Task { @MainActor in
             for nanos in [50_000_000, 200_000_000, 500_000_000, 1_000_000_000] {
                 try? await Task.sleep(nanoseconds: UInt64(nanos))
-                // If the user has scrolled up while we were waiting for
-                // the next kick, stop chasing the bottom — the whole
-                // point of this loop is to land at the bottom on first
-                // mount, not to fight a deliberate scroll.
-                guard atBottom else { return }
-                if let lastId = session.messages.last?.id {
-                    proxy.scrollTo(lastId, anchor: .bottom)
-                } else {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
+                // `atBottom` is forced true until `didInitialScroll`, so this
+                // keeps landing us at the bottom through the mount window. We
+                // target the "bottom" sentinel — the very last element, BELOW
+                // the thinking indicator — so switching to a running tab shows
+                // the "thinking…" dots instead of clipping them off-screen.
+                guard atBottom else { break }
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
+            // Initial landing done — now real scroll events drive `atBottom`.
+            didInitialScroll = true
         }
     }
 
