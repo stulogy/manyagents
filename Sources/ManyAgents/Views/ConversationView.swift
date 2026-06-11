@@ -684,21 +684,24 @@ struct ConversationView: View {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
-            // Follow new/streamed content ONLY if we were at the bottom
-            // BEFORE it was added. The key: test against the OLD height with
-            // the current scroll offset. Content appended below a top-anchored
-            // scroll view doesn't move the offset, so old-height + offset are
-            // both "pre-growth" and consistent — this avoids the trap where
-            // the growth itself looks like "scrolled away by N pixels" and
-            // breaks the follow. When scrolled up, this is false and we leave
-            // the user alone. Dispatched async so the new rows are laid out
-            // before we scroll; non-animated to avoid pile-up mid-stream.
-            .onChange(of: contentHeight) { oldHeight, _ in
-                guard oldHeight > 0, viewportHeight > 0 else { return }
-                let wasAtBottom = (oldHeight - scrollY - viewportHeight) <= Self.nearBottomTolerance
-                if wasAtBottom {
-                    DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
-                }
+            // Auto-follow. Earlier attempts triggered off `contentHeight` (a
+            // GeometryReader preference) which does NOT fire reliably while
+            // text streams in — so the view never followed. Instead trigger
+            // off the session's own signals, which DO change per chunk:
+            //  • currentTurnOutputTokens — bumps on every streamed chunk
+            //  • messages.count / blockCount — new messages and tool blocks
+            //  • status — turn boundaries (thinking indicator in/out)
+            // All gated on `atBottom` (maintained from real scroll events), so
+            // we follow while the user is at the bottom and never yank them
+            // when they've scrolled up. A new turn (status → running) snaps
+            // `atBottom` true so sending a prompt always tracks its reply, and
+            // a stuck flag can't permanently break following.
+            .onChange(of: session.currentTurnOutputTokens) { _, _ in followBottom(proxy) }
+            .onChange(of: session.messages.count) { _, _ in followBottom(proxy) }
+            .onChange(of: blockCount) { _, _ in followBottom(proxy) }
+            .onChange(of: session.status) { _, newStatus in
+                if newStatus == .running { atBottom = true }
+                followBottom(proxy)
             }
             // Find: scroll the current match to the middle of the viewport.
             .onChange(of: findScrollTick) { _, _ in
@@ -761,17 +764,22 @@ struct ConversationView: View {
         }
     }
 
-    /// Non-animated bottom-follow used during streaming — same targets as
-    /// `scrollToLatest` but without the animation, so rapid content-height
-    /// changes don't queue overlapping animations (the old jumpiness).
-    private func pinToBottom(_ proxy: ScrollViewProxy) {
-        if session.status == .running {
-            proxy.scrollTo("thinking", anchor: .bottom)
-        } else if let lastId = session.messages.last?.id {
-            proxy.scrollTo(lastId, anchor: .bottom)
-        } else {
+    /// Bottom-follow used while content arrives. No-ops unless the user is at
+    /// the trailing edge. Targets the stable "bottom" sentinel (always the
+    /// very last element) and is non-animated + async so rapid streaming
+    /// updates land cleanly without queuing overlapping animations.
+    private func followBottom(_ proxy: ScrollViewProxy) {
+        guard atBottom else { return }
+        DispatchQueue.main.async {
             proxy.scrollTo("bottom", anchor: .bottom)
         }
+    }
+
+    /// Total content blocks across all messages — bumps when a tool-use or
+    /// tool-result block is appended mid-turn (which doesn't change
+    /// messages.count), so the follow tracks those too.
+    private var blockCount: Int {
+        session.messages.reduce(0) { $0 + $1.blocks.count }
     }
 
     /// Inline status line that mirrors Claude Code's progress UX —
