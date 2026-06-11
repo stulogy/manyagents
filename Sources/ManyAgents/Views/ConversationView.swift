@@ -684,16 +684,21 @@ struct ConversationView: View {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
-            // Follow new/streamed content ONLY when the user is already at the
-            // trailing edge. `contentHeight` updates as the stream grows the
-            // last message, so this pins us to the latest token while at the
-            // bottom — and does nothing when scrolled up (`nearBottom` is
-            // false), so reading earlier text is never interrupted. This is
-            // the single follow trigger; it covers new messages, streaming
-            // tokens, and the thinking indicator (all change content height).
-            // Non-animated to avoid animation pile-up mid-stream.
-            .onChange(of: contentHeight) { _, _ in
-                if atBottom { pinToBottom(proxy) }
+            // Follow new/streamed content ONLY if we were at the bottom
+            // BEFORE it was added. The key: test against the OLD height with
+            // the current scroll offset. Content appended below a top-anchored
+            // scroll view doesn't move the offset, so old-height + offset are
+            // both "pre-growth" and consistent — this avoids the trap where
+            // the growth itself looks like "scrolled away by N pixels" and
+            // breaks the follow. When scrolled up, this is false and we leave
+            // the user alone. Dispatched async so the new rows are laid out
+            // before we scroll; non-animated to avoid pile-up mid-stream.
+            .onChange(of: contentHeight) { oldHeight, _ in
+                guard oldHeight > 0, viewportHeight > 0 else { return }
+                let wasAtBottom = (oldHeight - scrollY - viewportHeight) <= Self.nearBottomTolerance
+                if wasAtBottom {
+                    DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
             }
             // Find: scroll the current match to the middle of the viewport.
             .onChange(of: findScrollTick) { _, _ in

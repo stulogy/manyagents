@@ -123,14 +123,26 @@ struct MarkdownText: View {
                     .stroke(Color.primary.opacity(0.15), lineWidth: 1)
             )
         case .quote(let text):
-            HStack(spacing: 0) {
+            // One continuous bar down the whole quote, with its paragraphs
+            // (split on the blank lines the parser preserved as "\n\n")
+            // spaced out. Soft line breaks inside a paragraph collapse to
+            // spaces so wrapped email lines read as prose.
+            HStack(alignment: .top, spacing: 0) {
                 Rectangle()
                     .fill(Color.brandOrange.opacity(0.6))
                     .frame(width: 3)
-                Text(inline(text))
-                    .assistantTextStyle()
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 10)
+                VStack(alignment: .leading, spacing: 8) {
+                    let paras = text.components(separatedBy: "\n\n")
+                        .map { $0.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                    ForEach(Array(paras.enumerated()), id: \.offset) { _, para in
+                        Text(inline(para))
+                            .assistantTextStyle()
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.leading, 10)
             }
         case .divider:
             Rectangle()
@@ -376,15 +388,23 @@ enum MdBlock {
                 }
             }
 
-            // Blockquote.
-            if trimmed.hasPrefix("> ") {
-                var body: [String] = [String(trimmed.dropFirst(2))]
-                i += 1
-                while i < lines.count, lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("> ") {
-                    body.append(String(lines[i].trimmingCharacters(in: .whitespaces).dropFirst(2)))
+            // Blockquote. Group EVERY consecutive `>` line — including bare
+            // `>` lines (blank lines inside the quote, common in quoted
+            // emails) — into one continuous quote. Keep blank lines as
+            // paragraph breaks ("\n") so the renderer can space paragraphs;
+            // a bare `>` no longer leaks out as a literal ">" character, and
+            // the quote no longer fragments into one bar per paragraph.
+            if trimmed.hasPrefix(">") {
+                var body: [String] = []
+                while i < lines.count {
+                    let t = lines[i].trimmingCharacters(in: .whitespaces)
+                    guard t.hasPrefix(">") else { break }
+                    var stripped = String(t.dropFirst())          // drop ">"
+                    if stripped.hasPrefix(" ") { stripped.removeFirst() }  // and one space
+                    body.append(stripped)
                     i += 1
                 }
-                blocks.append(.quote(body.joined(separator: " ")))
+                blocks.append(.quote(body.joined(separator: "\n")))
                 continue
             }
 
