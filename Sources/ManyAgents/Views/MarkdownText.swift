@@ -57,6 +57,10 @@ struct MarkdownText: View {
                             .frame(width: 10, alignment: .leading)
                         Text(inline(item))
                             .assistantTextStyle()
+                            // Fill the row so long items wrap instead of
+                            // truncating to one line with an ellipsis.
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -71,6 +75,10 @@ struct MarkdownText: View {
                             .frame(width: 20, alignment: .leading)
                         Text(inline(item))
                             .assistantTextStyle()
+                            // Fill the row so long items wrap instead of
+                            // truncating to one line with an ellipsis.
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }

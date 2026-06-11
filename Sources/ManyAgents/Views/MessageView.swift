@@ -65,6 +65,11 @@ struct MessageView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    // Reserve a gutter at the trailing edge so the hover
+                    // toolbar (overlaid top-right) never sits on top of a
+                    // full-width first line. Sized to the compact icon
+                    // toolbar; static so hovering doesn't reflow the text.
+                    .padding(.trailing, 68)
                 }
                 // Always in the tree, just invisible when not hovering —
                 // so it can't disappear out from under the cursor mid-
@@ -129,23 +134,18 @@ struct MessageView: View {
         Button {
             showingHandOff = true
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "arrow.turn.up.right")
-                    .font(.system(size: 10, weight: .semibold))
-                Text("Send to")
-                    .font(.system(size: 10.5, weight: .semibold))
-            }
-            .foregroundStyle(Color.brandOrange)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.85))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .stroke(Color.brandOrange.opacity(0.35), lineWidth: 0.5)
-            )
+            Image(systemName: "arrow.turn.up.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.brandOrange)
+                .frame(width: 22, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.9))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(Color.brandOrange.opacity(0.35), lineWidth: 0.5)
+                )
         }
         .buttonStyle(.plain)
         .help("Hand off this reply as a prompt to another open agent")
@@ -171,26 +171,21 @@ struct MessageView: View {
                 withAnimation(.easeOut(duration: 0.12)) { copyConfirmed = false }
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: copyConfirmed ? "checkmark" : "doc.on.doc")
-                    .font(.system(size: 10, weight: .semibold))
-                Text(copyConfirmed ? "Copied" : "Copy")
-                    .font(.system(size: 10.5, weight: .semibold))
-            }
-            .foregroundStyle(copyConfirmed ? .green : .secondary)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.85))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
-            )
+            Image(systemName: copyConfirmed ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(copyConfirmed ? .green : .secondary)
+                .frame(width: 22, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.9))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                )
         }
         .buttonStyle(.plain)
-        .help("Copy this message")
+        .help(copyConfirmed ? "Copied" : "Copy this message")
         .padding(.top, 2)
         .padding(.trailing, 2)
     }
