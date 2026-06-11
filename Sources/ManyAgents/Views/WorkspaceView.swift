@@ -364,15 +364,17 @@ private struct OrchestratorIndicatorPopover: View {
     @EnvironmentObject var manager: AgentManager
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 7) {
                 Image(systemName: "brain.head.profile")
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.brandOrange)
                 Text("Orchestrator")
                     .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
             }
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
                 sectionLabel("SEES")
                 let others = manager.sessions.filter {
                     $0.id != orchestrator.id && !$0.hiddenFromOrchestrator
@@ -382,17 +384,20 @@ private struct OrchestratorIndicatorPopover: View {
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 } else {
                     ForEach(others) { s in
-                        HStack(alignment: .top, spacing: 6) {
+                        HStack(alignment: .top, spacing: 7) {
                             Circle().fill(dotColor(s.status))
-                                .frame(width: 6, height: 6).padding(.top, 4)
-                            VStack(alignment: .leading, spacing: 1) {
-                                HStack(spacing: 5) {
+                                .frame(width: 6, height: 6).padding(.top, 5)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
                                     Text(s.aiTitle ?? s.displayName)
-                                        .font(.system(size: 12, weight: .medium))
+                                        .font(.system(size: 12.5, weight: .semibold))
+                                        .foregroundStyle(.primary)
                                     if orchestrator.mutedTabIds.contains(s.id) {
                                         Text("muted")
-                                            .font(.system(size: 9, weight: .medium))
+                                            .font(.system(size: 9, weight: .semibold))
                                             .foregroundStyle(.secondary)
+                                            .padding(.horizontal, 5).padding(.vertical, 1)
+                                            .background(Capsule().fill(Color.primary.opacity(0.1)))
                                     }
                                 }
                                 Text(s.status.boardLabel + (s.latestSnippet.isEmpty ? "" : " · \(s.latestSnippet)"))
@@ -407,7 +412,7 @@ private struct OrchestratorIndicatorPopover: View {
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
                 sectionLabel("THINKING")
                 Text(orchestrator.orchestratorNotes.isEmpty
                      ? "No notes yet — the orchestrator records its plan here as it works."
@@ -417,8 +422,13 @@ private struct OrchestratorIndicatorPopover: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(14)
-        .frame(width: 320)
+        .padding(16)
+        .frame(width: 330)
+        // Reset the tint inherited from the (active, blue-tinted) tab this
+        // popover is anchored to, so titles/header render in their own colors
+        // instead of all-blue.
+        .foregroundStyle(.primary)
+        .tint(.primary)
     }
 
     private func sectionLabel(_ t: String) -> some View {
