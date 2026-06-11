@@ -143,10 +143,10 @@ final class AgentManager: ObservableObject {
                 self?.objectWillChange.send()
                 self?.sessionsDirty.send()
             }
-        // Hook the chain coordinator: every clean .result on this session
-        // triggers an evaluation of its `chainTargetId`. Tracked in a
-        // separate map so we can tear down independently if needed.
-        wireChainCoordination(for: session)
+        // Every clean turn-completion on this session feeds the orchestrator
+        // "watch & nudge" wake. Tracked separately so it can tear down with
+        // the session.
+        wireTurnCompletion(for: session)
         wireFinishNotifications(for: session)
         sessions.append(session)
         activeSessionId = session.id
@@ -158,11 +158,13 @@ final class AgentManager: ObservableObject {
     func close(_ session: AgentSession) {
         session.disconnect()
         sessionSubscriptions.removeValue(forKey: session.id)
-        chainSubscriptions.removeValue(forKey: session.id)
+        turnCompletionSubscriptions.removeValue(forKey: session.id)
         notifySubscriptions.removeValue(forKey: session.id)
-        // Any sessions chained TO this one lose their target.
-        for other in sessions where other.chainTargetId == session.id {
-            other.chainTargetId = nil
+        // If the orchestrator is closing, any muted/hidden state it held is
+        // gone with it; nothing else references this id. Drop it from every
+        // orchestrator's mute set just in case another tab held it.
+        for s in sessions where s.mutedTabIds.contains(session.id) {
+            s.mutedTabIds.remove(session.id)
         }
         // Drop any lingering coordinator mcp.json for the session
         // so /tmp/manyagents/configs/ doesn't accumulate stale files.
@@ -175,15 +177,14 @@ final class AgentManager: ObservableObject {
         persist()
     }
 
-    // MARK: - Chain coordination
+    // MARK: - Turn completion → orchestrator wake
 
-    /// Per-session subscription to that session's turn-completed signal.
-    /// When the publisher fires, we evaluate the session's chain target
-    /// and stage or fire a hand-off accordingly.
-    private var chainSubscriptions: [UUID: AnyCancellable] = [:]
+    /// Per-session subscription to that session's turn-completed signal,
+    /// feeding the orchestrator "watch & nudge" loop.
+    private var turnCompletionSubscriptions: [UUID: AnyCancellable] = [:]
 
-    private func wireChainCoordination(for session: AgentSession) {
-        chainSubscriptions[session.id] = session.turnCompleted
+    private func wireTurnCompletion(for session: AgentSession) {
+        turnCompletionSubscriptions[session.id] = session.turnCompleted
             .sink { [weak self, weak session] lastAssistantText in
                 guard let self, let session else { return }
                 self.handleTurnCompleted(on: session, payload: lastAssistantText)
@@ -207,123 +208,91 @@ final class AgentManager: ObservableObject {
             }
     }
 
-    /// Called when a session's turn lands without error. Decides whether
-    /// to forward to a chain target (auto vs staged), respecting the hop
-    /// budget and self-loop guard.
+    /// Called when a session's turn lands cleanly. Drives the orchestrator
+    /// "watch & nudge" loop: a finished tab wakes the orchestrator so it can
+    /// decide whether to act.
     private func handleTurnCompleted(on source: AgentSession, payload: String) {
-        guard let targetId = source.chainTargetId,
-              targetId != source.id,                          // no self-loop
-              let target = sessions.first(where: { $0.id == targetId }),
-              source.remainingHops > 0
+        // The orchestrator's OWN turn just finished: if watched tabs changed
+        // while it was busy, fire the single coalesced recheck now.
+        if source.isCoordinator {
+            if source.pendingOrchestratorRecheck {
+                source.pendingOrchestratorRecheck = false
+                deliverOrchestratorPing(to: source, trigger: nil)
+            }
+            return
+        }
+        // Anti-loop: a turn the orchestrator itself dispatched into this tab
+        // doesn't ping back — the orchestrator already got the reply.
+        if source.suppressNextOrchestratorPing {
+            source.suppressNextOrchestratorPing = false
+            return
+        }
+        notifyOrchestratorOfCompletion(from: source)
+    }
+
+    // MARK: - Orchestrator (v2)
+
+    /// The single tab currently wearing the orchestrator hat, if any.
+    var orchestrator: AgentSession? { sessions.first { $0.isCoordinator } }
+
+    /// Designate / un-designate a tab as the orchestrator. Exclusive: making
+    /// one orchestrator clears the hat from any other tab.
+    func toggleOrchestrator(_ session: AgentSession) {
+        if session.isCoordinator {
+            session.isCoordinator = false
+        } else {
+            for s in sessions where s.isCoordinator { s.isCoordinator = false }
+            session.isCoordinator = true
+        }
+    }
+
+    /// A watched tab finished — wake the orchestrator unless it's hidden,
+    /// muted, or the orchestrator is the one that finished. While the
+    /// orchestrator is mid-turn, coalesce into one follow-up recheck.
+    private func notifyOrchestratorOfCompletion(from source: AgentSession) {
+        guard let orch = orchestrator,
+              orch.id != source.id,
+              !source.hiddenFromOrchestrator,
+              !orch.mutedTabIds.contains(source.id)
         else { return }
 
-        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        // The downstream agent's budget is whatever the source had left,
-        // minus one for the hop we're about to take. When this hits 0
-        // the target completes its turn but won't auto-forward further.
-        let hopsForTarget = max(0, source.remainingHops - 1)
-
-        if source.chainYoloMode {
-            // YOLO: dispatch immediately, no banner.
-            dispatchHandOff(from: source,
-                            to: target,
-                            payload: trimmed,
-                            hopsForTarget: hopsForTarget,
-                            includeProvenance: true)
-        } else {
-            // Stage as a pending hand-off — banner above the composer
-            // asks the user to approve, edit, or dismiss it. Pending
-            // hand-offs replace any previous pending hand-off on the
-            // same target (last one wins).
-            target.pendingHandOff = AgentSession.PendingHandOff(
-                sourceAgentId: source.id,
-                sourceProjectName: ProjectNaming.name(forCwd: source.cwd),
-                sourceTitle: source.aiTitle ?? source.displayName,
-                payload: trimmed,
-                hopsRemaining: hopsForTarget
-            )
+        if orch.status == .running {
+            orch.pendingOrchestratorRecheck = true
+            return
         }
+        deliverOrchestratorPing(to: orch, trigger: source)
     }
 
-    /// Actually run a hand-off: tag provenance on the target, decrement
-    /// budget, send the payload as a user message. The "[from X]" prefix
-    /// is added so the receiving agent knows the input is from a peer.
-    private func dispatchHandOff(from source: AgentSession,
-                                 to target: AgentSession,
-                                 payload: String,
-                                 hopsForTarget: Int,
-                                 includeProvenance: Bool) {
-        target.chainSourceId = source.id
-        target.remainingHops = hopsForTarget
-        let text: String
-        if includeProvenance {
-            let label = source.aiTitle?.isEmpty == false
-                ? source.aiTitle!
-                : ProjectNaming.name(forCwd: source.cwd)
-            text = "[Hand-off from \(label)]\n\n\(payload)"
+    /// Deliver a (non-visible) wake prompt to the orchestrator with the
+    /// current board. `trigger` is the tab that just finished, or nil for a
+    /// coalesced recheck.
+    private func deliverOrchestratorPing(to orch: AgentSession, trigger: AgentSession?) {
+        let board = orchestratorBoardText(for: orch)
+        let head: String
+        if let t = trigger {
+            head = "Tab \"\(t.aiTitle ?? t.displayName)\" just finished a turn. Its last message:\n\(t.latestSnippet)\n\n"
         } else {
-            text = payload
+            head = "One or more tabs changed while you were busy.\n\n"
         }
-        target.send(text)
+        let prompt = """
+        [Board update — automatic, not from the user]
+        \(head)Current board:
+        \(board)
+
+        Consult your notes and decide if anything needs doing. If nothing does, say briefly that you're holding and update your notes. Tools: read_agent (look closer), send_to_agent (act), set_notes (record your plan), mute_agent (stop hearing about a tab).
+        """
+        orch.send(prompt, visible: false)
     }
 
-    /// Manual hand-off triggered from the "Send to →" message-row action
-    /// or the popover. `autoSend = true` fires immediately; false stages
-    /// a pendingHandOff on the target (lets the user tweak the prompt).
-    func handOff(from sourceId: UUID,
-                 to targetId: UUID,
-                 prompt: String,
-                 autoSend: Bool) {
-        guard sourceId != targetId,
-              let source = sessions.first(where: { $0.id == sourceId }),
-              let target = sessions.first(where: { $0.id == targetId })
-        else { return }
-        // Manual hand-offs reset the budget to the source's configured
-        // value — the user is explicitly starting a chain, so they get
-        // a fresh allowance even if the source's chain had run dry.
-        let hopsForTarget = max(0, source.chainHopBudget - 1)
-        if autoSend {
-            dispatchHandOff(from: source,
-                            to: target,
-                            payload: prompt,
-                            hopsForTarget: hopsForTarget,
-                            includeProvenance: true)
-        } else {
-            target.pendingHandOff = AgentSession.PendingHandOff(
-                sourceAgentId: source.id,
-                sourceProjectName: ProjectNaming.name(forCwd: source.cwd),
-                sourceTitle: source.aiTitle ?? source.displayName,
-                payload: prompt,
-                hopsRemaining: hopsForTarget
-            )
-            // Bring the target to the foreground so the banner is
-            // visible — the user just initiated this, they want to see it.
-            activeSessionId = target.id
-        }
-    }
-
-    /// Approve the staged pending hand-off on `target`, optionally with
-    /// edited prompt text. Clears the staging state and dispatches.
-    func approvePendingHandOff(on target: AgentSession, editedPrompt: String? = nil) {
-        guard let pending = target.pendingHandOff,
-              let source = sessions.first(where: { $0.id == pending.sourceAgentId })
-        else { target.pendingHandOff = nil; return }
-        let text = (editedPrompt ?? pending.payload)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { target.pendingHandOff = nil; return }
-        target.pendingHandOff = nil
-        dispatchHandOff(from: source,
-                        to: target,
-                        payload: text,
-                        hopsForTarget: pending.hopsRemaining,
-                        includeProvenance: false)
-    }
-
-    /// Dismiss the staged pending hand-off without dispatching it.
-    func dismissPendingHandOff(on target: AgentSession) {
-        target.pendingHandOff = nil
+    /// Compact board snapshot the orchestrator sees on every wake. Hidden
+    /// tabs are excluded entirely; muted tabs stay listed but flagged.
+    func orchestratorBoardText(for orch: AgentSession) -> String {
+        let others = sessions.filter { $0.id != orch.id && !$0.hiddenFromOrchestrator }
+        if others.isEmpty { return "(no other tabs open)" }
+        return others.map { s in
+            let muted = orch.mutedTabIds.contains(s.id) ? " [muted]" : ""
+            return "• \(s.aiTitle ?? s.displayName) [\(s.id)] — \(s.status.boardLabel)\(muted) — \(s.latestSnippet)"
+        }.joined(separator: "\n")
     }
 
     // MARK: - Project grouping

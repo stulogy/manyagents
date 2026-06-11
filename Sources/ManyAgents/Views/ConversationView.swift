@@ -4,8 +4,6 @@ import SwiftUI
 struct ConversationView: View {
     @ObservedObject var session: AgentSession
     @EnvironmentObject var manager: AgentManager
-    @State private var showingChainSettings = false
-    @State private var showingOrchestrator = false
     @State private var showingRename = false
     @State private var renameDraft = ""
     // In-conversation find (⌘F).
@@ -228,21 +226,6 @@ struct ConversationView: View {
                 .onChange(of: session.messages.count) { _, _ in
                     if findVisible { recomputeMatches() }
                 }
-            // Pending hand-off banner — appears when another agent's
-            // chain (or a manual "Send to → Stage on target") staged
-            // a prompt on this session. Sits ABOVE the
-            // AskUserQuestion picker so a chained question is still
-            // resolvable in normal flow.
-            if session.pendingHandOff != nil {
-                HStack {
-                    Spacer(minLength: 0)
-                    PendingHandOffBanner(session: session)
-                        .frame(maxWidth: 760)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 18)
-                .padding(.bottom, 8)
-            }
             // Compaction banner — shown while AgentSession is running
             // its two-phase compact (summarise then reseed). Blocks
             // submission via the disabled composer state in a real
@@ -328,7 +311,6 @@ struct ConversationView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            chainHeaderChip
             if session.lastTurnContextTokens > 0 {
                 contextGauge
             }
@@ -351,14 +333,6 @@ struct ConversationView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Enter a short label for this agent. Persists across launches.")
-        }
-        .popover(isPresented: $showingChainSettings, arrowEdge: .top) {
-            ChainSettingsPopover(session: session,
-                                 onClose: { showingChainSettings = false })
-        }
-        .popover(isPresented: $showingOrchestrator, arrowEdge: .top) {
-            OrchestratorPanel(session: session,
-                              onClose: { showingOrchestrator = false })
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
@@ -444,59 +418,6 @@ struct ConversationView: View {
     /// — either incoming (set when a chain just fed this agent) or
     /// outgoing (a target is configured). Click opens the chain
     /// settings popover. Hidden if neither side is wired.
-    @ViewBuilder
-    private var chainHeaderChip: some View {
-        if session.chainTargetId != nil || session.chainSourceId != nil || session.isCoordinator {
-            Button {
-                // The chip opens whichever surface its state belongs to:
-                // orchestrator state → the Orchestrator panel, chain wiring
-                // → the Hand-off popover.
-                if session.isCoordinator { showingOrchestrator = true }
-                else { showingChainSettings = true }
-            } label: {
-                HStack(spacing: 4) {
-                    if session.isCoordinator {
-                        Image(systemName: "point.3.connected.trianglepath.dotted")
-                            .font(.system(size: 9.5, weight: .semibold))
-                    } else if session.chainTargetId != nil {
-                        Image(systemName: "arrow.turn.up.right")
-                            .font(.system(size: 9.5, weight: .semibold))
-                    } else {
-                        Image(systemName: "arrow.turn.down.right")
-                            .font(.system(size: 9.5, weight: .semibold))
-                    }
-                    Text(chainChipLabel)
-                        .font(.system(size: 10, weight: .semibold))
-                }
-                .foregroundStyle(Color.brandOrange)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(
-                    Capsule().fill(Color.brandOrange.opacity(0.12))
-                )
-            }
-            .buttonStyle(.plain)
-            .help(session.isCoordinator ? "Orchestrator" : "Hand-off")
-        }
-    }
-
-    private var chainChipLabel: String {
-        if session.isCoordinator {
-            return "orchestrator"
-        }
-        if let targetId = session.chainTargetId,
-           let target = manager.sessions.first(where: { $0.id == targetId }) {
-            let title = target.aiTitle ?? target.displayName
-            return "→ \(title)"
-        }
-        if let sourceId = session.chainSourceId,
-           let source = manager.sessions.first(where: { $0.id == sourceId }) {
-            let title = source.aiTitle ?? source.displayName
-            return "from \(title)"
-        }
-        return "chained"
-    }
-
     /// Kebab menu — overflow surface for everything that isn't a
     /// glance-able status chip. Houses session actions (compact, new,
     /// rename, reveal), pipeline / coordination (formerly its own
@@ -533,27 +454,6 @@ struct ConversationView: View {
                 )
             } label: {
                 Label("Reveal project in Finder", systemImage: "folder")
-            }
-
-            Divider()
-
-            Button {
-                showingChainSettings = true
-            } label: {
-                Label(
-                    session.chainTargetId != nil ? "Hand-off · on" : "Hand-off…",
-                    systemImage: session.chainTargetId != nil
-                        ? "arrow.turn.up.right" : "arrow.turn.down.right"
-                )
-            }
-
-            Button {
-                showingOrchestrator = true
-            } label: {
-                Label(
-                    session.isCoordinator ? "Orchestrator · on" : "Orchestrator…",
-                    systemImage: "point.3.connected.trianglepath.dotted"
-                )
             }
 
             Divider()

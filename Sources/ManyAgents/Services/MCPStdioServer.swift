@@ -256,7 +256,7 @@ private final class ServerState {
             ],
             [
                 "name": "list_agents",
-                "description": "List every open ManyAgents session — id, project, title, status. Use the returned id when calling dispatch_agent.",
+                "description": "Your board: list the user's other open tabs — id, project, title, status, whether muted, and a one-line snapshot of what each last said. Tabs the user hid are excluded. Call this to see the current situation across tabs.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [String: Any](),
@@ -264,26 +264,74 @@ private final class ServerState {
                 ]
             ],
             [
-                "name": "dispatch_agent",
-                "description": "Send a prompt to another agent session and (by default) wait for its reply. The peer agent treats the prompt as a hand-off from this coordinator session and runs it as a normal user turn. Use this to delegate work to a sibling agent — e.g. asking the auth-service agent to implement an API while you stay focused on the design.",
+                "name": "read_agent",
+                "description": "Look closer at one tab: returns the tail of its transcript so you can see what it's actually doing/produced, WITHOUT sending it anything. Use this to check on a tab (e.g. 'is the report ready?') before deciding to act.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "agent_id": ["type": "string", "description": "The UUID from list_agents."]
+                    ],
+                    "required": ["agent_id"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "send_to_agent",
+                "description": "Take action ON a tab: send it a prompt as a normal user turn (e.g. hand a finished report from one tab to another, or ask a tab to do something). By default waits for its reply. The tab is tagged so it knows the message came from you, the orchestrator.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
                         "agent_id": [
                             "type": "string",
-                            "description": "The UUID returned by list_agents. Not a project name."
+                            "description": "The UUID from list_agents. Not a project name."
                         ],
                         "prompt": [
                             "type": "string",
-                            "description": "The prompt to send to the other agent. Will be wrapped with a hand-off provenance tag on the receiving side."
+                            "description": "What to send the tab."
                         ],
                         "wait_for_result": [
                             "type": "boolean",
-                            "description": "If true (default), the tool call blocks until the dispatched agent's turn completes and returns its last assistant reply. If false, returns immediately with a 'dispatched' status.",
+                            "description": "If true (default), blocks until the tab's turn completes and returns its reply. If false, returns immediately.",
                             "default": true
                         ]
                     ],
                     "required": ["agent_id", "prompt"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "set_notes",
+                "description": "Record your running understanding — what each tab is for, what you're waiting on, your next intended action. This is your memory across wake-ups and is shown to the user in the orchestrator indicator. Overwrites the previous note; keep it short and current.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "notes": ["type": "string", "description": "Your current plan / situational read, a few lines."]
+                    ],
+                    "required": ["notes"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "mute_agent",
+                "description": "Stop being woken by a tab you've judged irrelevant. It stays on your board for reference, but its turn-completions won't ping you. Use this to self-prune noise. Reversible with unmute_agent.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "agent_id": ["type": "string", "description": "The UUID from list_agents."]
+                    ],
+                    "required": ["agent_id"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "unmute_agent",
+                "description": "Resume being woken by a tab you previously muted.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "agent_id": ["type": "string", "description": "The UUID from list_agents."]
+                    ],
+                    "required": ["agent_id"],
                     "additionalProperties": false
                 ]
             ]
@@ -339,7 +387,23 @@ private final class ServerState {
                 let agents = (res["agents"] as? [[String: Any]]) ?? []
                 let summary = renderAgentsList(agents)
                 respondToolResult(id: id, text: summary)
-            case "dispatch_agent":
+            case "read_agent":
+                guard let agentId = arguments["agent_id"] as? String else {
+                    respondToolResult(id: id, text: "Error: missing agent_id.", isError: true)
+                    return
+                }
+                let res = try await awaitRelay(["op": "read_agent",
+                                                "source_session_id": args.sourceSessionId as Any,
+                                                "agent_id": agentId])
+                if (res["ok"] as? Bool) == true {
+                    let title = res["title"] as? String ?? agentId
+                    let status = res["status"] as? String ?? "unknown"
+                    let tail = res["transcript_tail"] as? String ?? "(no transcript)"
+                    respondToolResult(id: id, text: "[\(title) · status: \(status)]\n\n\(tail)")
+                } else {
+                    respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "read failed")", isError: true)
+                }
+            case "send_to_agent":
                 guard let agentId = arguments["agent_id"] as? String,
                       let prompt = arguments["prompt"] as? String
                 else {
@@ -355,17 +419,36 @@ private final class ServerState {
                     "wait_for_result": wait
                 ])
                 if (res["ok"] as? Bool) == true {
-                    let reply = res["reply"] as? String ?? "(dispatched)"
+                    let reply = res["reply"] as? String ?? "(sent)"
                     let status = res["status"] as? String ?? "unknown"
                     let body = wait
-                        ? "[Reply from agent \(agentId) · status: \(status)]\n\n\(reply)"
-                        : "[Dispatched to \(agentId) · status: \(status)] (not waiting)"
+                        ? "[Reply from tab \(agentId) · status: \(status)]\n\n\(reply)"
+                        : "[Sent to tab \(agentId) · status: \(status)] (not waiting)"
                     respondToolResult(id: id, text: body)
                 } else {
                     respondToolResult(id: id,
-                                      text: "Error: \(res["error"] as? String ?? "dispatch failed")",
+                                      text: "Error: \(res["error"] as? String ?? "send failed")",
                                       isError: true)
                 }
+            case "set_notes":
+                let notes = arguments["notes"] as? String ?? ""
+                let res = try await awaitRelay(["op": "set_notes",
+                                                "source_session_id": args.sourceSessionId as Any,
+                                                "notes": notes])
+                respondToolResult(id: id,
+                                  text: (res["ok"] as? Bool) == true ? "Notes updated." : "Error: \(res["error"] as? String ?? "failed")",
+                                  isError: (res["ok"] as? Bool) != true)
+            case "mute_agent", "unmute_agent":
+                guard let agentId = arguments["agent_id"] as? String else {
+                    respondToolResult(id: id, text: "Error: missing agent_id.", isError: true)
+                    return
+                }
+                let res = try await awaitRelay(["op": name,
+                                                "source_session_id": args.sourceSessionId as Any,
+                                                "agent_id": agentId])
+                respondToolResult(id: id,
+                                  text: (res["ok"] as? Bool) == true ? "\(name == "mute_agent" ? "Muted" : "Unmuted") tab \(agentId)." : "Error: \(res["error"] as? String ?? "failed")",
+                                  isError: (res["ok"] as? Bool) != true)
             default:
                 respondToolResult(id: id, text: "Unknown tool: \(name)", isError: true)
             }
@@ -375,15 +458,17 @@ private final class ServerState {
     }
 
     private func renderAgentsList(_ agents: [[String: Any]]) -> String {
-        if agents.isEmpty { return "No open agents." }
+        if agents.isEmpty { return "No other open tabs." }
         let lines: [String] = agents.map { a in
             let id = a["id"] as? String ?? "?"
-            let project = a["project"] as? String ?? "?"
             let title = a["title"] as? String ?? "?"
             let status = a["status"] as? String ?? "?"
-            return "- id=\(id)  project=\(project)  title=\"\(title)\"  status=\(status)"
+            let muted = (a["muted"] as? Bool) == true ? " (muted)" : ""
+            let latest = a["latest"] as? String ?? ""
+            let snippet = latest.isEmpty ? "" : "  last: \(latest)"
+            return "- id=\(id)  title=\"\(title)\"  status=\(status)\(muted)\(snippet)"
         }
-        return "Open agents:\n" + lines.joined(separator: "\n")
+        return "Your board (other open tabs):\n" + lines.joined(separator: "\n")
     }
 
     // MARK: - stdout JSON-RPC framing

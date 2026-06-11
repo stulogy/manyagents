@@ -45,7 +45,6 @@ struct MessageView: View {
     var isCurrentMatch: Bool = false
     @State private var hover = false
     @State private var copyConfirmed = false
-    @State private var showingHandOff = false
 
     var body: some View {
         // Skip the row entirely when every block is empty/skipped —
@@ -69,20 +68,15 @@ struct MessageView: View {
                     // toolbar (overlaid top-right) never sits on top of a
                     // full-width first line. Sized to the compact icon
                     // toolbar; static so hovering doesn't reflow the text.
-                    .padding(.trailing, 68)
+                    .padding(.trailing, 36)
                 }
                 // Always in the tree, just invisible when not hovering —
                 // so it can't disappear out from under the cursor mid-
                 // click. opacity + allowsHitTesting toggle together.
-                HStack(spacing: 6) {
-                    if canHandOff {
-                        handOffButton
-                    }
-                    copyButton
-                }
-                .opacity(hover ? 1 : 0)
-                .allowsHitTesting(hover)
-                .animation(.easeOut(duration: 0.12), value: hover)
+                copyButton
+                    .opacity(hover ? 1 : 0)
+                    .allowsHitTesting(hover)
+                    .animation(.easeOut(duration: 0.12), value: hover)
             }
             // Make the entire row's frame hit-testable for hover, not
             // just the text glyphs. Without this the cursor leaving a
@@ -104,59 +98,6 @@ struct MessageView: View {
                     .stroke(Color.brandOrange.opacity(isCurrentMatch ? 0.45 : 0), lineWidth: 1)
             )
             .animation(.easeOut(duration: 0.15), value: isCurrentMatch)
-        }
-    }
-
-    /// Only show the hand-off action on assistant prose — handing off
-    /// user messages or pure-tool-output rows isn't a useful gesture
-    /// (the user can already retype, the tool output isn't reply-shaped).
-    private var canHandOff: Bool {
-        guard sessionId != nil, message.role == .assistant else { return false }
-        return !flatAssistantText.isEmpty
-    }
-
-    /// Plain text payload that the hand-off picker pre-fills with —
-    /// concatenated visible text from this assistant message, stripped
-    /// of thinking blocks and tool noise.
-    private var flatAssistantText: String {
-        var pieces: [String] = []
-        for block in message.blocks {
-            if case .text(_, let t) = block {
-                let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { pieces.append(trimmed) }
-            }
-        }
-        return pieces.joined(separator: "\n\n")
-    }
-
-    @ViewBuilder
-    private var handOffButton: some View {
-        Button {
-            showingHandOff = true
-        } label: {
-            Image(systemName: "arrow.turn.up.right")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.brandOrange)
-                .frame(width: 22, height: 22)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.9))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .stroke(Color.brandOrange.opacity(0.35), lineWidth: 0.5)
-                )
-        }
-        .buttonStyle(.plain)
-        .help("Hand off this reply as a prompt to another open agent")
-        .popover(isPresented: $showingHandOff, arrowEdge: .top) {
-            if let sid = sessionId {
-                HandOffSheet(
-                    sourceSessionId: sid,
-                    initialPayload: flatAssistantText,
-                    onClose: { showingHandOff = false }
-                )
-            }
         }
     }
 

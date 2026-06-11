@@ -6,6 +6,16 @@ enum AgentStatus {
     case running    // assistant is generating or a tool call is in progress
     case waiting    // assistant turn ended with end_turn — user's move
     case error      // bridge failed or claude exited unexpectedly
+
+    /// Short human label used in the orchestrator board snapshot.
+    var boardLabel: String {
+        switch self {
+        case .idle:    return "idle"
+        case .running: return "running"
+        case .waiting: return "waiting on user"
+        case .error:   return "error"
+        }
+    }
 }
 
 /// One conversation with a claude agent. Owns the `ClaudeBridge` subprocess
@@ -173,24 +183,47 @@ final class AgentSession: ObservableObject, Identifiable {
 
     // MARK: - Chain / pipeline state
 
-    /// If set, this session is wired as the LEFT side of a chain — when
-    /// the current turn lands cleanly (`.result` with no error), the
-    /// session's last assistant text is handed off to the agent with
-    /// this id. Set via the chain settings popover.
-    @Published var chainTargetId: UUID?
-    /// If true, chain hand-offs from this agent fire automatically
-    /// without confirmation. "YOLO mode." When false, the target
-    /// stages the hand-off as `pendingHandOff` and waits for the user
-    /// to approve it.
-    @Published var chainYoloMode: Bool = false
-    /// Initial hop budget that gets baked into a new chain starting at
-    /// this session — passed onto downstream sessions as `remainingHops`.
-    /// 5 is the default; raising it allows longer pipelines.
-    @Published var chainHopBudget: Int = 5
-    /// True when this session acts as an orchestrator — claude inside
-    /// it gets an MCP tool that can list and dispatch other agents.
-    /// Toggled on per-session; takes effect on the next turn.
+    /// True when this session acts as THE orchestrator — exactly one tab at
+    /// a time (enforced by AgentManager.setOrchestrator). Claude inside it
+    /// gets MCP tools to see/read/send/mute the other tabs, and is woken
+    /// ("watch & nudge") whenever a watched tab finishes a turn. Toggled via
+    /// the tab menu; takes effect on the next turn.
     @Published var isCoordinator: Bool = false
+
+    // MARK: - Orchestrator (v2)
+
+    /// User-level "Hide from orchestrator": this tab drops off the board
+    /// entirely and never pings the orchestrator. Hard opt-out, distinct
+    /// from the orchestrator's soft `mutedTabIds`.
+    @Published var hiddenFromOrchestrator: Bool = false
+    /// The orchestrator's running "thinking" note — what each tab is for,
+    /// what it's waiting on, its next intent. Written by the orchestrator
+    /// itself via the `set_notes` MCP tool; surfaced in the brain-icon
+    /// popover. Only meaningful on the orchestrator session.
+    @Published var orchestratorNotes: String = ""
+    /// Tabs the orchestrator has soft-muted (judged irrelevant): still on
+    /// the board for reference, but their turn-completions don't wake it.
+    /// Managed via the `mute_agent`/`unmute_agent` tools. Orchestrator only.
+    @Published var mutedTabIds: Set<UUID> = []
+    /// Set while the orchestrator is mid-turn and a watched tab finished —
+    /// coalesces a burst of completions into a single follow-up "recheck"
+    /// ping once the current orchestrator turn lands. Orchestrator only.
+    @Published var pendingOrchestratorRecheck: Bool = false
+    /// Set on a TARGET tab when the orchestrator dispatches a prompt into
+    /// it, so the resulting turn-completion doesn't ping the orchestrator
+    /// back (it already gets the reply via the dispatch tool). Consumed on
+    /// the next completion — the anti-loop guard.
+    var suppressNextOrchestratorPing: Bool = false
+
+    /// One-line snapshot of what this tab last said — used for the
+    /// orchestrator board and wake pings. Empty when nothing yet.
+    var latestSnippet: String {
+        let last = messages.last(where: { $0.role == .assistant })?.flatText ?? ""
+        let oneLine = last
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+        return oneLine.count > 160 ? String(oneLine.prefix(160)) + "…" : oneLine
+    }
 
     /// Permission prompt waiting on the user. Set by MCPRelay when
     /// claude's permission-prompt-tool fires; cleared when the user
@@ -231,33 +264,10 @@ final class AgentSession: ObservableObject, Identifiable {
         ))
     }
 
-    /// Agent id that fed THIS session as part of a chain. Set on hand-
-    /// off; used for visualisation (header chip) and loop detection.
-    @Published var chainSourceId: UUID?
-    /// Hops left before the chain stops auto-forwarding. Decrements on
-    /// each hand-off; once it hits 0, auto-forward is suppressed and
-    /// the conversation stops (a manual "Send to" still works).
-    @Published var remainingHops: Int = 5
-
-    /// A hand-off that landed on this session and is awaiting user
-    /// approval — appears as a banner above the composer with Send /
-    /// Edit / Dismiss. Skipped entirely when the source's chain is in
-    /// YOLO mode (the hand-off is dispatched immediately instead).
-    @Published var pendingHandOff: PendingHandOff?
-
-    struct PendingHandOff: Identifiable, Equatable {
-        let id = UUID()
-        let sourceAgentId: UUID
-        let sourceProjectName: String
-        let sourceTitle: String
-        let payload: String
-        let hopsRemaining: Int
-    }
-
     /// Fires once whenever a turn resolves cleanly (`.result` without
-    /// error). The manager subscribes to this to drive auto-forwarding
-    /// for chained sessions. Carries the assistant text from the turn
-    /// that just ended (whatever the model said last).
+    /// error). AgentManager subscribes to this to drive the orchestrator
+    /// "watch & nudge" wake. Carries the assistant text from the turn that
+    /// just ended (whatever the model said last).
     let turnCompleted = PassthroughSubject<String, Never>()
 
     /// Live composer text for THIS session. Owned on the session (not
@@ -369,7 +379,6 @@ final class AgentSession: ObservableObject, Identifiable {
         pendingAskUserQuestion = nil
         answeredAsk = nil
         pendingPermission = nil
-        pendingHandOff = nil
         lastTurnContextTokens = 0
         lastTurnContextWindow = nil
         currentTurnOutputTokens = 0
@@ -659,11 +668,9 @@ final class AgentSession: ObservableObject, Identifiable {
                 // resumer has nothing to retry.
                 lastSentPrompt = nil
                 awaitingNetworkResume = false
-                // Tell AgentManager a clean turn just landed so the chain
-                // coordinator can decide whether to auto-forward to a
-                // chainTargetId (or stage the hand-off on the target).
-                // Only fires for non-error completions so we don't
-                // propagate a broken state down the pipeline.
+                // Tell AgentManager a clean turn just landed so the
+                // orchestrator watch-&-nudge loop can wake. Only fires for
+                // non-error completions so we don't nudge on a broken turn.
                 turnCompleted.send(lastAssistantText)
             }
             currentTurnStartedAt = nil

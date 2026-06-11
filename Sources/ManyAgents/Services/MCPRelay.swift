@@ -123,9 +123,17 @@ final class MCPRelay {
         }
         switch op {
         case "list_agents":
-            return await listAgents(id: id)
+            return await listAgents(req: req, id: id)
+        case "read_agent":
+            return await readAgent(req: req, id: id)
         case "dispatch":
             return await dispatch(req: req, id: id)
+        case "set_notes":
+            return await setNotes(req: req, id: id)
+        case "mute_agent":
+            return await setMuted(req: req, id: id, muted: true)
+        case "unmute_agent":
+            return await setMuted(req: req, id: id, muted: false)
         case "permission_prompt":
             return await permissionPrompt(req: req, id: id)
         default:
@@ -197,18 +205,79 @@ final class MCPRelay {
     }
 
     @MainActor
-    private func listAgents(id: String) async -> [String: Any] {
+    private func listAgents(req: [String: Any], id: String) async -> [String: Any] {
         guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
-        let agents: [[String: Any]] = mgr.sessions.map { s in
-            [
-                "id": s.id.uuidString,
-                "project": ProjectNaming.name(forCwd: s.cwd),
-                "cwd": s.cwd,
-                "title": s.aiTitle ?? s.displayName,
-                "status": statusString(s.status)
-            ]
-        }
+        let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
+        let orch = sourceUUID.flatMap { uid in mgr.sessions.first { $0.id == uid } }
+        // The board: every other open tab except hidden ones. Muted tabs
+        // stay listed (flagged) so the orchestrator keeps awareness.
+        let agents: [[String: Any]] = mgr.sessions
+            .filter { $0.id != sourceUUID && !$0.hiddenFromOrchestrator }
+            .map { s -> [String: Any] in
+                [
+                    "id": s.id.uuidString,
+                    "project": ProjectNaming.name(forCwd: s.cwd),
+                    "cwd": s.cwd,
+                    "title": s.aiTitle ?? s.displayName,
+                    "status": statusString(s.status),
+                    "muted": orch?.mutedTabIds.contains(s.id) ?? false,
+                    "latest": s.latestSnippet
+                ]
+            }
         return ["id": id, "ok": true, "agents": agents]
+    }
+
+    /// Peek at a tab's recent transcript without dispatching to it — the
+    /// orchestrator's "read/refresh" primitive.
+    @MainActor
+    private func readAgent(req: [String: Any], id: String) async -> [String: Any] {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        guard let targetIdStr = req["agent_id"] as? String,
+              let targetUUID = UUID(uuidString: targetIdStr),
+              let target = mgr.sessions.first(where: { $0.id == targetUUID })
+        else { return ["id": id, "ok": false, "error": "unknown agent_id"] }
+        let tail = target.messages.suffix(14).map { m -> String in
+            let role: String
+            switch m.role {
+            case .assistant: role = "assistant"
+            case .user:      role = "user"
+            case .system:    role = "system"
+            }
+            return "[\(role)] \(m.flatText)"
+        }.joined(separator: "\n\n")
+        return [
+            "id": id, "ok": true,
+            "agent_id": targetIdStr,
+            "title": target.aiTitle ?? target.displayName,
+            "status": statusString(target.status),
+            "transcript_tail": tail
+        ]
+    }
+
+    /// Write the orchestrator's running "thinking" note.
+    @MainActor
+    private func setNotes(req: [String: Any], id: String) async -> [String: Any] {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        guard let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:)),
+              let orch = mgr.sessions.first(where: { $0.id == sourceUUID })
+        else { return ["id": id, "ok": false, "error": "unknown source session"] }
+        orch.orchestratorNotes = req["notes"] as? String ?? ""
+        return ["id": id, "ok": true]
+    }
+
+    /// Soft-mute / unmute a tab so its completions stop (or resume) waking
+    /// the orchestrator. Mute keeps the tab on the board for reference.
+    @MainActor
+    private func setMuted(req: [String: Any], id: String, muted: Bool) async -> [String: Any] {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        guard let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:)),
+              let orch = mgr.sessions.first(where: { $0.id == sourceUUID })
+        else { return ["id": id, "ok": false, "error": "unknown source session"] }
+        guard let targetUUID = (req["agent_id"] as? String).flatMap(UUID.init(uuidString:))
+        else { return ["id": id, "ok": false, "error": "unknown agent_id"] }
+        if muted { orch.mutedTabIds.insert(targetUUID) }
+        else { orch.mutedTabIds.remove(targetUUID) }
+        return ["id": id, "ok": true, "agent_id": targetUUID.uuidString, "muted": muted]
     }
 
     @MainActor
@@ -237,11 +306,13 @@ final class MCPRelay {
         let recordId = mgr.recordDispatchStart(coordinatorId: sourceUUID,
                                                target: target, prompt: prompt)
 
-        // Treat the dispatch as a YOLO hand-off from the source (if
-        // provided) — the model already decided to call this tool, so
-        // no banner / approval is appropriate.
-        if let src = sourceUUID {
-            mgr.handOff(from: src, to: target.id, prompt: prompt, autoSend: true)
+        // Anti-loop: the resulting turn-completion must NOT wake the
+        // orchestrator back — it captures the reply here directly.
+        target.suppressNextOrchestratorPing = true
+        // Tag provenance so the receiving tab knows it's the orchestrator
+        // talking, then send it as a normal user turn.
+        if let src = sourceUUID, let s = mgr.sessions.first(where: { $0.id == src }) {
+            target.send("[Message from orchestrator \"\(s.aiTitle ?? s.displayName)\"]\n\n\(prompt)")
         } else {
             target.send(prompt)
         }

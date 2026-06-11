@@ -211,6 +211,7 @@ private struct AgentTab: View {
     @State private var isDropTarget = false
     @State private var showRename = false
     @State private var renameDraft = ""
+    @State private var showBoard = false
 
     private var label: String {
         if let t = session.aiTitle, !t.isEmpty { return t }
@@ -236,31 +237,26 @@ private struct AgentTab: View {
             Circle()
                 .fill(dotColor)
                 .frame(width: 7, height: 7)
-            // Chain glyph — shown when this tab is part of a wired
-            // pipeline (either feeding another agent or being fed by
-            // one) or operating as a coordinator. Visual cue only;
-            // chain settings live in the conversation header.
-            if session.chainTargetId != nil ||
-               session.chainSourceId != nil ||
-               session.isCoordinator {
-                Image(systemName: session.isCoordinator
-                      ? "network"
-                      : (session.chainTargetId != nil
-                         ? "arrow.turn.up.right"
-                         : "arrow.turn.down.right"))
+            // Orchestrator hat — a brain icon you click to peek at what
+            // it sees and is thinking. An eye-slash marks a tab the user
+            // has hidden from the orchestrator.
+            if session.isCoordinator {
+                Button { showBoard = true } label: {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.brandOrange)
+                }
+                .buttonStyle(.plain)
+                .help("Orchestrator — click to see what it knows / is thinking")
+                .popover(isPresented: $showBoard, arrowEdge: .bottom) {
+                    OrchestratorIndicatorPopover(orchestrator: session)
+                        .environmentObject(manager)
+                }
+            } else if session.hiddenFromOrchestrator && manager.orchestrator != nil {
+                Image(systemName: "eye.slash")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.brandOrange.opacity(0.85))
-                    .help(session.isCoordinator
-                          ? "Coordinator agent — orchestrates other sessions via MCP"
-                          : "Part of an active chain")
-            }
-            // Pending-hand-off bell — drawn instead of/alongside chain
-            // glyph when this tab has a hand-off waiting for approval.
-            if session.pendingHandOff != nil {
-                Image(systemName: "envelope.badge.fill")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.brandOrange)
-                    .help("Pending hand-off from another agent")
+                    .foregroundStyle(.secondary)
+                    .help("Hidden from the orchestrator")
             }
             Text(label)
                 .font(.system(size: 12, weight: isActive ? .semibold : .medium))
@@ -332,6 +328,17 @@ private struct AgentTab: View {
                 }
             }
             Divider()
+            Button(session.isCoordinator ? "Stop Orchestrating" : "Make Orchestrator") {
+                manager.toggleOrchestrator(session)
+            }
+            if !session.isCoordinator {
+                // Only meaningful once an orchestrator exists to hide from.
+                Button(session.hiddenFromOrchestrator ? "Show to Orchestrator" : "Hide from Orchestrator") {
+                    session.hiddenFromOrchestrator.toggle()
+                }
+                .disabled(manager.orchestrator == nil)
+            }
+            Divider()
             Button("Close Tab", role: .destructive, action: onClose)
         }
         .alert("Rename tab", isPresented: $showRename) {
@@ -345,6 +352,88 @@ private struct AgentTab: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Enter a short label for this agent. It persists across launches.")
+        }
+    }
+}
+
+/// The brain-icon popover: what the orchestrator SEES (its live board of the
+/// other tabs) and what it's THINKING (its self-written notes). Read-only —
+/// a window into the orchestrator's current understanding.
+private struct OrchestratorIndicatorPopover: View {
+    @ObservedObject var orchestrator: AgentSession
+    @EnvironmentObject var manager: AgentManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                Image(systemName: "brain.head.profile")
+                    .foregroundStyle(Color.brandOrange)
+                Text("Orchestrator")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                sectionLabel("SEES")
+                let others = manager.sessions.filter {
+                    $0.id != orchestrator.id && !$0.hiddenFromOrchestrator
+                }
+                if others.isEmpty {
+                    Text("No other tabs open.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                } else {
+                    ForEach(others) { s in
+                        HStack(alignment: .top, spacing: 6) {
+                            Circle().fill(dotColor(s.status))
+                                .frame(width: 6, height: 6).padding(.top, 4)
+                            VStack(alignment: .leading, spacing: 1) {
+                                HStack(spacing: 5) {
+                                    Text(s.aiTitle ?? s.displayName)
+                                        .font(.system(size: 12, weight: .medium))
+                                    if orchestrator.mutedTabIds.contains(s.id) {
+                                        Text("muted")
+                                            .font(.system(size: 9, weight: .medium))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Text(s.status.boardLabel + (s.latestSnippet.isEmpty ? "" : " · \(s.latestSnippet)"))
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                sectionLabel("THINKING")
+                Text(orchestrator.orchestratorNotes.isEmpty
+                     ? "No notes yet — the orchestrator records its plan here as it works."
+                     : orchestrator.orchestratorNotes)
+                    .font(.system(size: 12))
+                    .foregroundStyle(orchestrator.orchestratorNotes.isEmpty ? .secondary : .primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(14)
+        .frame(width: 320)
+    }
+
+    private func sectionLabel(_ t: String) -> some View {
+        Text(t)
+            .font(.system(size: 9.5, weight: .semibold))
+            .tracking(0.6)
+            .foregroundStyle(.secondary)
+    }
+
+    private func dotColor(_ s: AgentStatus) -> Color {
+        switch s {
+        case .idle:    return .secondary
+        case .running: return Color.activeHighlight
+        case .waiting: return .orange
+        case .error:   return .red
         }
     }
 }
