@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ProjectsSidebar: View {
     @EnvironmentObject var manager: AgentManager
@@ -234,6 +235,39 @@ private struct ProjectRow: View {
             return true
         } isTargeted: { targeted in
             isDropTarget = targeted
+        }
+        .contextMenu {
+            Button {
+                manager.activate(project: project)
+            } label: { Label("Open", systemImage: "arrow.right.circle") }
+
+            Button {
+                manager.spawn(cwd: project.cwd)
+            } label: { Label("New session here", systemImage: "plus.bubble") }
+
+            Divider()
+
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.cwd)])
+            } label: { Label("Reveal in Finder", systemImage: "folder") }
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(project.cwd, forType: .string)
+            } label: { Label("Copy path", systemImage: "doc.on.doc") }
+
+            Divider()
+
+            Button(role: .destructive) {
+                // ProjectEntry.sessions is a snapshot, so iterating while
+                // manager.close() mutates the live array is safe.
+                for s in project.sessions { manager.close(s) }
+            } label: {
+                Label(project.sessions.count <= 1
+                      ? "Close session"
+                      : "Close project (\(project.sessions.count) sessions)",
+                      systemImage: "xmark")
+            }
         }
     }
 

@@ -300,6 +300,19 @@ private final class ServerState {
                 ]
             ],
             [
+                "name": "new_agent",
+                "description": "Spin up a new tab (session) to do work in — for when a task needs its own working context and no suitable tab exists. If an EMPTY tab already exists in that project (no history), it's reused instead of opening another. Give the project's cwd (from list_agents) and an optional first prompt. Returns the tab's id so you can read_agent / send_to_agent it like any other. Doesn't steal the user's focus.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "cwd": ["type": "string", "description": "Absolute project path (the cwd from list_agents) the new tab runs in."],
+                        "prompt": ["type": "string", "description": "Optional first task to hand the new tab immediately."]
+                    ],
+                    "required": ["cwd"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
                 "name": "set_notes",
                 "description": "Record your running understanding — what each tab is for, what you're waiting on, your next intended action. This is your memory across wake-ups and is shown to the user in the orchestrator indicator. Overwrites the previous note; keep it short and current.",
                 "inputSchema": [
@@ -402,6 +415,23 @@ private final class ServerState {
                     respondToolResult(id: id, text: "[\(title) · status: \(status)]\n\n\(tail)")
                 } else {
                     respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "read failed")", isError: true)
+                }
+            case "new_agent":
+                guard let cwd = arguments["cwd"] as? String else {
+                    respondToolResult(id: id, text: "Error: missing cwd.", isError: true)
+                    return
+                }
+                var payload: [String: Any] = ["op": "new_agent",
+                                              "source_session_id": args.sourceSessionId as Any,
+                                              "cwd": cwd]
+                if let p = arguments["prompt"] as? String { payload["prompt"] = p }
+                let res = try await awaitRelay(payload)
+                if (res["ok"] as? Bool) == true {
+                    let aid = res["agent_id"] as? String ?? "?"
+                    let reused = (res["reused"] as? Bool) == true
+                    respondToolResult(id: id, text: "\(reused ? "Reused empty tab" : "Created tab") \(aid) in \(cwd).")
+                } else {
+                    respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "new_agent failed")", isError: true)
                 }
             case "send_to_agent":
                 guard let agentId = arguments["agent_id"] as? String,

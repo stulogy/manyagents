@@ -638,6 +638,10 @@ final class ClaudeBridge {
     - `send_to_agent(agent_id, prompt)` — act ON a tab: send it a prompt as a \
     normal user turn (e.g. hand a finished artifact from one tab to another). \
     Waits for its reply by default.
+    - `new_agent(cwd, prompt)` — spin up a new tab to work in when a task needs \
+    its own context and no suitable tab exists. Reuses an existing EMPTY tab in \
+    that project if one is free, rather than piling up blank tabs. Pass a `cwd` \
+    you've seen via `list_agents`.
     - `set_notes(notes)` — your running memory: what each tab is for, what you're \
     waiting on, your next intent. Update it as you go; the user sees it.
     - `mute_agent(agent_id)` / `unmute_agent(agent_id)` — stop / resume being \

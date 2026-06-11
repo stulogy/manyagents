@@ -126,6 +126,8 @@ final class MCPRelay {
             return await listAgents(req: req, id: id)
         case "read_agent":
             return await readAgent(req: req, id: id)
+        case "new_agent":
+            return await newAgent(req: req, id: id)
         case "dispatch":
             return await dispatch(req: req, id: id)
         case "set_notes":
@@ -252,6 +254,46 @@ final class MCPRelay {
             "status": statusString(target.status),
             "transcript_tail": tail
         ]
+    }
+
+    /// Create a new tab to work in — or REUSE an existing empty tab in the
+    /// same project (no messages, nothing queued) so blank tabs don't pile
+    /// up. Never reuses a tab that has history. Optionally sends a first
+    /// prompt. Doesn't steal the user's focus.
+    @MainActor
+    private func newAgent(req: [String: Any], id: String) async -> [String: Any] {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        guard let cwd = req["cwd"] as? String, !cwd.isEmpty else {
+            return ["id": id, "ok": false, "error": "missing cwd"]
+        }
+        let prompt = (req["prompt"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        // Prefer an existing EMPTY tab in this project.
+        let reusable = mgr.sessions.first {
+            $0.cwd == cwd && !$0.isCoordinator && $0.messages.isEmpty && $0.pendingPrompts.isEmpty
+        }
+        let target: AgentSession
+        let reused: Bool
+        if let r = reusable {
+            target = r
+            reused = true
+        } else {
+            let prevActive = mgr.activeSessionId
+            target = mgr.spawn(cwd: cwd)
+            mgr.activeSessionId = prevActive   // spawn focuses the new tab; don't steal focus
+            reused = false
+        }
+
+        if !prompt.isEmpty {
+            target.suppressNextOrchestratorPing = true
+            if let orchUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:)),
+               let orch = mgr.sessions.first(where: { $0.id == orchUUID }) {
+                target.send("[Message from orchestrator \"\(orch.aiTitle ?? orch.displayName)\"]\n\n\(prompt)")
+            } else {
+                target.send(prompt)
+            }
+        }
+        return ["id": id, "ok": true, "agent_id": target.id.uuidString, "reused": reused, "cwd": cwd]
     }
 
     /// Write the orchestrator's running "thinking" note.
