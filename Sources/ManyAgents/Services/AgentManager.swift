@@ -410,6 +410,12 @@ final class AgentManager: ObservableObject {
             /// crash never loses a staged stack. Optional for back-compat
             /// with snapshots written before this field existed.
             let pendingPrompts: [AgentSession.PendingPrompt]?
+            /// Orchestrator designation + hide flag, so the orchestrator hat
+            /// survives a relaunch instead of silently dropping. Optional for
+            /// back-compat. (mutedTabIds isn't persisted — tab UUIDs are
+            /// regenerated on relaunch, so it wouldn't round-trip meaningfully.)
+            let isOrchestrator: Bool?
+            let hiddenFromOrchestrator: Bool?
 
             var id: String { (claudeSessionId ?? "") + cwd }
         }
@@ -422,7 +428,9 @@ final class AgentManager: ObservableObject {
                 claudeSessionId: s.claudeSessionId ?? s.resumeSessionId,
                 displayName: s.displayName,
                 aiTitle: s.aiTitle,
-                pendingPrompts: s.pendingPrompts.isEmpty ? nil : s.pendingPrompts
+                pendingPrompts: s.pendingPrompts.isEmpty ? nil : s.pendingPrompts,
+                isOrchestrator: s.isCoordinator ? true : nil,
+                hiddenFromOrchestrator: s.hiddenFromOrchestrator ? true : nil
             )
         })
         if snap.agents.isEmpty {
@@ -476,6 +484,8 @@ final class AgentManager: ObservableObject {
             let session = spawn(cwd: a.cwd, resumeSessionId: a.claudeSessionId)
             session.displayName = a.displayName
             session.aiTitle = a.aiTitle
+            session.isCoordinator = a.isOrchestrator ?? false
+            session.hiddenFromOrchestrator = a.hiddenFromOrchestrator ?? false
             // Restore the queued stack as STAGED items (visible in the strip,
             // not auto-fired) — so reopening can't trigger a surprise burst;
             // they drain normally on the next turn. Never lose staged work.

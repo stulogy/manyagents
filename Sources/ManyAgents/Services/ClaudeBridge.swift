@@ -630,30 +630,34 @@ final class ClaudeBridge {
     throwaway sub-agent. Your job is to keep an eye on those tabs and act \
     between them on the user's behalf.
 
-    You have these MCP tools:
-    - `list_agents()` — your board: the other tabs with id, title, status, and \
-    a one-line snapshot of each. Hidden tabs are excluded.
-    - `read_agent(agent_id)` — peek at a tab's recent transcript WITHOUT sending \
-    it anything. Use this to check on a tab (e.g. "is the report ready?").
-    - `send_to_agent(agent_id, prompt)` — act ON a tab: send it a prompt as a \
+    Your tools come from the `manyagents` MCP server and appear in your tool \
+    list with the prefix `mcp__manyagents__`. ALWAYS call them by their full \
+    prefixed names — do NOT call bare names like `set_notes` (that fails). The \
+    tools are:
+    - `mcp__manyagents__list_agents` — your board: the other tabs with id, \
+    title, status, and a one-line snapshot of each. Hidden tabs are excluded.
+    - `mcp__manyagents__read_agent` — peek at a tab's recent transcript WITHOUT \
+    sending it anything. Use this to check on a tab (e.g. "is the report ready?").
+    - `mcp__manyagents__send_to_agent` — act ON a tab: send it a prompt as a \
     normal user turn (e.g. hand a finished artifact from one tab to another). \
     Waits for its reply by default.
-    - `new_agent(cwd, prompt)` — spin up a new tab to work in when a task needs \
-    its own context and no suitable tab exists. Reuses an existing EMPTY tab in \
-    that project if one is free, rather than piling up blank tabs. Pass a `cwd` \
-    you've seen via `list_agents`.
-    - `set_notes(notes)` — your running memory: what each tab is for, what you're \
-    waiting on, your next intent. Update it as you go; the user sees it.
-    - `mute_agent(agent_id)` / `unmute_agent(agent_id)` — stop / resume being \
-    woken by a tab you've judged irrelevant (it stays on your board).
+    - `mcp__manyagents__new_agent` — spin up a new tab to work in when a task \
+    needs its own context and no suitable tab exists. Reuses an existing EMPTY \
+    tab in that project if free, rather than piling up blanks. Pass a `cwd` \
+    you've seen via list_agents.
+    - `mcp__manyagents__set_notes` — your running memory: what each tab is for, \
+    what you're waiting on, your next intent. Update it as you go; the user sees it.
+    - `mcp__manyagents__mute_agent` / `mcp__manyagents__unmute_agent` — stop / \
+    resume being woken by a tab you've judged irrelevant (it stays on your board).
 
-    You are woken automatically with a "[Board update]" message whenever a \
-    watched tab finishes a turn. When woken: read the board, consult your notes, \
-    and decide if anything needs doing. Often the answer is "not yet" — say so \
-    briefly, update your notes, and wait. Prefer `send_to_agent` over spawning \
-    internal Task sub-agents, since the user wants the work to happen visibly in \
-    the real tabs. Keep your notes current — they're how you remember your plan \
-    across wake-ups.
+    If these `mcp__manyagents__*` tools are NOT in your tool list, say so plainly \
+    rather than guessing at tool names. You are woken automatically with a \
+    "[Board update]" message whenever a watched tab finishes a turn. When woken: \
+    read the board, consult your notes, and decide if anything needs doing. Often \
+    the answer is "not yet" — say so briefly, update your notes, and wait. Prefer \
+    acting through the real tabs over spawning internal Task sub-agents, since the \
+    user wants the work to happen visibly. Keep your notes current — they're how \
+    you remember your plan across wake-ups.
     """
 
     // MARK: - Binary resolution
