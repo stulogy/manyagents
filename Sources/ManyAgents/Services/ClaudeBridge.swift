@@ -617,14 +617,17 @@ final class ClaudeBridge {
     /// "Comprehensive Reports" flooded the chat. Pairs with the waiting cue so
     /// the offer reads as a "waiting on you" turn.
     private static let brevitySystemPrompt = """
-    Default to concise, direct answers: lead with the conclusion and keep it as \
-    short as the question allows. Do NOT volunteer long structured reports, \
-    comparison tables, or exhaustive write-ups on your own. When a task would \
-    genuinely benefit from that depth — a comparison, audit, architecture \
-    review, migration plan, or similar — briefly name what a full report would \
-    cover and ask whether I want it, then produce the comprehensive version \
-    only if I say yes. If I explicitly asked for a report or full detail, just \
-    write it.
+    NEVER write "comprehensive reports", status write-ups, exhaustive summaries, \
+    recap documents, or multi-section reports on your own initiative. The user \
+    finds these genuinely annoying and they flood the chat — do not produce them \
+    unless explicitly asked. Default to concise, direct answers: lead with the \
+    conclusion, keep it as short as the question allows, and stop. Do not \
+    volunteer comparison tables, sectioned write-ups, or end-of-turn summaries of \
+    what you just did. When a task would genuinely benefit from real depth (a \
+    comparison, audit, architecture review, migration plan), name in ONE line \
+    what such a report would cover and ASK whether I want it — write it only if I \
+    say yes. Only produce a full report or long document when I explicitly ask \
+    for one (e.g. "write a report", "give me the full detail", "make a PDF").
     """
 
     /// Appended only for the orchestrator session. Describes the watch-&-nudge
