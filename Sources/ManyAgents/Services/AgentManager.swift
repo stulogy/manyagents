@@ -212,22 +212,21 @@ final class AgentManager: ObservableObject {
     /// "watch & nudge" loop: a finished tab wakes the orchestrator so it can
     /// decide whether to act.
     private func handleTurnCompleted(on source: AgentSession, payload: String) {
-        // The orchestrator's OWN turn just finished: if watched tabs changed
-        // while it was busy, fire the single coalesced recheck now.
-        if source.isCoordinator {
-            if source.pendingOrchestratorRecheck {
-                source.pendingOrchestratorRecheck = false
-                deliverOrchestratorPing(to: source, trigger: nil)
-            }
-            return
-        }
+        // The orchestrator's own turn finishing must not wake itself.
+        if source.isCoordinator { return }
         // Anti-loop: a turn the orchestrator itself dispatched into this tab
         // doesn't ping back — the orchestrator already got the reply.
         if source.suppressNextOrchestratorPing {
             source.suppressNextOrchestratorPing = false
             return
         }
-        notifyOrchestratorOfCompletion(from: source)
+        // A watched tab finished — schedule a (debounced, rate-limited) wake.
+        guard let orch = orchestrator,
+              orch.id != source.id,
+              !source.hiddenFromOrchestrator,
+              !orch.mutedTabIds.contains(source.id)
+        else { return }
+        scheduleOrchestratorWake()
     }
 
     // MARK: - Orchestrator (v2)
@@ -246,40 +245,57 @@ final class AgentManager: ObservableObject {
         }
     }
 
-    /// A watched tab finished — wake the orchestrator unless it's hidden,
-    /// muted, or the orchestrator is the one that finished. While the
-    /// orchestrator is mid-turn, coalesce into one follow-up recheck.
-    private func notifyOrchestratorOfCompletion(from source: AgentSession) {
-        guard let orch = orchestrator,
-              orch.id != source.id,
-              !source.hiddenFromOrchestrator,
-              !orch.mutedTabIds.contains(source.id)
-        else { return }
+    // Wake throttling. Tab completions are bursty and frequent; without this
+    // the orchestrator narrated "holding" on every single turn of every tab.
+    private var orchestratorWakeWork: DispatchWorkItem?
+    private var lastOrchestratorWakeAt: Date = .distantPast
+    private var lastOrchestratorStatusSig: String = ""
+    /// Coalesce a burst of completions into one wake.
+    private static let orchestratorWakeDebounce: TimeInterval = 12
+    /// Never wake the orchestrator more often than this.
+    private static let orchestratorMinWakeInterval: TimeInterval = 90
 
-        if orch.status == .running {
-            orch.pendingOrchestratorRecheck = true
-            return
+    /// Schedule a debounced, rate-limited wake. Each new completion resets the
+    /// timer (coalescing bursts); the wake also can't fire sooner than
+    /// `orchestratorMinWakeInterval` after the previous one, and is skipped
+    /// entirely if no watched tab's STATUS changed since the last wake.
+    private func scheduleOrchestratorWake() {
+        orchestratorWakeWork?.cancel()
+        let earliest = lastOrchestratorWakeAt.addingTimeInterval(Self.orchestratorMinWakeInterval)
+        let delay = max(Self.orchestratorWakeDebounce, earliest.timeIntervalSinceNow)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let orch = self.orchestrator else { return }
+            // Busy → try again after the window rather than queueing onto it.
+            if orch.status == .running { self.scheduleOrchestratorWake(); return }
+            let sig = self.orchestratorStatusSignature(for: orch)
+            // Nothing meaningfully changed since the last wake — stay quiet.
+            guard sig != self.lastOrchestratorStatusSig else { return }
+            self.lastOrchestratorStatusSig = sig
+            self.lastOrchestratorWakeAt = Date()
+            self.deliverOrchestratorPing(to: orch)
         }
-        deliverOrchestratorPing(to: orch, trigger: source)
+        orchestratorWakeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    /// Deliver a (non-visible) wake prompt to the orchestrator with the
-    /// current board. `trigger` is the tab that just finished, or nil for a
-    /// coalesced recheck.
-    private func deliverOrchestratorPing(to orch: AgentSession, trigger: AgentSession?) {
-        let board = orchestratorBoardText(for: orch)
-        let head: String
-        if let t = trigger {
-            head = "Tab \"\(t.aiTitle ?? t.displayName)\" just finished a turn. Its last message:\n\(t.latestSnippet)\n\n"
-        } else {
-            head = "One or more tabs changed while you were busy.\n\n"
-        }
-        let prompt = """
-        [Board update — automatic, not from the user]
-        \(head)Current board:
-        \(board)
+    /// Coarse signature of the board — just each tab's status, not its
+    /// snippet — so token-level churn doesn't count as a change.
+    private func orchestratorStatusSignature(for orch: AgentSession) -> String {
+        sessions
+            .filter { $0.id != orch.id && !$0.hiddenFromOrchestrator }
+            .map { "\($0.id.uuidString.prefix(8)):\($0.status.boardLabel)" }
+            .sorted()
+            .joined(separator: "|")
+    }
 
-        Consult your notes and decide if anything needs doing. If nothing does, say briefly that you're holding and update your notes. Tools: read_agent (look closer), send_to_agent (act), set_notes (record your plan), mute_agent (stop hearing about a tab).
+    /// Deliver a (non-visible) wake prompt to the orchestrator with the board.
+    private func deliverOrchestratorPing(to orch: AgentSession) {
+        let prompt = """
+        [Board update — automatic, not from the user. Do NOT reply with a long status report.]
+        Current board:
+        \(orchestratorBoardText(for: orch))
+
+        Decide if anything needs doing. If something does, act (read_agent / send_to_agent / new_agent) and update set_notes. If nothing does — which is common — reply with at most ONE short line (e.g. "Holding, nothing actionable.") and don't restate your reasoning. Update set_notes only when your plan actually changes.
         """
         orch.send(prompt, visible: false)
     }
