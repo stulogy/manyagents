@@ -17,6 +17,11 @@ enum TranscriptLoader {
         // can be dropped when it lands on the following user line — matching
         // how the live bridge suppresses it.
         var askUserQuestionIds = Set<String>()
+        // Tracks whether the next assistant turn is an automatic orchestrator
+        // board-wake (the prompt was injected by us with `visible:false`, so on
+        // restore we drop the prompt and tag the reply — matching live tagging,
+        // so silent "holding" turns stay hidden).
+        var pendingBoardWake = false
         raw.enumerateLines { line, _ in
             guard let lineData = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
@@ -24,7 +29,16 @@ enum TranscriptLoader {
             else { return }
             switch type {
             case "user":
-                if let m = parseUser(obj, askUserQuestionIds: askUserQuestionIds) { out.append(m) }
+                if isBoardWakeUser(obj) {
+                    // Our injected board-wake prompt — never user-typed. Drop it
+                    // and flag the assistant turn it triggers.
+                    pendingBoardWake = true
+                } else if let m = parseUser(obj, askUserQuestionIds: askUserQuestionIds) {
+                    // A real typed prompt ends a board-wake turn; tool_result
+                    // (.system) lines mid-turn don't.
+                    if m.role == .user { pendingBoardWake = false }
+                    out.append(m)
+                }
             case "assistant":
                 if let msg = obj["message"] as? [String: Any],
                    let content = msg["content"] as? [[String: Any]] {
@@ -34,7 +48,7 @@ enum TranscriptLoader {
                         if let id = c["id"] as? String { askUserQuestionIds.insert(id) }
                     }
                 }
-                if let m = parseAssistant(obj) { out.append(m) }
+                if let m = parseAssistant(obj, boardWake: pendingBoardWake) { out.append(m) }
             default:
                 break
             }
@@ -116,7 +130,26 @@ enum TranscriptLoader {
         return Message(role: role, blocks: blocks)
     }
 
-    private static func parseAssistant(_ obj: [String: Any]) -> Message? {
+    /// True when a restored "user" line is actually our injected orchestrator
+    /// board-wake prompt (sent visible:false live). Matches the stable marker
+    /// prefix we emit in AgentManager.deliverOrchestratorPing — a control
+    /// string we control, not model output.
+    private static func isBoardWakeUser(_ obj: [String: Any]) -> Bool {
+        guard let msg = obj["message"] as? [String: Any] else { return false }
+        let text: String
+        if let s = msg["content"] as? String {
+            text = s
+        } else if let arr = msg["content"] as? [[String: Any]],
+                  let first = arr.first(where: { ($0["type"] as? String) == "text" }),
+                  let t = first["text"] as? String {
+            text = t
+        } else {
+            return false
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("[Board update")
+    }
+
+    private static func parseAssistant(_ obj: [String: Any], boardWake: Bool = false) -> Message? {
         guard let msg = obj["message"] as? [String: Any],
               let content = msg["content"] as? [[String: Any]]
         else { return nil }
@@ -151,7 +184,7 @@ enum TranscriptLoader {
             }
         }
         if blocks.isEmpty { return nil }
-        return Message(role: .assistant, blocks: blocks)
+        return Message(role: .assistant, blocks: blocks, fromBoardWake: boardWake)
     }
 
     /// Strip the synthetic tags claude code wraps system reminders and IDE
