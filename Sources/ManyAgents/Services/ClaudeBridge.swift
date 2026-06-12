@@ -595,6 +595,12 @@ final class ClaudeBridge {
     /// "waiting on you" apart from "done/idle." Stays scoped to the
     /// invocation — never touches the user's CLAUDE.md or global config.
     private static let waitingCueSystemPrompt = """
+    Never use the AskUserQuestion tool — it does not work in this environment \
+    (it gets auto-answered, so the choice never reaches you). When you need me \
+    to decide, choose between options, or confirm something, ask in plain text \
+    in your reply and END THE TURN to wait for my answer. Lay out the options \
+    as a short list if helpful. Do not proceed past a real decision on your own.
+
     When you finish a turn with something pending from me — a question, a \
     decision, a choice between options, a confirmation, or any case where \
     you need my input before continuing — end your final sentence with \
