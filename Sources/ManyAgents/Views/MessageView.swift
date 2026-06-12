@@ -163,7 +163,12 @@ struct MessageView: View {
     }
 
     private var isRenderableEmpty: Bool {
-        message.blocks.allSatisfy { block in
+        // Silent orchestrator board-checks: a wake turn that took no action
+        // (no tool_use — just "holding…" narration) is housekeeping, not
+        // conversation. Hide it entirely so it never floods the transcript.
+        // Wake turns that DID act (send_to_agent etc.) still render.
+        if message.fromBoardWake && !message.hasToolUse { return true }
+        return message.blocks.allSatisfy { block in
             switch block {
             case .text(_, let t):     return t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             case .thinking(_, let t): return t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

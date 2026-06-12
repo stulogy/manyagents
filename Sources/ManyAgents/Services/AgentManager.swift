@@ -297,7 +297,7 @@ final class AgentManager: ObservableObject {
 
         Decide if anything needs doing. If something does, act (read_agent / send_to_agent / new_agent) and update set_notes. If nothing does — which is common — reply with at most ONE short line (e.g. "Holding, nothing actionable.") and don't restate your reasoning. Update set_notes only when your plan actually changes.
         """
-        orch.send(prompt, visible: false)
+        orch.send(prompt, visible: false, boardWake: true)
     }
 
     /// Compact board snapshot the orchestrator sees on every wake. Hidden

@@ -146,7 +146,16 @@ final class AgentSession: ObservableObject, Identifiable {
         /// they typed it themselves. claude still receives the text;
         /// only the UI transcript is bypassed.
         var visible: Bool = true
+        /// True for an automatic orchestrator board-wake turn. Optional so old
+        /// persisted snapshots (which lack the key) still decode. The resulting
+        /// assistant messages get tagged so silent "holding" turns can be
+        /// hidden from the transcript.
+        var isBoardWake: Bool? = nil
     }
+
+    /// Set while a board-wake turn is dispatching, so the assistant messages it
+    /// produces get tagged `fromBoardWake`. Cleared at turn end.
+    private var currentTurnIsBoardWake = false
 
     /// claude called AskUserQuestion mid-turn and is now waiting for our
     /// selection. The UI renders an inline picker bound to this; clicking
@@ -435,11 +444,11 @@ final class AgentSession: ObservableObject, Identifiable {
     /// otherwise queues it for FIFO delivery once the current turn lands.
     /// `visible = false` skips the visible transcript append (used by
     /// the compaction summariser).
-    func send(_ text: String, images: [Data] = [], visible: Bool = true) {
+    func send(_ text: String, images: [Data] = [], visible: Bool = true, boardWake: Bool = false) {
         // Clear any waiting-for-net state — the user just hit send
         // again, so they're taking control back from the auto-resumer.
         awaitingNetworkResume = false
-        let prompt = PendingPrompt(text: text, images: images, visible: visible)
+        let prompt = PendingPrompt(text: text, images: images, visible: visible, isBoardWake: boardWake)
         if status == .running || bridge.isBusy {
             pendingPrompts.append(prompt)
             return
@@ -461,6 +470,8 @@ final class AgentSession: ObservableObject, Identifiable {
         if prompt.visible {
             messages.append(userMessage)
         }
+        // Tag the assistant output of this turn if it's an automatic board-wake.
+        currentTurnIsBoardWake = (prompt.isBoardWake == true)
         status = .running
         // Normally a fresh turn starts the timer now; but a force-send carries
         // the interrupted turn's start time so the timer continues unbroken.
@@ -591,10 +602,12 @@ final class AgentSession: ObservableObject, Identifiable {
             // new one. The CLI emits each assistant *message* as a single
             // event (not per-delta) when streaming is off.
             if let lastIdx = messages.indices.last,
-               messages[lastIdx].role == .assistant {
+               messages[lastIdx].role == .assistant,
+               messages[lastIdx].fromBoardWake == currentTurnIsBoardWake {
                 messages[lastIdx].blocks.append(contentsOf: blocks)
             } else {
-                messages.append(Message(role: .assistant, blocks: blocks))
+                messages.append(Message(role: .assistant, blocks: blocks,
+                                        fromBoardWake: currentTurnIsBoardWake))
             }
             status = .running
             // Derive a current-phase label from what just arrived so the
@@ -674,6 +687,7 @@ final class AgentSession: ObservableObject, Identifiable {
                 turnCompleted.send(lastAssistantText)
             }
             currentTurnStartedAt = nil
+            currentTurnIsBoardWake = false
             // The logical turn finished — clear any carried token base so the
             // next fresh turn starts its count from 0.
             carriedTurnTokens = 0
