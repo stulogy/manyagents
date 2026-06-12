@@ -628,6 +628,12 @@ final class ClaudeBridge {
     what such a report would cover and ASK whether I want it — write it only if I \
     say yes. Only produce a full report or long document when I explicitly ask \
     for one (e.g. "write a report", "give me the full detail", "make a PDF").
+
+    This applies to your sub-agents too: whenever you dispatch a Task/Agent \
+    sub-agent, explicitly instruct it in its prompt to do its work and return a \
+    SHORT findings summary (a few lines / key bullets) — NOT a comprehensive \
+    report, audit document, or multi-section write-up. Sub-agents may investigate \
+    deeply but must report back tersely.
     """
 
     /// Appended only for the orchestrator session. Describes the watch-&-nudge
