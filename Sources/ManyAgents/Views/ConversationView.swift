@@ -667,6 +667,33 @@ struct ConversationView: View {
                 )
             }
             .coordinateSpace(name: "scroll")
+            // Jump-to-bottom button — appears bottom-right whenever the user
+            // has scrolled away from the trailing edge. Tapping it scrolls to
+            // the latest and re-engages auto-follow.
+            .overlay(alignment: .bottomTrailing) {
+                if !atBottom {
+                    Button {
+                        atBottom = true
+                        withAnimation(.easeOut(duration: 0.22)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 34, height: 34)
+                            .background(Circle().fill(Color.brandOrange))
+                            .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
+                            .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 18)
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                    .help("Scroll to latest")
+                }
+            }
+            .animation(.easeOut(duration: 0.15), value: atBottom)
             // Viewport height — measured on the ScrollView itself.
             .background(
                 GeometryReader { viewportProxy in
@@ -680,7 +707,19 @@ struct ConversationView: View {
             // Content height changes do NOT update `atBottom` — only the
             // follow trigger reads it. Scroll / viewport changes do.
             .onPreferenceChange(ContentHeightKey.self) { contentHeight = $0 }
-            .onPreferenceChange(ScrollYKey.self) { scrollY = $0; recomputeAtBottom() }
+            .onPreferenceChange(ScrollYKey.self) { newY in
+                // A DECREASE in scroll offset means the user dragged UP. Release
+                // auto-follow immediately — don't wait for the tolerance-based
+                // recompute, which streaming tokens kept beating (re-scrolling
+                // to the bottom before the user's scroll registered). Our own
+                // follow only ever scrolls DOWN, so a decrease is always the
+                // user. On a non-decrease (settling / scrolling down), recompute
+                // normally so reaching the bottom re-engages follow.
+                let scrolledUp = newY < scrollY - 8
+                scrollY = newY
+                guard didInitialScroll else { return }
+                if scrolledUp { atBottom = false } else { recomputeAtBottom() }
+            }
             .onPreferenceChange(ViewportHeightKey.self) { viewportHeight = $0; recomputeAtBottom() }
             // NOTE: we deliberately do NOT use .defaultScrollAnchor(.bottom).
             // It re-pins to the bottom on EVERY content-size change,
