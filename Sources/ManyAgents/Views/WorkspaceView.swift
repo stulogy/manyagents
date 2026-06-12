@@ -371,7 +371,7 @@ private struct OrchestratorIndicatorPopover: View {
                     .foregroundStyle(Color.brandOrange)
                 Text("Orchestrator")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Color.primary)
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -391,7 +391,7 @@ private struct OrchestratorIndicatorPopover: View {
                                 HStack(spacing: 6) {
                                     Text(s.aiTitle ?? s.displayName)
                                         .font(.system(size: 12.5, weight: .semibold))
-                                        .foregroundStyle(.primary)
+                                        .foregroundStyle(Color.primary)
                                     if orchestrator.mutedTabIds.contains(s.id) {
                                         Text("muted")
                                             .font(.system(size: 9, weight: .semibold))
@@ -424,11 +424,13 @@ private struct OrchestratorIndicatorPopover: View {
         }
         .padding(16)
         .frame(width: 330)
-        // Reset the tint inherited from the (active, blue-tinted) tab this
-        // popover is anchored to, so titles/header render in their own colors
-        // instead of all-blue.
-        .foregroundStyle(.primary)
-        .tint(.primary)
+        // The popover is anchored inside the active tab, whose foreground
+        // base is Color.activeHighlight (blue). Hierarchical styles
+        // (.primary/.secondary) resolve RELATIVE to that base, so everything
+        // came out blue. Re-base the whole subtree to the CONCRETE primary
+        // label color so .primary→white text and .secondary→grey as intended.
+        .foregroundStyle(Color.primary)
+        .tint(Color.primary)
     }
 
     private func sectionLabel(_ t: String) -> some View {
