@@ -223,6 +223,7 @@ final class AgentManager: ObservableObject {
         // A watched tab finished — schedule a (debounced, rate-limited) wake.
         guard let orch = orchestrator,
               orch.id != source.id,
+              source.cwd == orch.cwd,            // only tabs in the orchestrator's own project
               !source.hiddenFromOrchestrator,
               !orch.mutedTabIds.contains(source.id)
         else { return }
@@ -282,7 +283,7 @@ final class AgentManager: ObservableObject {
     /// snippet — so token-level churn doesn't count as a change.
     private func orchestratorStatusSignature(for orch: AgentSession) -> String {
         sessions
-            .filter { $0.id != orch.id && !$0.hiddenFromOrchestrator }
+            .filter { $0.cwd == orch.cwd && $0.id != orch.id && !$0.hiddenFromOrchestrator }
             .map { "\($0.id.uuidString.prefix(8)):\($0.status.boardLabel)" }
             .sorted()
             .joined(separator: "|")
@@ -303,8 +304,8 @@ final class AgentManager: ObservableObject {
     /// Compact board snapshot the orchestrator sees on every wake. Hidden
     /// tabs are excluded entirely; muted tabs stay listed but flagged.
     func orchestratorBoardText(for orch: AgentSession) -> String {
-        let others = sessions.filter { $0.id != orch.id && !$0.hiddenFromOrchestrator }
-        if others.isEmpty { return "(no other tabs open)" }
+        let others = sessions.filter { $0.cwd == orch.cwd && $0.id != orch.id && !$0.hiddenFromOrchestrator }
+        if others.isEmpty { return "(no other tabs in this project)" }
         return others.map { s in
             let muted = orch.mutedTabIds.contains(s.id) ? " [muted]" : ""
             return "• \(s.aiTitle ?? s.displayName) [\(s.id)] — \(s.status.boardLabel)\(muted) — \(s.latestSnippet)"

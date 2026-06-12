@@ -377,10 +377,10 @@ private struct OrchestratorIndicatorPopover: View {
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel("SEES")
                 let others = manager.sessions.filter {
-                    $0.id != orchestrator.id && !$0.hiddenFromOrchestrator
+                    $0.cwd == orchestrator.cwd && $0.id != orchestrator.id && !$0.hiddenFromOrchestrator
                 }
                 if others.isEmpty {
-                    Text("No other tabs open.")
+                    Text("No other tabs in this project.")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 } else {
                     ForEach(others) { s in

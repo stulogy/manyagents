@@ -211,10 +211,15 @@ final class MCPRelay {
         guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
         let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
         let orch = sourceUUID.flatMap { uid in mgr.sessions.first { $0.id == uid } }
-        // The board: every other open tab except hidden ones. Muted tabs
-        // stay listed (flagged) so the orchestrator keeps awareness.
-        let agents: [[String: Any]] = mgr.sessions
-            .filter { $0.id != sourceUUID && !$0.hiddenFromOrchestrator }
+        // The board: the other open tabs IN THE ORCHESTRATOR'S OWN PROJECT,
+        // except hidden ones. Muted tabs stay listed (flagged). Tabs in other
+        // projects are never surfaced.
+        let orchCwd = orch?.cwd
+        let visible = mgr.sessions.filter { s in
+            guard s.id != sourceUUID, !s.hiddenFromOrchestrator else { return false }
+            return orchCwd == nil || s.cwd == orchCwd
+        }
+        let agents: [[String: Any]] = visible
             .map { s -> [String: Any] in
                 [
                     "id": s.id.uuidString,

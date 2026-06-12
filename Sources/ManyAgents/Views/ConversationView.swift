@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// The main right-pane view — header + scrolling conversation + composer.
 struct ConversationView: View {
@@ -665,6 +666,11 @@ struct ConversationView: View {
                             )
                     }
                 )
+                // Reliable USER-scroll detection straight from the underlying
+                // NSScrollView (the GeometryReader signals above don't fire
+                // promptly mid-stream, so streaming-follow beat them). Drives
+                // `atBottom` authoritatively.
+                .background(ScrollBottomWatcher(atBottom: $atBottom))
             }
             .coordinateSpace(name: "scroll")
             // Jump-to-bottom button — appears bottom-right whenever the user
@@ -706,21 +712,12 @@ struct ConversationView: View {
             )
             // Content height changes do NOT update `atBottom` — only the
             // follow trigger reads it. Scroll / viewport changes do.
+            // `atBottom` is driven authoritatively by ScrollBottomWatcher
+            // (real NSScrollView events); these just keep the height metrics
+            // around and no longer touch the follow gate.
             .onPreferenceChange(ContentHeightKey.self) { contentHeight = $0 }
-            .onPreferenceChange(ScrollYKey.self) { newY in
-                // A DECREASE in scroll offset means the user dragged UP. Release
-                // auto-follow immediately — don't wait for the tolerance-based
-                // recompute, which streaming tokens kept beating (re-scrolling
-                // to the bottom before the user's scroll registered). Our own
-                // follow only ever scrolls DOWN, so a decrease is always the
-                // user. On a non-decrease (settling / scrolling down), recompute
-                // normally so reaching the bottom re-engages follow.
-                let scrolledUp = newY < scrollY - 8
-                scrollY = newY
-                guard didInitialScroll else { return }
-                if scrolledUp { atBottom = false } else { recomputeAtBottom() }
-            }
-            .onPreferenceChange(ViewportHeightKey.self) { viewportHeight = $0; recomputeAtBottom() }
+            .onPreferenceChange(ScrollYKey.self) { scrollY = $0 }
+            .onPreferenceChange(ViewportHeightKey.self) { viewportHeight = $0 }
             // NOTE: we deliberately do NOT use .defaultScrollAnchor(.bottom).
             // It re-pins to the bottom on EVERY content-size change,
             // unconditionally — so a growing stream (or a new message) yanked
@@ -984,5 +981,68 @@ private struct ViewportHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+/// Bridges to the underlying AppKit `NSScrollView` to detect USER scrolls
+/// reliably — the SwiftUI GeometryReader signals don't fire promptly mid-
+/// stream, so streaming auto-follow kept beating them and yanking the user
+/// back. This sets `atBottom` false the instant the user grabs the scroller,
+/// and recomputes from the real scroll position as they move (so reaching the
+/// bottom re-engages follow). Programmatic `scrollTo` does NOT post live-scroll
+/// notifications, so our own follow never false-triggers this.
+private struct ScrollBottomWatcher: NSViewRepresentable {
+    @Binding var atBottom: Bool
+    var tolerance: CGFloat = 100
+
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView(frame: .zero)
+        context.coordinator.host = v
+        DispatchQueue.main.async { context.coordinator.attach() }
+        return v
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.parent = self
+        DispatchQueue.main.async { context.coordinator.attach() }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator {
+        var parent: ScrollBottomWatcher
+        weak var host: NSView?
+        weak var scrollView: NSScrollView?
+        init(_ p: ScrollBottomWatcher) { parent = p }
+
+        func attach() {
+            guard scrollView == nil, let sv = host?.enclosingScrollView else { return }
+            scrollView = sv
+            let nc = NotificationCenter.default
+            nc.addObserver(self, selector: #selector(willStart),
+                           name: NSScrollView.willStartLiveScrollNotification, object: sv)
+            nc.addObserver(self, selector: #selector(didScroll),
+                           name: NSScrollView.didLiveScrollNotification, object: sv)
+            nc.addObserver(self, selector: #selector(didScroll),
+                           name: NSScrollView.didEndLiveScrollNotification, object: sv)
+        }
+
+        /// User grabbed the scroller — release follow immediately.
+        @objc func willStart() {
+            if parent.atBottom { parent.atBottom = false }
+        }
+
+        /// Recompute from the real scroll position so reaching the bottom
+        /// re-engages follow and scrolling away keeps it off.
+        @objc func didScroll() {
+            guard let sv = scrollView, let doc = sv.documentView else { return }
+            let off = sv.contentView.bounds.origin.y
+            let viewportH = sv.contentView.bounds.height
+            let distanceFromBottom = doc.bounds.height - (off + viewportH)
+            let isBottom = distanceFromBottom <= parent.tolerance
+            if parent.atBottom != isBottom { parent.atBottom = isBottom }
+        }
+
+        deinit { NotificationCenter.default.removeObserver(self) }
     }
 }
