@@ -153,6 +153,13 @@ final class ClaudeBridge {
             // Keep answers concise; offer (don't dump) long reports. Pairs with
             // the waiting cue so the offer surfaces as a "waiting on you" state.
             "--append-system-prompt", Self.brevitySystemPrompt,
+            // Remove AskUserQuestion entirely. In headless stream-json mode the
+            // CLI auto-resolves it (the picker is cosmetic and the agent moves
+            // on without the answer — known CLI gap). With the tool gone the
+            // model has no choice but to ask in prose and end the turn, which
+            // the system prompt already steers it to do. Prompt alone wasn't
+            // reliably obeyed; this makes it impossible to call.
+            "--disallowedTools", "AskUserQuestion",
             // WebSearch / WebFetch are read-only research tools the user always
             // wants to flow — never block them on a permission prompt. An
             // --allowedTools rule bypasses the prompt even under acceptEdits.
