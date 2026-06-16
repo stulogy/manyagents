@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Claude-Code-style transcript layout. Everything flows left, each turn
 /// led by a colored bullet (`●` for the assistant, semantically tinted;
@@ -45,6 +46,8 @@ struct MessageView: View {
     var isCurrentMatch: Bool = false
     @State private var hover = false
     @State private var copyConfirmed = false
+    /// Set when the user clicks an inline image to open the zoom view.
+    @State private var zoomedImage: ZoomedImage?
 
     var body: some View {
         // Skip the row entirely when every block is empty/skipped —
@@ -98,6 +101,9 @@ struct MessageView: View {
                     .stroke(Color.brandOrange.opacity(isCurrentMatch ? 0.45 : 0), lineWidth: 1)
             )
             .animation(.easeOut(duration: 0.15), value: isCurrentMatch)
+            .sheet(item: $zoomedImage) { z in
+                ImageZoomView(data: z.data)
+            }
         }
     }
 
@@ -360,6 +366,10 @@ struct MessageView: View {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .stroke(Color.primary.opacity(0.15), lineWidth: 0.5)
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .onTapGesture { zoomedImage = ZoomedImage(data: data) }
+                    .onHover { NSCursor.pointingHand.set(); if !$0 { NSCursor.arrow.set() } }
+                    .help("Click to zoom")
             }
         }
     }
@@ -983,6 +993,101 @@ struct MessageView: View {
                       result: (content: String, isError: Bool)?)
             case text(String)
             case thinking(String)
+        }
+    }
+}
+
+/// Identifiable wrapper so an inline image can drive a `.sheet(item:)`.
+struct ZoomedImage: Identifiable {
+    let id = UUID()
+    let data: Data
+}
+
+/// Click-to-zoom viewer for an inline chat image. Pinch / scroll to zoom,
+/// drag to pan when zoomed in, double-click to toggle 1×/2×, Esc or Done to
+/// close, Copy to put it on the clipboard.
+private struct ImageZoomView: View {
+    let data: Data
+    @Environment(\.dismiss) private var dismiss
+    @State private var scale: CGFloat = 1
+    @State private var steady: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var steadyOffset: CGSize = .zero
+    @State private var copied = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "photo")
+                    .foregroundStyle(Color.brandOrange)
+                Text("Image")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button {
+                    if let img = NSImage(data: data) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.writeObjects([img])
+                    }
+                    withAnimation { copied = true }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        withAnimation { copied = false }
+                    }
+                } label: {
+                    Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(copied ? .green : .secondary)
+                }
+                .buttonStyle(.plain)
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            Divider()
+            imageArea
+        }
+        .frame(width: 920, height: 720)
+    }
+
+    @ViewBuilder
+    private var imageArea: some View {
+        if let img = NSImage(data: data) {
+            Image(nsImage: img)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .scaleEffect(scale)
+                .offset(offset)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black.opacity(0.15))
+                .clipped()
+                .contentShape(Rectangle())
+                .gesture(
+                    MagnificationGesture()
+                        .onChanged { v in scale = max(1, min(8, steady * v)) }
+                        .onEnded { _ in
+                            steady = scale
+                            if scale <= 1 { offset = .zero; steadyOffset = .zero }
+                        }
+                )
+                .simultaneousGesture(
+                    DragGesture()
+                        .onChanged { v in
+                            guard scale > 1 else { return }
+                            offset = CGSize(width: steadyOffset.width + v.translation.width,
+                                            height: steadyOffset.height + v.translation.height)
+                        }
+                        .onEnded { _ in steadyOffset = offset }
+                )
+                .onTapGesture(count: 2) {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        if scale > 1 { scale = 1; steady = 1; offset = .zero; steadyOffset = .zero }
+                        else { scale = 2; steady = 2 }
+                    }
+                }
+        } else {
+            Text("Couldn't load image.")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }
