@@ -112,13 +112,20 @@ enum TranscriptLoader {
                     let toolUseId = c["tool_use_id"] as? String ?? ""
                     // Skip the AskUserQuestion auto-deny result (see load()).
                     if askUserQuestionIds.contains(toolUseId) { continue }
+                    // Inline images (e.g. Read on a screenshot) render inline.
+                    let images = ClaudeBridge.imageParts(c["content"])
+                    for img in images {
+                        blocks.append(.image(id: UUID(), data: img.data, mediaType: img.mediaType))
+                    }
                     let isError = c["is_error"] as? Bool ?? false
                     let text = flattenToolResultContent(c["content"])
-                    blocks.append(.toolResult(id: UUID(),
-                                              toolUseId: toolUseId,
-                                              content: text,
-                                              isError: isError,
-                                              parentToolUseId: parentToolUseId))
+                    if images.isEmpty || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        blocks.append(.toolResult(id: UUID(),
+                                                  toolUseId: toolUseId,
+                                                  content: text,
+                                                  isError: isError,
+                                                  parentToolUseId: parentToolUseId))
+                    }
                 }
             }
         }

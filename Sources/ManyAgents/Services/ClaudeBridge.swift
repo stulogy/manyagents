@@ -6,6 +6,9 @@ enum BridgeEvent {
     case initialized(sessionId: String, model: String?)
     case assistantBlocks([ContentBlock])
     case toolResult(toolUseId: String, content: String, isError: Bool, parentToolUseId: String?)
+    /// An image returned by a tool (e.g. Read on a screenshot). Rendered
+    /// inline as an image block instead of being flattened to text.
+    case toolResultImage(toolUseId: String, data: Data, mediaType: String, parentToolUseId: String?)
     case result(usage: TokenUsage?, costUsd: Double?, isError: Bool, text: String?)
     case processExited(exitCode: Int32)
     case systemError(String)
@@ -472,12 +475,41 @@ final class ClaudeBridge {
             // is just confusing noise.
             if askUserQuestionIds.contains(toolUseId) { continue }
             let isError = raw["is_error"] as? Bool ?? false
+            // Inline images (e.g. Read on a screenshot) render as image blocks.
+            let images = Self.imageParts(raw["content"])
+            for img in images {
+                emit(.toolResultImage(toolUseId: toolUseId,
+                                      data: img.data,
+                                      mediaType: img.mediaType,
+                                      parentToolUseId: parentToolUseId))
+            }
             let text = Self.flattenToolResultContent(raw["content"])
-            emit(.toolResult(toolUseId: toolUseId,
-                             content: text,
-                             isError: isError,
-                             parentToolUseId: parentToolUseId))
+            // Skip an empty text result when we already rendered image(s),
+            // so an image-only Read doesn't also print an "(empty)" row.
+            if images.isEmpty || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                emit(.toolResult(toolUseId: toolUseId,
+                                 content: text,
+                                 isError: isError,
+                                 parentToolUseId: parentToolUseId))
+            }
         }
+    }
+
+    /// Extract any base64 image parts from a tool_result `content` array
+    /// (Anthropic image-block shape). Used so screenshots an agent Reads
+    /// render inline instead of being dropped. Shared with TranscriptLoader.
+    static func imageParts(_ value: Any?) -> [(data: Data, mediaType: String)] {
+        guard let arr = value as? [[String: Any]] else { return [] }
+        var out: [(Data, String)] = []
+        for item in arr where (item["type"] as? String) == "image" {
+            guard let src = item["source"] as? [String: Any],
+                  (src["type"] as? String) == "base64",
+                  let b64 = src["data"] as? String,
+                  let data = Data(base64Encoded: b64)
+            else { continue }
+            out.append((data, src["media_type"] as? String ?? "image/png"))
+        }
+        return out
     }
 
     private static func flattenToolResultContent(_ value: Any?) -> String {

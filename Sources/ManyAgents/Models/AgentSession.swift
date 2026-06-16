@@ -641,6 +641,11 @@ final class AgentSession: ObservableObject, Identifiable {
                                                 isError: isError,
                                                 parentToolUseId: parentToolUseId)
             messages.append(Message(role: .system, blocks: [block]))
+        case .toolResultImage(_, let data, let mediaType, _):
+            // An image a tool returned (e.g. a screenshot the agent Read).
+            // Render it inline as an image block.
+            messages.append(Message(role: .system,
+                                    blocks: [.image(id: UUID(), data: data, mediaType: mediaType)]))
         case .result(let usage, let cost, let isError, let resultText):
             if let u = usage {
                 totalInputTokens += u.inputTokens
