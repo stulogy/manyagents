@@ -652,6 +652,29 @@ struct ConversationView: View {
         return outcomes
     }
 
+    // Memoized derivations. Recomputed only when the message STRUCTURE changes
+    // (a message or block added) — never on streaming text deltas — so long
+    // threads stop re-scanning the whole conversation O(n) on every frame.
+    @State private var cachedTop: [Message] = []
+    @State private var cachedChildren: [String: [Message]] = [:]
+    @State private var cachedSubagentIds: Set<String> = []
+    @State private var cachedEditOutcomes: [String: Bool] = [:]
+
+    /// Cheap O(1) signature: message count + the last message's block count.
+    /// Bumps when a message or a block is appended (the only events that change
+    /// the derivations), but NOT on per-token text growth.
+    private var messageStructureSig: String {
+        "\(session.messages.count)-\(session.messages.last?.blocks.count ?? 0)"
+    }
+
+    private func refreshDerived() {
+        let g = grouped
+        cachedTop = g.top
+        cachedChildren = g.children
+        cachedSubagentIds = subagentToolUseIds
+        cachedEditOutcomes = fileEditOutcomes
+    }
+
     private var conversationScroll: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -659,15 +682,13 @@ struct ConversationView: View {
                     if session.messages.isEmpty {
                         emptyState
                     }
-                    let g = grouped
-                    let subIds = subagentToolUseIds
-                    let editOutcomes = fileEditOutcomes
+                    // Memoized — see refreshDerived(); never recomputed inline.
                     let answered = session.answeredQuestions
-                    ForEach(g.top) { msg in
+                    ForEach(cachedTop) { msg in
                         MessageView(message: msg,
-                                    subagentChildren: g.children,
-                                    subagentToolUseIds: subIds,
-                                    fileEditOutcomes: editOutcomes,
+                                    subagentChildren: cachedChildren,
+                                    subagentToolUseIds: cachedSubagentIds,
+                                    fileEditOutcomes: cachedEditOutcomes,
                                     answeredQuestions: answered,
                                     sessionCwd: session.cwd,
                                     sessionId: session.id,
@@ -797,7 +818,14 @@ struct ConversationView: View {
             // a stuck flag can't permanently break following.
             .onChange(of: session.currentTurnOutputTokens) { _, _ in followBottom(proxy) }
             .onChange(of: session.messages.count) { _, _ in followBottom(proxy) }
-            .onChange(of: blockCount) { _, _ in followBottom(proxy) }
+            // Structural change (new message/block): refresh the memoized
+            // derivations and follow. messageStructureSig is O(1), unlike the
+            // old blockCount scan, and fires only on structure changes — not
+            // per streamed token.
+            .onChange(of: messageStructureSig, initial: true) { _, _ in
+                refreshDerived()
+                followBottom(proxy)
+            }
             .onChange(of: session.status) { _, newStatus in
                 if newStatus == .running { atBottom = true }
                 followBottom(proxy)
