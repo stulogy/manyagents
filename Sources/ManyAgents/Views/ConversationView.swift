@@ -10,7 +10,17 @@ struct ConversationView: View {
     // In-conversation find (⌘F).
     @State private var findVisible = false
     @State private var findQuery = ""
+    /// The query actually EXECUTED (on Return / search button), as opposed to
+    /// what's being typed. Highlighting + matching key off this, never the
+    /// live `findQuery` — typing `#` and highlighting every `#` across a long
+    /// conversation on the main thread is what froze the app.
+    @State private var activeSearch = ""
     @FocusState private var findFocused: Bool
+    /// Minimum query length before a search runs — blocks 1–2 char common
+    /// tokens (`#`, `(`) from matching everywhere.
+    private static let minSearchLength = 3
+    /// Cap on matching messages, so even a broad 3-char query can't run away.
+    private static let maxMatches = 500
     /// Ids of messages whose text matches the query, in conversation order.
     @State private var matchIds: [UUID] = []
     /// Index into `matchIds` for the match currently framed + scrolled to.
@@ -64,18 +74,22 @@ struct ConversationView: View {
 
     private var findBar: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-            TextField("Find in conversation", text: $findQuery)
+            Button { runSearch() } label: {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Search (⏎)")
+            TextField("Find — 3+ chars, press ⏎", text: $findQuery)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12.5))
                 .focused($findFocused)
-                .onSubmit { advanceMatch(forward: true) }
+                .onSubmit { runSearch() }
                 .frame(maxWidth: .infinity)
             Text(matchLabel)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(matchIds.isEmpty && !trimmedQuery.isEmpty ? .red : .secondary)
+                .foregroundStyle(!activeSearch.isEmpty && matchIds.isEmpty ? .red : .secondary)
                 .frame(minWidth: 46, alignment: .trailing)
             Divider().frame(height: 14)
             Button { advanceMatch(forward: false) } label: {
@@ -119,13 +133,16 @@ struct ConversationView: View {
 
     private var matchLabel: String {
         if trimmedQuery.isEmpty { return "" }
+        if trimmedQuery.count < Self.minSearchLength { return "3+" }
+        // Entered enough but not yet run (or query edited since the last run).
+        if activeSearch != trimmedQuery { return "⏎" }
         if matchIds.isEmpty { return "0/0" }
         return "\(currentMatch + 1)/\(matchIds.count)"
     }
 
     private func openFind() {
         findVisible = true
-        recomputeMatches()
+        // Don't search on open — wait for the user to type ≥3 chars and hit ⏎.
         DispatchQueue.main.async { findFocused = true }
     }
 
@@ -133,16 +150,36 @@ struct ConversationView: View {
         findVisible = false
         findFocused = false
         findQuery = ""
+        activeSearch = ""
         matchIds = []
         currentMatch = 0
     }
 
-    private func recomputeMatches() {
+    /// Run the search — only invoked on Return or the search button, never
+    /// per-keystroke. Requires ≥ `minSearchLength` chars. If the query is
+    /// unchanged from the active search, just advance to the next match.
+    private func runSearch() {
         let q = trimmedQuery
-        guard !q.isEmpty else { matchIds = []; currentMatch = 0; return }
-        let ids = session.messages
-            .filter { $0.flatText.range(of: q, options: .caseInsensitive) != nil }
-            .map(\.id)
+        guard q.count >= Self.minSearchLength else {
+            activeSearch = ""; matchIds = []; currentMatch = 0
+            return
+        }
+        if q == activeSearch {
+            advanceMatch(forward: true)
+        } else {
+            activeSearch = q
+            recomputeMatches()
+        }
+    }
+
+    private func recomputeMatches() {
+        let q = activeSearch
+        guard q.count >= Self.minSearchLength else { matchIds = []; currentMatch = 0; return }
+        var ids: [UUID] = []
+        for m in session.messages where m.flatText.range(of: q, options: .caseInsensitive) != nil {
+            ids.append(m.id)
+            if ids.count >= Self.maxMatches { break }   // safety cap
+        }
         matchIds = ids
         if ids.isEmpty {
             currentMatch = 0
@@ -158,7 +195,9 @@ struct ConversationView: View {
         findScrollTick += 1
     }
 
-    private var highlightQuery: String { findVisible ? trimmedQuery : "" }
+    /// Only the EXECUTED search gets highlighted — never the live query — so
+    /// editing the field doesn't re-highlight the whole conversation.
+    private var highlightQuery: String { findVisible ? activeSearch : "" }
 
     // MARK: - Sticky turn bar
 
@@ -239,9 +278,19 @@ struct ConversationView: View {
                 .onReceive(NotificationCenter.default.publisher(for: .maFind)) { _ in
                     if findVisible { findFocused = true } else { openFind() }
                 }
-                .onChange(of: findQuery) { _, _ in recomputeMatches() }
+                // Editing the field does NOT search (that per-keystroke search
+                // is what froze on "#"). Just clear the previous result so
+                // stale highlights/counts don't linger; the user re-runs with
+                // ⏎ or the search button.
+                .onChange(of: findQuery) { _, _ in
+                    if !activeSearch.isEmpty {
+                        activeSearch = ""; matchIds = []; currentMatch = 0
+                    }
+                }
+                // Re-run the ACTIVE search when new messages arrive (keeps the
+                // count fresh during streaming) — no-ops when nothing's active.
                 .onChange(of: session.messages.count) { _, _ in
-                    if findVisible { recomputeMatches() }
+                    if findVisible && !activeSearch.isEmpty { recomputeMatches() }
                 }
             // Compaction banner — shown while AgentSession is running
             // its two-phase compact (summarise then reseed). Blocks
