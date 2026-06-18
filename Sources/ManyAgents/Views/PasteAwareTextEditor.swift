@@ -106,6 +106,18 @@ struct PasteAwareTextEditor: NSViewRepresentable {
         var onSubmit: () -> Void = {}
         var onImagePaste: ([Data]) -> Void = { _ in }
 
+        /// A per-text-view undo manager owned by this coordinator. Without it
+        /// the NSTextView registers undo into the WINDOW's undo manager, which
+        /// outlives the field — so when the composer is rebuilt on a tab switch
+        /// the old view's undo actions linger as dangling references and ⌘Z
+        /// (Undo) dereferences a freed object and hard-crashes the app. Scoping
+        /// undo to the coordinator means the stack dies with the field.
+        private let scopedUndoManager = UndoManager()
+
+        func undoManager(for view: NSTextView) -> UndoManager? {
+            scopedUndoManager
+        }
+
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
             // Write back to the binding so SwiftUI sees what the user typed.
