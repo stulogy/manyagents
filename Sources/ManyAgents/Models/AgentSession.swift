@@ -303,6 +303,11 @@ final class AgentSession: ObservableObject, Identifiable {
     /// is intentionally between contexts, not idle.
     @Published var isCompacting: Bool = false
     private var compactCancellable: AnyCancellable?
+    /// The post-compaction seed brief, parked until the old persistent
+    /// claude process is confirmed dead (`.processExited`). Delivering it
+    /// synchronously raced the async `terminate()` and the seed was lost —
+    /// see finishCompact / flushPendingCompactSeed.
+    private var pendingCompactSeed: String?
 
     /// Set externally before connect() if we should resume a prior session id.
     var resumeSessionId: String?
@@ -376,7 +381,9 @@ final class AgentSession: ObservableObject, Identifiable {
         // next send() spawns a brand-new claude process with no
         // `--resume` arg. The session_id from the new init event
         // overwrites `claudeSessionId` automatically.
-        bridge.cancel()
+        // NB: the bridge is NOT cancelled here — that happens after the seed
+        // is stashed (below), so the `.processExited` the cancel triggers can
+        // hand the seed to a guaranteed-fresh respawn.
         bridge.currentSessionId = nil
         resumeSessionId = nil
         claudeSessionId = nil
@@ -416,8 +423,29 @@ final class AgentSession: ObservableObject, Identifiable {
         )
         isCompacting = false
         compactCancellable = nil
-        // Hidden — model receives the full brief, transcript stays clean.
-        send(seed, visible: false)
+        // Defer the seed until the old persistent process is confirmed dead.
+        // Sending synchronously here raced terminate(): ensureProcess saw the
+        // still-"running" dying process and skipped the respawn, then the
+        // just-nilled stdin made bridge.send bail — the seed vanished and the
+        // reseeded session came up empty ("forgot everything"). Stash it; the
+        // `.processExited` handler delivers it into a brand-new claude session
+        // the instant the old one dies. The 1.5s timer is a safety net for the
+        // rare case the process was already gone (no exit event will fire).
+        pendingCompactSeed = seed
+        intentionalInterrupt = true
+        bridge.cancel()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.flushPendingCompactSeed()
+        }
+    }
+
+    /// Deliver the parked post-compaction seed into a fresh claude session.
+    /// Idempotent via the nil-check: called from both `.processExited` (the
+    /// normal path, the moment the old process dies) and a safety-net timer.
+    private func flushPendingCompactSeed() {
+        guard let seed = pendingCompactSeed else { return }
+        pendingCompactSeed = nil
+        dispatch(PendingPrompt(text: seed, images: [], visible: false, isBoardWake: false))
     }
 
     /// Subscribe to bridge events. Idempotent and lightweight — no claude
@@ -748,6 +776,13 @@ final class AgentSession: ObservableObject, Identifiable {
                 }
             }
             intentionalInterrupt = false
+            // Mid-compaction reseed: the old process just died, so the bridge
+            // will respawn clean. Deliver the seed as the new session's FIRST
+            // message before draining anything the user queued meanwhile.
+            if pendingCompactSeed != nil {
+                flushPendingCompactSeed()
+                return
+            }
             // Whether the previous turn succeeded, errored, or was cancelled,
             // drain the next queued prompt.
             DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
