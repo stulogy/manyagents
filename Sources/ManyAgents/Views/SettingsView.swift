@@ -4,6 +4,9 @@ import SwiftUI
 /// settings; new groups can slot in as more preferences appear. Each control
 /// binds straight to the UserDefaults keys `NotificationService` reads.
 struct SettingsView: View {
+    @AppStorage(ClaudeBridge.Keys.model)
+    private var preferredModel = ""
+
     @AppStorage(NotificationService.Keys.enabled)
     private var enabled = true
     @AppStorage(NotificationService.Keys.sound)
@@ -18,6 +21,20 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("Model", selection: $preferredModel) {
+                    ForEach(ClaudeBridge.availableModels, id: \.id) { m in
+                        Text(m.label).tag(m.id)
+                    }
+                }
+            } header: {
+                Text("Model")
+            } footer: {
+                Text("Applies to new sessions. Existing sessions keep the model they started with.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 Toggle("Automatically check for updates", isOn: $updater.automaticallyChecksForUpdates)
             } header: {

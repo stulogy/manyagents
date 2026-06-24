@@ -86,6 +86,18 @@ enum BridgeEvent {
 /// State that needs to survive between turns (the claude session_id) lives
 /// on the owning `AgentSession`, not here.
 final class ClaudeBridge {
+    enum Keys {
+        static let model = "manyagents.model"
+    }
+
+    /// Models the user can select in Settings. Empty string means "use claude's default".
+    static let availableModels: [(label: String, id: String)] = [
+        ("Default", ""),
+        ("Opus 4.8", "claude-opus-4-8"),
+        ("Sonnet 4.6", "claude-sonnet-4-6"),
+        ("Haiku 4.5", "claude-haiku-4-5-20251001"),
+    ]
+
     let cwd: String
     /// Updated by the owner after the first `initialized` event so subsequent
     /// `sendUserText` calls can resume the same conversation.
@@ -168,6 +180,10 @@ final class ClaudeBridge {
             // --allowedTools rule bypasses the prompt even under acceptEdits.
             "--allowedTools", "WebSearch,WebFetch"
         ]
+        let preferredModel = UserDefaults.standard.string(forKey: Keys.model) ?? ""
+        if !preferredModel.isEmpty {
+            args.append(contentsOf: ["--model", preferredModel])
+        }
         if let rid = currentSessionId, !rid.isEmpty {
             args.append(contentsOf: ["--resume", rid])
         }
