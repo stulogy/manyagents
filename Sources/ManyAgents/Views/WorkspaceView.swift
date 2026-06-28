@@ -4,6 +4,7 @@ struct WorkspaceView: View {
     @EnvironmentObject var manager: AgentManager
     @EnvironmentObject var readiness: ClaudeReadiness
     @AppStorage("sidebar.width") private var sidebarWidth: Double = 260
+    @AppStorage("sidebar.collapsed") private var sidebarCollapsed: Bool = false
     @AppStorage("workspace.viewMode") private var viewModeRaw: String = WorkspaceMode.row.rawValue
     @State private var pendingCloseTarget: AgentSession?
     @State private var showShortcuts: Bool = false
@@ -17,14 +18,18 @@ struct WorkspaceView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            ProjectsSidebar(viewMode: viewMode)
-                .frame(width: CGFloat(sidebarWidth))
-            Rectangle()
-                .fill(Color.primary.opacity(0.08))
-                .frame(width: 1)
+            if !sidebarCollapsed {
+                ProjectsSidebar(viewMode: viewMode, sidebarCollapsed: $sidebarCollapsed)
+                    .frame(width: CGFloat(sidebarWidth))
+                    .transition(.move(edge: .leading))
+                Rectangle()
+                    .fill(Color.primary.opacity(0.08))
+                    .frame(width: 1)
+            }
             mainPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .animation(.easeInOut(duration: 0.2), value: sidebarCollapsed)
         .background(mainBackground)
         .sheet(isPresented: Binding(
             get: { manager.pendingRestore != nil },
@@ -113,7 +118,24 @@ struct WorkspaceView: View {
             })
         } else if let project = manager.activeProject {
             VStack(spacing: 0) {
-                tabStrip(for: project)
+                HStack(spacing: 0) {
+                    if sidebarCollapsed {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                sidebarCollapsed = false
+                            }
+                        } label: {
+                            Image(systemName: "sidebar.left")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.leading, 14)
+                                .padding(.trailing, 6)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Show sidebar")
+                    }
+                    tabStrip(for: project)
+                }
                 // Contained "panel" — same shape as ClaudeDeck's right pane,
                 // so the conversation reads as a distinct surface inside the
                 // window background instead of bleeding edge-to-edge.
@@ -121,7 +143,10 @@ struct WorkspaceView: View {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(Color(nsColor: .windowBackgroundColor).opacity(0.75))
                         .shadow(color: Color.black.opacity(0.35), radius: 14, x: 0, y: 4)
-                    if let session = manager.activeSession {
+                    if manager.previewActive {
+                        PreviewView()
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    } else if let session = manager.activeSession {
                         // CRITICAL: tie the ConversationView's identity to
                         // the session id so SwiftUI doesn't leak composer
                         // @State across tab switches.
@@ -145,8 +170,11 @@ struct WorkspaceView: View {
                 HStack(spacing: 6) {
                     ForEach(project.sessions) { s in
                         AgentTab(session: s,
-                                 isActive: manager.activeSessionId == s.id,
-                                 onSelect: { manager.activeSessionId = s.id },
+                                 isActive: !manager.previewActive && manager.activeSessionId == s.id,
+                                 onSelect: {
+                                     manager.activeSessionId = s.id
+                                     manager.previewActive = false
+                                 },
                                  onClose: { manager.close(s) })
                     }
                     Button {
@@ -162,6 +190,32 @@ struct WorkspaceView: View {
                     }
                     .buttonStyle(.plain)
                     .help("New tab in this project")
+
+                    // Preview tab
+                    Button {
+                        manager.previewActive.toggle()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "globe")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("Preview")
+                                .font(.system(size: 12, weight: manager.previewActive ? .semibold : .medium))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(manager.previewActive ? Color.brandOrange.opacity(0.18) : Color.primary.opacity(0.06))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(manager.previewActive ? Color.brandOrange.opacity(0.5) : Color.clear, lineWidth: 1)
+                        )
+                        .foregroundStyle(manager.previewActive ? Color.brandOrange : .primary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Preview — shared browser session across all agents (⌘⇧P)")
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
                 }
                 .padding(.leading, 14)
                 .padding(.trailing, 6)

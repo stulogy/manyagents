@@ -105,6 +105,8 @@ final class ClaudeBridge {
 
     private let subject = PassthroughSubject<BridgeEvent, Never>()
     private var activeProcess: Process?
+    /// Model the active process was launched with. Empty string = claude's default.
+    private var activeProcessModel: String = ""
     /// Held open for the duration of a turn: the initial user payload is
     /// written here, and it's closed in handleResult so claude exits cleanly.
     private var activeStdin: FileHandle?
@@ -142,7 +144,14 @@ final class ClaudeBridge {
     /// every turn. `--resume <currentSessionId>` is applied only on (re)spawn
     /// to restore the conversation; the warm process holds it in memory after.
     private func ensureProcess() {
-        if let p = activeProcess, p.isRunning { return }
+        let preferredModel = UserDefaults.standard.string(forKey: Keys.model) ?? ""
+        if let p = activeProcess, p.isRunning {
+            guard preferredModel != activeProcessModel else { return }
+            // Model preference changed — kill the process so it respawns with
+            // the new model on this send. --resume preserves conversation history.
+            p.terminate()
+            activeProcess = nil
+        }
         guard let claudePath = Self.resolveClaudePath() else {
             emit(.systemError("claude binary not found on PATH"))
             return
@@ -180,7 +189,6 @@ final class ClaudeBridge {
             // --allowedTools rule bypasses the prompt even under acceptEdits.
             "--allowedTools", "WebSearch,WebFetch"
         ]
-        let preferredModel = UserDefaults.standard.string(forKey: Keys.model) ?? ""
         if !preferredModel.isEmpty {
             args.append(contentsOf: ["--model", preferredModel])
         }
@@ -203,6 +211,7 @@ final class ClaudeBridge {
             // which broke the orchestrator's tool loading.
         }
 
+        activeProcessModel = preferredModel
         let process = Process()
         let stdin = Pipe()
         let stdout = Pipe()

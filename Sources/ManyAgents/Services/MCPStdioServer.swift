@@ -347,6 +347,18 @@ private final class ServerState {
                     "required": ["agent_id"],
                     "additionalProperties": false
                 ]
+            ],
+            [
+                "name": "open_preview",
+                "description": "Open a URL in ManyAgents' shared browser preview panel. Use this to show the user what you just built (e.g. a localhost dev server page). All preview panels share cookies/sessions so the user only needs to log in once.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "url": ["type": "string", "description": "The URL to open, e.g. http://localhost:3000/dashboard"]
+                    ],
+                    "required": ["url"],
+                    "additionalProperties": false
+                ]
             ]
         ]
     }
@@ -478,6 +490,15 @@ private final class ServerState {
                                                 "agent_id": agentId])
                 respondToolResult(id: id,
                                   text: (res["ok"] as? Bool) == true ? "\(name == "mute_agent" ? "Muted" : "Unmuted") tab \(agentId)." : "Error: \(res["error"] as? String ?? "failed")",
+                                  isError: (res["ok"] as? Bool) != true)
+            case "open_preview":
+                guard let url = arguments["url"] as? String else {
+                    respondToolResult(id: id, text: "Error: missing url.", isError: true)
+                    return
+                }
+                let res = try await awaitRelay(["op": "open_preview", "url": url])
+                respondToolResult(id: id,
+                                  text: (res["ok"] as? Bool) == true ? "Preview opened: \(url)" : "Error: \(res["error"] as? String ?? "failed")",
                                   isError: (res["ok"] as? Bool) != true)
             default:
                 respondToolResult(id: id, text: "Unknown tool: \(name)", isError: true)

@@ -4,6 +4,7 @@ import AppKit
 struct ProjectsSidebar: View {
     @EnvironmentObject var manager: AgentManager
     @Binding var viewMode: WorkspaceMode
+    @Binding var sidebarCollapsed: Bool
     @State private var showNewSessionPicker = false
 
     var body: some View {
@@ -77,6 +78,18 @@ struct ProjectsSidebar: View {
             }
             Spacer()
             viewModeToggle
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    sidebarCollapsed = true
+                }
+            } label: {
+                Image(systemName: "sidebar.left")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Hide sidebar (⌘⇧S)")
+            .keyboardShortcut("s", modifiers: [.command, .shift])
         }
         .padding(.horizontal, 14)
         .padding(.top, 16)

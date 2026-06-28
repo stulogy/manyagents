@@ -138,9 +138,21 @@ final class MCPRelay {
             return await setMuted(req: req, id: id, muted: false)
         case "permission_prompt":
             return await permissionPrompt(req: req, id: id)
+        case "open_preview":
+            return await openPreview(req: req, id: id)
         default:
             return ["id": id, "ok": false, "error": "unknown op: \(op)"]
         }
+    }
+
+    @MainActor
+    private func openPreview(req: [String: Any], id: String) async -> [String: Any] {
+        guard let urlStr = req["url"] as? String,
+              let url = URL(string: urlStr)
+        else { return ["id": id, "ok": false, "error": "missing or invalid url"] }
+        manager?.previewURL = url
+        manager?.previewActive = true
+        return ["id": id, "ok": true, "url": urlStr]
     }
 
     // MARK: - Permission prompt

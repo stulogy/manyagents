@@ -8,6 +8,12 @@ final class AgentManager: ObservableObject {
     @Published private(set) var sessions: [AgentSession] = []
     @Published var activeSessionId: UUID?
 
+    // MARK: - Preview panel
+    /// URL the preview browser should navigate to (set by open_preview MCP tool).
+    @Published var previewURL: URL? = nil
+    /// Whether the preview panel is currently shown instead of the conversation.
+    @Published var previewActive: Bool = false
+
     private static let snapshotKey = "manyagents.snapshot.v1"
     /// Bundle ids we'll look under when restoring. The first entry is the
     /// active bundle (where we WRITE), the rest are historical ids we read
