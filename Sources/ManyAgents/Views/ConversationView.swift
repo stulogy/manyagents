@@ -270,11 +270,22 @@ struct ConversationView: View {
             GeometryReader { geo in
                 Color.clear.preference(
                     key: UserRowsKey.self,
-                    value: [UserRowPosition(text: msg.flatText,
+                    value: [UserRowPosition(id: msg.id,
+                                            text: msg.flatText,
                                             minY: geo.frame(in: .named("scroll")).minY)]
                 )
             }
         }
+    }
+
+    /// The user prompt immediately BEFORE `messageId` in the transcript.
+    /// Used when the anchor prompt has scrolled above the viewport and
+    /// LazyVStack has dematerialized its row — geometry can't see it, but
+    /// the model still can.
+    private func promptBefore(messageId: UUID) -> String? {
+        guard let idx = session.messages.firstIndex(where: { $0.id == messageId })
+        else { return nil }
+        return session.messages[..<idx].last(where: { $0.role == .user })?.flatText
     }
 
     private func stickyStatusText(now: Date) -> String {
@@ -816,13 +827,19 @@ struct ConversationView: View {
             .onPreferenceChange(ScrollYKey.self) { scrollY = $0 }
             .onPreferenceChange(ViewportHeightKey.self) { viewportHeight = $0 }
             // Track which turn the user is reading for the sticky bar: the
-            // closest prompt row at/above the bar (minY ≤ 60). An empty
-            // report means LazyVStack has no prompt rows materialized (deep
-            // inside one huge message) — keep the last known anchor then.
+            // closest prompt row at/above the bar (minY ≤ 60). When only
+            // below-top rows are materialized (the anchor scrolled far up
+            // and LazyVStack dropped its row), walk the transcript instead:
+            // the prompt before the topmost visible one owns this turn.
+            // An empty report (deep inside one huge message with no prompt
+            // rows materialized at all) keeps the last known anchor.
             .onPreferenceChange(UserRowsKey.self) { rows in
                 guard !rows.isEmpty else { return }
-                let above = rows.filter { $0.minY <= 60 }.max { $0.minY < $1.minY }
-                scrolledContextPrompt = above?.text ?? ""
+                if let above = rows.filter({ $0.minY <= 60 }).max(by: { $0.minY < $1.minY }) {
+                    scrolledContextPrompt = above.text
+                } else if let firstBelow = rows.min(by: { $0.minY < $1.minY }) {
+                    scrolledContextPrompt = promptBefore(messageId: firstBelow.id) ?? ""
+                }
             }
             // NOTE: we deliberately do NOT use .defaultScrollAnchor(.bottom).
             // It re-pins to the bottom on EVERY content-size change,
@@ -1101,6 +1118,7 @@ private struct ViewportHeightKey: PreferenceKey {
 /// coordinate space. Feeds the sticky turn bar so it can anchor to the
 /// turn the user is actually reading instead of always the live one.
 private struct UserRowPosition: Equatable {
+    let id: UUID
     let text: String
     let minY: CGFloat
 }
