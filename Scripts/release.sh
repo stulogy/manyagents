@@ -284,6 +284,20 @@ EOF
     git add "$APPCAST"
     git commit -m "appcast: ManyAgents $VERSION" >/dev/null
     git push origin HEAD
+    # GitHub Pages serves main:/docs. Releasing from any other branch
+    # must mirror the appcast onto main too, or the update silently
+    # never reaches existing users (bit us for 0.7.0).
+    CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+    if [[ "$CURRENT_BRANCH" != "main" ]]; then
+        WT="$(mktemp -d)"
+        git worktree add --quiet "$WT" main
+        cp "$APPCAST" "$WT/docs/appcast.xml"
+        git -C "$WT" add docs/appcast.xml
+        git -C "$WT" commit -m "appcast: ManyAgents $VERSION" >/dev/null
+        git -C "$WT" push origin main
+        git worktree remove --force "$WT"
+        ok "appcast mirrored to main (Pages source)"
+    fi
     ok "appcast updated + pushed — https://stulogy.github.io/manyagents/appcast.xml"
 fi
 
