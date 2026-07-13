@@ -44,6 +44,7 @@ struct MessageView: View {
     /// True when this message is the one the find bar is currently parked on,
     /// so it gets a framed background to stand out from other matches.
     var isCurrentMatch: Bool = false
+    @EnvironmentObject private var manager: AgentManager
     @State private var hover = false
     @State private var copyConfirmed = false
     /// Set when the user clicks an inline image to open the zoom view.
@@ -285,8 +286,33 @@ struct MessageView: View {
                 // blockquotes, inline code, links. Inline `code` spans
                 // get a tinted monospace treatment so they actually
                 // look like code in flowing text.
-                MarkdownText(raw: text, sessionCwd: sessionCwd, highlight: highlight)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 6) {
+                    MarkdownText(raw: text, sessionCwd: sessionCwd, highlight: highlight)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let url = localhostURL(in: text) {
+                        Button {
+                            if let cwd = sessionCwd {
+                                manager.previewURLs[cwd] = url
+                            }
+                            manager.previewActive = true
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "globe")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text("Open \(url.host ?? "localhost"):\(url.port.map(String.init) ?? "") in Preview")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .foregroundStyle(Color.brandOrange)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule().fill(Color.brandOrange.opacity(0.12))
+                            )
+                            .overlay(Capsule().strokeBorder(Color.brandOrange.opacity(0.3), lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             case .system:
                 Text(SearchHighlight.attributed(text, query: highlight))
                     .font(AppFont.mono(11.5))
@@ -995,6 +1021,17 @@ struct MessageView: View {
             case thinking(String)
         }
     }
+}
+
+/// Extracts the first localhost / 127.0.0.1 URL from a text block so the
+/// conversation can surface a one-tap "Open in Preview" button.
+private func localhostURL(in text: String) -> URL? {
+    let pattern = #"https?://(localhost|127\.0\.0\.1)(:\d+)?(/\S*)?"#
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+          let range = Range(match.range, in: text)
+    else { return nil }
+    return URL(string: String(text[range]))
 }
 
 /// Identifiable wrapper so an inline image can drive a `.sheet(item:)`.

@@ -247,8 +247,34 @@ struct ConversationView: View {
     }
 
     private var stickyPromptText: String {
+        // Anchor to the turn being READ — the last prompt whose top has
+        // scrolled up past the bar — so paging back through history updates
+        // the bar with you. Falls back to the live turn's prompt when
+        // nothing has crossed the top yet (or nothing is materialized).
+        if !scrolledContextPrompt.isEmpty { return scrolledContextPrompt }
         if let t = session.lastSentPrompt?.text, !t.isEmpty { return t }
         return session.messages.last(where: { $0.role == .user })?.flatText ?? ""
+    }
+
+    /// Prompt of the turn currently at the top of the viewport, maintained
+    /// by the UserRowsKey preference as the user scrolls. Empty when no
+    /// prompt row has crossed the top (reading the very start).
+    @State private var scrolledContextPrompt: String = ""
+
+    /// Reports a user-prompt row's position in the scroll space so the
+    /// sticky bar can track which turn is being read. Non-user rows
+    /// contribute nothing.
+    @ViewBuilder
+    private func userRowReporter(for msg: Message) -> some View {
+        if msg.role == .user {
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: UserRowsKey.self,
+                    value: [UserRowPosition(text: msg.flatText,
+                                            minY: geo.frame(in: .named("scroll")).minY)]
+                )
+            }
+        }
     }
 
     private func stickyStatusText(now: Date) -> String {
@@ -696,6 +722,7 @@ struct ConversationView: View {
                                     isCurrentMatch: findVisible
                                         && currentMatch < matchIds.count
                                         && matchIds[currentMatch] == msg.id)
+                            .background(userRowReporter(for: msg))
                             .id(msg.id)
                     }
                     if session.status == .running {
@@ -788,6 +815,15 @@ struct ConversationView: View {
             .onPreferenceChange(ContentHeightKey.self) { contentHeight = $0 }
             .onPreferenceChange(ScrollYKey.self) { scrollY = $0 }
             .onPreferenceChange(ViewportHeightKey.self) { viewportHeight = $0 }
+            // Track which turn the user is reading for the sticky bar: the
+            // closest prompt row at/above the bar (minY ≤ 60). An empty
+            // report means LazyVStack has no prompt rows materialized (deep
+            // inside one huge message) — keep the last known anchor then.
+            .onPreferenceChange(UserRowsKey.self) { rows in
+                guard !rows.isEmpty else { return }
+                let above = rows.filter { $0.minY <= 60 }.max { $0.minY < $1.minY }
+                scrolledContextPrompt = above?.text ?? ""
+            }
             // NOTE: we deliberately do NOT use .defaultScrollAnchor(.bottom).
             // It re-pins to the bottom on EVERY content-size change,
             // unconditionally — so a growing stream (or a new message) yanked
@@ -1058,6 +1094,21 @@ private struct ViewportHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+/// Position report for one materialized user-prompt row, in the "scroll"
+/// coordinate space. Feeds the sticky turn bar so it can anchor to the
+/// turn the user is actually reading instead of always the live one.
+private struct UserRowPosition: Equatable {
+    let text: String
+    let minY: CGFloat
+}
+
+private struct UserRowsKey: PreferenceKey {
+    static var defaultValue: [UserRowPosition] = []
+    static func reduce(value: inout [UserRowPosition], nextValue: () -> [UserRowPosition]) {
+        value.append(contentsOf: nextValue())
     }
 }
 

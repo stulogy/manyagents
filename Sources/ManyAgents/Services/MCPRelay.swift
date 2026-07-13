@@ -147,11 +147,19 @@ final class MCPRelay {
 
     @MainActor
     private func openPreview(req: [String: Any], id: String) async -> [String: Any] {
-        guard let urlStr = req["url"] as? String,
+        guard let mgr = manager,
+              let urlStr = req["url"] as? String,
               let url = URL(string: urlStr)
         else { return ["id": id, "ok": false, "error": "missing or invalid url"] }
-        manager?.previewURL = url
-        manager?.previewActive = true
+        // Store under the calling session's cwd so switching tabs restores
+        // each worktree's dev server URL automatically.
+        let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
+        let cwd = sourceUUID.flatMap { uid in mgr.sessions.first { $0.id == uid }?.cwd }
+                  ?? mgr.activeSession?.cwd
+        if let cwd {
+            mgr.previewURLs[cwd] = url
+        }
+        mgr.previewActive = true
         return ["id": id, "ok": true, "url": urlStr]
     }
 
@@ -302,7 +310,9 @@ final class MCPRelay {
         }
 
         if !prompt.isEmpty {
-            target.suppressNextOrchestratorPing = true
+            // Anti-loop: suppress the wake for the specific turn this prompt
+            // causes (a reused/new tab is idle, so it's the very next one).
+            target.suppressedOrchestratorTurns.insert(target.completedTurns + 1)
             if let orchUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:)),
                let orch = mgr.sessions.first(where: { $0.id == orchUUID }) {
                 target.send("[Message from orchestrator \"\(orch.aiTitle ?? orch.displayName)\"]\n\n\(prompt)")
@@ -365,9 +375,10 @@ final class MCPRelay {
         let recordId = mgr.recordDispatchStart(coordinatorId: sourceUUID,
                                                target: target, prompt: prompt)
 
-        // Anti-loop: the resulting turn-completion must NOT wake the
-        // orchestrator back — it captures the reply here directly.
-        target.suppressNextOrchestratorPing = true
+        // Anti-loop: the turn-completion OUR prompt causes must not wake
+        // the orchestrator back — it captures the reply here directly.
+        // Indexed past the in-flight/queued turns so those still ping.
+        target.suppressedOrchestratorTurns.insert(target.completedTurns + turnsAhead + 1)
         // Tag provenance so the receiving tab knows it's the orchestrator
         // talking, then send it as a normal user turn.
         if let src = sourceUUID, let s = mgr.sessions.first(where: { $0.id == src }) {

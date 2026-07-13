@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 
 /// Top-level state container. Owns every active AgentSession and persists
 /// enough state to restore conversations across launches via `--resume`.
@@ -9,10 +10,17 @@ final class AgentManager: ObservableObject {
     @Published var activeSessionId: UUID?
 
     // MARK: - Preview panel
-    /// URL the preview browser should navigate to (set by open_preview MCP tool).
-    @Published var previewURL: URL? = nil
+    /// Per-worktree preview URLs keyed by cwd. Switching tabs auto-navigates
+    /// the preview to that worktree's stored URL. Set by open_preview MCP tool.
+    @Published var previewURLs: [String: URL] = [:]
     /// Whether the preview panel is currently shown instead of the conversation.
     @Published var previewActive: Bool = false
+
+    /// The URL for the currently active session's worktree, if any.
+    var activePreviewURL: URL? {
+        guard let cwd = activeSession?.cwd else { return nil }
+        return previewURLs[cwd]
+    }
 
     private static let snapshotKey = "manyagents.snapshot.v1"
     /// Bundle ids we'll look under when restoring. The first entry is the
@@ -91,6 +99,10 @@ final class AgentManager: ObservableObject {
         // can dispatch into the session list without needing to drag
         // a manager reference around through every call.
         MCPRelay.shared.attach(manager: self)
+        // Pre-start the relay so the Unix socket is ready before any
+        // session fires. Without this the socket races against claude's
+        // MCP subprocess connect attempt and the tool shows as unavailable.
+        try? MCPRelay.shared.startIfNeeded()
         // Auto-resumer: every time the network flips off → on, retry
         // any session that errored out while we were offline. The
         // session keeps the prompt that failed in `lastSentPrompt`
@@ -111,6 +123,13 @@ final class AgentManager: ObservableObject {
                 else { return }
                 self.activeSessionId = id
             }
+            .store(in: &cancellables)
+
+        // Flush the snapshot immediately on quit — the debounced pipeline
+        // above may not fire in time when the user quits mid-stream.
+        NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.persist() }
             .store(in: &cancellables)
     }
 
@@ -222,8 +241,7 @@ final class AgentManager: ObservableObject {
         if source.isCoordinator { return }
         // Anti-loop: a turn the orchestrator itself dispatched into this tab
         // doesn't ping back — the orchestrator already got the reply.
-        if source.suppressNextOrchestratorPing {
-            source.suppressNextOrchestratorPing = false
+        if source.suppressedOrchestratorTurns.remove(source.completedTurns) != nil {
             return
         }
         // A watched tab finished — schedule a (debounced, rate-limited) wake.
@@ -249,6 +267,9 @@ final class AgentManager: ObservableObject {
         } else {
             for s in sessions where s.isCoordinator { s.isCoordinator = false }
             session.isCoordinator = true
+            // Fresh hat, fresh eyes — don't let a signature from a previous
+            // orchestrator suppress this one's first wake.
+            lastOrchestratorStatusSig = ""
         }
     }
 
@@ -285,12 +306,15 @@ final class AgentManager: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    /// Coarse signature of the board — just each tab's status, not its
-    /// snippet — so token-level churn doesn't count as a change.
+    /// Coarse signature of the board — each tab's status plus its clean-
+    /// completion count. The count matters: without it, a tab that finishes
+    /// turn after turn ending in the same status (waiting → waiting) never
+    /// changes the signature and the orchestrator misses all of it. Token-
+    /// level churn still doesn't count as change.
     private func orchestratorStatusSignature(for orch: AgentSession) -> String {
         sessions
             .filter { $0.cwd == orch.cwd && $0.id != orch.id && !$0.hiddenFromOrchestrator }
-            .map { "\($0.id.uuidString.prefix(8)):\($0.status.boardLabel)" }
+            .map { "\($0.id.uuidString.prefix(8)):\($0.status.boardLabel):\($0.completedTurns)" }
             .sorted()
             .joined(separator: "|")
     }

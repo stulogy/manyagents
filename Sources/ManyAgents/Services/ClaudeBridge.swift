@@ -93,6 +93,7 @@ final class ClaudeBridge {
     /// Models the user can select in Settings. Empty string means "use claude's default".
     static let availableModels: [(label: String, id: String)] = [
         ("Default", ""),
+        ("Fable 5", "claude-fable-5"),
         ("Opus 4.8", "claude-opus-4-8"),
         ("Sonnet 4.6", "claude-sonnet-4-6"),
         ("Haiku 4.5", "claude-haiku-4-5-20251001"),
@@ -107,6 +108,8 @@ final class ClaudeBridge {
     private var activeProcess: Process?
     /// Model the active process was launched with. Empty string = claude's default.
     private var activeProcessModel: String = ""
+    /// MCP config path the active process was launched with. nil = no MCP.
+    private var activeProcessMCPPath: String? = nil
     /// Held open for the duration of a turn: the initial user payload is
     /// written here, and it's closed in handleResult so claude exits cleanly.
     private var activeStdin: FileHandle?
@@ -146,9 +149,11 @@ final class ClaudeBridge {
     private func ensureProcess() {
         let preferredModel = UserDefaults.standard.string(forKey: Keys.model) ?? ""
         if let p = activeProcess, p.isRunning {
-            guard preferredModel != activeProcessModel else { return }
-            // Model preference changed — kill the process so it respawns with
-            // the new model on this send. --resume preserves conversation history.
+            let modelChanged = preferredModel != activeProcessModel
+            let mcpChanged   = mcpConfigPath != activeProcessMCPPath
+            guard modelChanged || mcpChanged else { return }
+            // Model or MCP config changed — kill so the next send respawns
+            // with the right flags. --resume preserves conversation history.
             p.terminate()
             activeProcess = nil
         }
@@ -212,6 +217,7 @@ final class ClaudeBridge {
         }
 
         activeProcessModel = preferredModel
+        activeProcessMCPPath = mcpConfigPath
         let process = Process()
         let stdin = Pipe()
         let stdout = Pipe()

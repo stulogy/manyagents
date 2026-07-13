@@ -126,6 +126,14 @@ struct ManyAgentsApp: App {
             }
         }
 
+        // Usage history (⌘⇧U, also listed in the Window menu). Reads the
+        // JSONL UsageLog that AgentSession appends to on every turn.
+        Window("Usage", id: "usage") {
+            UsageView()
+        }
+        .keyboardShortcut("u", modifiers: [.command, .shift])
+        .defaultSize(width: 620, height: 560)
+
         // Standard macOS preferences window (⌘,). Houses notification + update settings.
         Settings {
             SettingsView()

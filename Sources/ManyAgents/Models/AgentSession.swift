@@ -218,11 +218,19 @@ final class AgentSession: ObservableObject, Identifiable {
     /// coalesces a burst of completions into a single follow-up "recheck"
     /// ping once the current orchestrator turn lands. Orchestrator only.
     @Published var pendingOrchestratorRecheck: Bool = false
-    /// Set on a TARGET tab when the orchestrator dispatches a prompt into
-    /// it, so the resulting turn-completion doesn't ping the orchestrator
-    /// back (it already gets the reply via the dispatch tool). Consumed on
-    /// the next completion — the anti-loop guard.
-    var suppressNextOrchestratorPing: Bool = false
+    /// Count of clean turn completions on this session, monotonic for its
+    /// lifetime. Feeds the orchestrator wake signature (so back-to-back
+    /// completions with the same end status still register as change) and
+    /// indexes the anti-loop suppression below.
+    private(set) var completedTurns: Int = 0
+
+    /// Turn indices (values of `completedTurns` at completion time) whose
+    /// completion must NOT ping the orchestrator — set on a TARGET tab when
+    /// the orchestrator dispatches a prompt into it, since it already gets
+    /// that reply via the dispatch tool. Indexed rather than a single bool
+    /// so a busy tab's own in-flight turn doesn't consume the suppression
+    /// meant for the orchestrator's turn (and then double-ping).
+    var suppressedOrchestratorTurns: Set<Int> = []
 
     /// One-line snapshot of what this tab last said — used for the
     /// orchestrator board and wake pings. Empty when nothing yet.
@@ -510,20 +518,17 @@ final class AgentSession: ObservableObject, Identifiable {
         currentPhase = "thinking"
         // Stash for the auto-resumer. Cleared on the next clean .result.
         lastSentPrompt = prompt
-        // SAFETY ROLLBACK: only coordinator sessions wire MCP for now.
-        // The "always-on for permission prompts" flow had a runaway
-        // somewhere that filled the conversation pane with an empty
-        // user-styled block. Reverting until that's traced.
-        if isCoordinator {
-            do {
-                _ = try MCPRelay.shared.startIfNeeded()
-                bridge.mcpConfigPath = try CoordinatorConfig.write(for: self)
-            } catch {
-                bridge.mcpConfigPath = nil
+        // Wire MCP for all sessions so open_preview is available everywhere.
+        // Coordinator sessions additionally get list_agents / send_to_agent
+        // (those are filtered by MCPRelay based on isCoordinator).
+        do {
+            _ = try MCPRelay.shared.startIfNeeded()
+            bridge.mcpConfigPath = try CoordinatorConfig.write(for: self)
+        } catch {
+            bridge.mcpConfigPath = nil
+            if isCoordinator {
                 lastError = "Coordinator setup failed: \(error.localizedDescription)"
             }
-        } else {
-            bridge.mcpConfigPath = nil
         }
         // Kick the bridge off the main thread — process.run() + stdin
         // write was blocking SwiftUI rendering, so the "Thinking…"
@@ -690,6 +695,11 @@ final class AgentSession: ObservableObject, Identifiable {
             // the next turn from starting with stale state.
             inflightTokenEstimate = 0
             if let c = cost { totalCostUsd += c }
+            // Persist this turn to the usage history (Window > Usage).
+            UsageLog.append(cwd: cwd,
+                            inputTokens: usage?.inputTokens ?? 0,
+                            outputTokens: usage?.outputTokens ?? 0,
+                            costUsd: cost ?? 0)
             if isError {
                 status = .error
                 lastError = resultText
@@ -717,6 +727,7 @@ final class AgentSession: ObservableObject, Identifiable {
                 // Tell AgentManager a clean turn just landed so the
                 // orchestrator watch-&-nudge loop can wake. Only fires for
                 // non-error completions so we don't nudge on a broken turn.
+                completedTurns += 1
                 turnCompleted.send(lastAssistantText)
             }
             currentTurnStartedAt = nil

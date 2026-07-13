@@ -69,6 +69,13 @@ private final class ServerState {
     /// Strictly serializes writes to stdout so JSON-RPC frames never
     /// interleave even when async tool calls race each other.
     private let stdoutQueue = DispatchQueue(label: "mcp.stdout")
+    /// All NWConnection callbacks (state changes, receives, reconnect
+    /// timers) run here. This must NOT be the main queue: `runLoop()`
+    /// blocks the main thread in a synchronous stdin read, so anything
+    /// scheduled on .main would never execute — the auth handshake
+    /// would never send and relay replies would never drain, hanging
+    /// every tool call until claude gives up.
+    private let netQueue = DispatchQueue(label: "mcp.relay-client")
 
     init(args: MCPStdioServer.Args) {
         self.args = args
@@ -100,7 +107,7 @@ private final class ServerState {
                 self.sendAuth()
             case .failed, .cancelled:
                 if self.connectAttempts < self.maxConnectAttempts {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    self.netQueue.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                         self?.connectRelay()
                     }
                 } else {
@@ -114,7 +121,7 @@ private final class ServerState {
                 break
             }
         }
-        conn.start(queue: .main)
+        conn.start(queue: netQueue)
         receiveRelay()
     }
 
@@ -496,7 +503,12 @@ private final class ServerState {
                     respondToolResult(id: id, text: "Error: missing url.", isError: true)
                     return
                 }
-                let res = try await awaitRelay(["op": "open_preview", "url": url])
+                // source_session_id keys the URL to the CALLING agent's
+                // worktree; without it the relay falls back to whatever
+                // tab the user happens to be looking at.
+                let res = try await awaitRelay(["op": "open_preview",
+                                                "source_session_id": args.sourceSessionId as Any,
+                                                "url": url])
                 respondToolResult(id: id,
                                   text: (res["ok"] as? Bool) == true ? "Preview opened: \(url)" : "Error: \(res["error"] as? String ?? "failed")",
                                   isError: (res["ok"] as? Bool) != true)

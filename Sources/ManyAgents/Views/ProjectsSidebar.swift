@@ -61,23 +61,8 @@ struct ProjectsSidebar: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(BrandGradient.warm)
-                    .frame(width: 30, height: 30)
-                Image(systemName: "rectangle.stack.fill")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.white)
-            }
-            VStack(alignment: .leading, spacing: 0) {
-                Text("ManyAgents")
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                Text(countLabel)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
             viewModeToggle
+            Spacer()
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     sidebarCollapsed = true

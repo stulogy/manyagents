@@ -82,6 +82,9 @@ enum TranscriptLoader {
 
         if let s = msg["content"] as? String {
             // Plain-string user content (the typical "you typed a prompt" case).
+            if let notice = harnessNoticeText(s) {
+                return Message(role: .system, blocks: [.text(id: UUID(), text: notice)])
+            }
             let cleaned = sanitizeUserText(s)
             if !cleaned.isEmpty {
                 blocks.append(.text(id: UUID(), text: cleaned))
@@ -91,6 +94,12 @@ enum TranscriptLoader {
             for c in arr {
                 let ct = c["type"] as? String
                 if ct == "text", let t = c["text"] as? String {
+                    if let notice = harnessNoticeText(t) {
+                        // System row, not an amber user bubble — leave
+                        // isToolResultsOnly alone so the role stays .system.
+                        blocks.append(.text(id: UUID(), text: notice))
+                        continue
+                    }
                     let cleaned = sanitizeUserText(t)
                     if !cleaned.isEmpty {
                         blocks.append(.text(id: UUID(), text: cleaned))
@@ -192,6 +201,23 @@ enum TranscriptLoader {
         }
         if blocks.isEmpty { return nil }
         return Message(role: .assistant, blocks: blocks, fromBoardWake: boardWake)
+    }
+
+    /// Harness-injected "user" lines the user never typed — e.g. the
+    /// <task-notification> block Claude Code injects when a background
+    /// command finishes. Returns a compact human-readable line to show
+    /// as a muted system row, or nil when the text is a real prompt.
+    private static func harnessNoticeText(_ raw: String) -> String? {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard s.hasPrefix("<task-notification>") else { return nil }
+        if let start = s.range(of: "<summary>"),
+           let end = s.range(of: "</summary>"),
+           start.upperBound <= end.lowerBound {
+            let summary = s[start.upperBound..<end.lowerBound]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return "Background task: \(summary)"
+        }
+        return "Background task update"
     }
 
     /// Strip the synthetic tags claude code wraps system reminders and IDE
