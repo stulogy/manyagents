@@ -265,12 +265,42 @@ final class AgentManager: ObservableObject {
         if session.isCoordinator {
             session.isCoordinator = false
         } else {
-            for s in sessions where s.isCoordinator { s.isCoordinator = false }
-            session.isCoordinator = true
-            // Fresh hat, fresh eyes — don't let a signature from a previous
-            // orchestrator suppress this one's first wake.
-            lastOrchestratorStatusSig = ""
+            designateOrchestrator(session)
         }
+    }
+
+    /// Put the hat on `session` and immediately deliver the catch-up brief.
+    /// Without this, a newly-designated orchestrator sat blind until the
+    /// next watched-tab completion — potentially forever if every tab was
+    /// idle or mid-task — and was never even told it had the job.
+    func designateOrchestrator(_ session: AgentSession) {
+        for s in sessions where s.isCoordinator { s.isCoordinator = false }
+        session.isCoordinator = true
+        // Fresh hat, fresh eyes — don't let a signature from a previous
+        // orchestrator suppress this one's first wake.
+        lastOrchestratorStatusSig = ""
+        deliverOrchestratorCatchUp(to: session)
+    }
+
+    /// One-time onboarding turn on designation. The prompt is hidden but —
+    /// unlike routine board wakes — the REPLY is visible: the digest of
+    /// what every tab is doing is the payoff of flipping the hat on.
+    private func deliverOrchestratorCatchUp(to orch: AgentSession) {
+        let prompt = """
+        [Orchestrator catch-up — automatic, sent because the user just designated this tab as this project's orchestrator. Not typed by the user.]
+        You now coordinate the user's other open tabs in this project via the manyagents tools: list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent/unmute_agent.
+
+        Current board:
+        \(orchestratorBoardText(for: orch))
+
+        Catch up now:
+        1. Call read_agent on each tab that is running or waiting. Skip idle tabs unless their board line looks relevant.
+        2. Reply to the user with a short digest: one line per tab saying what it's doing, then flag any overlap or conflict you can see (e.g. two tabs touching the same files or branches). No preamble, no restating these instructions.
+        3. Call set_notes with your running understanding.
+
+        From here on you'll receive automatic board updates whenever a watched tab finishes a turn.
+        """
+        orch.send(prompt, visible: false)
     }
 
     // Wake throttling. Tab completions are bursty and frequent; without this

@@ -268,6 +268,7 @@ private struct AgentTab: View {
     @State private var showRename = false
     @State private var renameDraft = ""
     @State private var showBoard = false
+    @State private var showOrchestratorChoice = false
 
     private var label: String {
         if let t = session.aiTitle, !t.isEmpty { return t }
@@ -385,7 +386,15 @@ private struct AgentTab: View {
             }
             Divider()
             Button(session.isCoordinator ? "Stop Orchestrating" : "Make Orchestrator") {
-                manager.toggleOrchestrator(session)
+                if session.isCoordinator {
+                    manager.toggleOrchestrator(session)
+                } else if session.messages.isEmpty {
+                    manager.designateOrchestrator(session)
+                } else {
+                    // Orchestrating from a tab mid-conversation muddies its
+                    // context — offer a clean tab before committing.
+                    showOrchestratorChoice = true
+                }
             }
             if !session.isCoordinator {
                 // Only meaningful once an orchestrator exists to hide from.
@@ -396,6 +405,20 @@ private struct AgentTab: View {
             }
             Divider()
             Button("Close Tab", role: .destructive, action: onClose)
+        }
+        .confirmationDialog(
+            "This tab already has an active conversation. An orchestrator works best in a clean context.",
+            isPresented: $showOrchestratorChoice,
+            titleVisibility: .visible
+        ) {
+            Button("Start Fresh Orchestrator Tab") {
+                let orch = manager.spawn(cwd: session.cwd)
+                manager.designateOrchestrator(orch)
+            }
+            Button("Orchestrate From This Tab") {
+                manager.designateOrchestrator(session)
+            }
+            Button("Cancel", role: .cancel) { }
         }
         .alert("Rename tab", isPresented: $showRename) {
             TextField("Title", text: $renameDraft)
