@@ -65,6 +65,12 @@ final class MCPConnectors: ObservableObject {
     func refresh() {
         guard !refreshing else { return }
         refreshing = true
+        // Stale outcome messages from an earlier flow just add noise
+        // once statuses are re-verified. Keep them only mid-login.
+        if loginInFlight == nil {
+            lastLoginMessage = nil
+            lastLoginSucceeded = nil
+        }
         runClaude(["mcp", "list"], timeout: 60) { [weak self] _, output in
             guard let self else { return }
             self.servers = Self.parseList(output)
@@ -76,7 +82,8 @@ final class MCPConnectors: ObservableObject {
             guard !names.isEmpty else { self.refreshing = false; return }
             var remaining = names.count
             for name in names {
-                self.fetchStatus(name) { status in
+                let finish: @MainActor (Server.Status?) -> Void = { [weak self] status in
+                    guard let self else { return }
                     if let status,
                        let idx = self.servers.firstIndex(where: { $0.name == name }) {
                         let s = self.servers[idx]
@@ -84,6 +91,20 @@ final class MCPConnectors: ObservableObject {
                     }
                     remaining -= 1
                     if remaining == 0 { self.refreshing = false }
+                }
+                if name.hasPrefix("claude.ai"), self.loginInFlight != name {
+                    // Purge the CLI's cached token BEFORE checking. The
+                    // cache goes stale when the connector is disconnected
+                    // ON claude.ai and makes every status query claim
+                    // Connected. A valid grant re-derives instantly from
+                    // the claude.ai account, so this is loss-free; a
+                    // revoked one finally reads Needs authentication.
+                    // (Skipped mid-login so we never purge a fresh token.)
+                    self.runClaude(["mcp", "logout", name], timeout: 60) { _, _ in
+                        self.fetchStatus(name, completion: finish)
+                    }
+                } else {
+                    self.fetchStatus(name, completion: finish)
                 }
             }
         }
@@ -175,7 +196,7 @@ final class MCPConnectors: ObservableObject {
                 let stillConnected = status == .connected
                 if stillConnected {
                     self.lastLoginSucceeded = false
-                    self.lastLoginMessage = "\(name) reconnects from your claude.ai account. To disconnect it or switch its Google account, use claude.ai (link below), then refresh here."
+                    self.lastLoginMessage = "\(name) is managed on claude.ai (link below)."
                 } else if code == 0 {
                     self.lastLoginSucceeded = true
                     self.lastLoginMessage = "\(name) disconnected."

@@ -82,30 +82,21 @@ private struct ConnectorsSettingsTab: View {
                                     Button("Authenticate") {
                                         MCPConnectors.shared.login(server.name)
                                     }
+                                    .controlSize(.small)
                                     .disabled(connectors.loginInFlight != nil || connectors.logoutInFlight != nil)
                                 }
                             } else if server.status == .connected {
                                 if server.name.hasPrefix("claude.ai") {
                                     // These grants live on the claude.ai
-                                    // account. The CLI's reported status can
-                                    // sit on a stale cached token after a
-                                    // claude.ai-side disconnect — Re-sync
-                                    // purges it so truth returns.
-                                    if connectors.logoutInFlight == server.name {
-                                        ProgressView().controlSize(.small)
-                                    } else {
-                                        Button("Re-sync") {
-                                            MCPConnectors.shared.logout(server.name)
-                                        }
-                                        .controlSize(.small)
-                                        .help("Drops the CLI's cached token and re-checks. Use after disconnecting or switching accounts on claude.ai.")
-                                        .disabled(connectors.loginInFlight != nil || connectors.logoutInFlight != nil)
-                                    }
+                                    // account; refresh already purges the
+                                    // stale-token cache, so the status here
+                                    // is verified. Managing the grant
+                                    // happens on claude.ai.
                                     Button("Manage…") {
                                         openURL(URL(string: "https://claude.ai/settings/connectors")!)
                                     }
                                     .controlSize(.small)
-                                    .help("claude.ai connectors are managed on claude.ai — disconnect or switch the Google account there, then Re-sync here.")
+                                    .help("claude.ai connectors are managed on claude.ai — disconnect or switch the Google account there, then refresh here.")
                                 } else if connectors.logoutInFlight == server.name {
                                     ProgressView().controlSize(.small)
                                 } else {
@@ -141,11 +132,9 @@ private struct ConnectorsSettingsTab: View {
                     .disabled(connectors.refreshing)
                 }
             } footer: {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Authenticate runs the CLI's own browser sign-in and stores the token in your keychain, so it covers every session. Sessions reconnect on their next message.")
-                    Text("claude.ai connectors are connected, switched, and disconnected on claude.ai itself. Status here is what the Claude Code CLI reports — it can lag claude.ai (a cached token keeps showing Connected after you disconnect there). Re-sync trues it up.")
+                HStack(spacing: 4) {
+                    Text("Sessions pick up changes on their next message.")
                     Link("Manage connectors on claude.ai", destination: URL(string: "https://claude.ai/settings/connectors")!)
-                        .font(.system(size: 11))
                 }
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
