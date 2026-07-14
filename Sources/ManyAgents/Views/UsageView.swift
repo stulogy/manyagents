@@ -80,9 +80,9 @@ struct UsageView: View {
                          output: records.reduce(0) { $0 + $1.outputTokens })
             }
 
-            // Cost per bucket, oldest → newest.
+            // Tokens per bucket, oldest → newest.
             VStack(alignment: .leading, spacing: 6) {
-                Text("Cost per \(period == .daily ? "day" : period == .weekly ? "week" : "month")")
+                Text("Tokens per \(period == .daily ? "day" : period == .weekly ? "week" : "month")")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                 barChart
@@ -105,11 +105,70 @@ struct UsageView: View {
                 }
             }
 
+            // Per-model over the window — only once records carry models.
+            if !modelRows.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("By model (last \(period.bucketCount) \(period == .daily ? "days" : period == .weekly ? "weeks" : "months"))")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    VStack(spacing: 0) {
+                        ForEach(Array(modelRows.enumerated()), id: \.element.id) { idx, row in
+                            HStack {
+                                Text(row.name.replacingOccurrences(of: "claude-", with: ""))
+                                    .font(AppFont.mono(12))
+                                Spacer()
+                                Text("\(Self.tokens(row.inputTokens)) in · \(Self.tokens(row.outputTokens)) out")
+                                    .font(AppFont.mono(11))
+                                    .foregroundStyle(.secondary)
+                                Text("≈ \(Self.money(row.costUsd))")
+                                    .font(AppFont.mono(11.5))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 76, alignment: .trailing)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(idx.isMultiple(of: 2) ? Color.clear : Color.primary.opacity(0.03))
+                        }
+                    }
+                    .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.35)))
+                }
+            }
+
             Spacer(minLength: 0)
+
+            // Session/weekly limit data isn't exposed outside the TUI —
+            // the real bars live on claude.ai.
+            Link("Plan limits on claude.ai", destination: URL(string: "https://claude.ai/settings/usage")!)
+                .font(.system(size: 11))
         }
         .padding(20)
         .frame(minWidth: 560, minHeight: 480)
         .onAppear { records = UsageLog.loadAll() }
+    }
+
+    private struct ModelRow: Identifiable {
+        let name: String
+        let inputTokens: Int
+        let outputTokens: Int
+        let costUsd: Double
+        var id: String { name }
+    }
+
+    private var modelRows: [ModelRow] {
+        guard let windowStart = bucketStarts.first else { return [] }
+        var byModel: [String: (input: Int, output: Int, cost: Double)] = [:]
+        for r in records where r.ts >= windowStart {
+            guard let model = r.model, !model.isEmpty else { continue }
+            var agg = byModel[model] ?? (0, 0, 0)
+            agg.input += r.inputTokens
+            agg.output += r.outputTokens
+            agg.cost += r.costUsd
+            byModel[model] = agg
+        }
+        return byModel
+            .map { ModelRow(name: $0.key, inputTokens: $0.value.input,
+                            outputTokens: $0.value.output, costUsd: $0.value.cost) }
+            .sorted { $0.costUsd > $1.costUsd }
     }
 
     // MARK: - Derived data
@@ -185,11 +244,14 @@ struct UsageView: View {
             Text(title)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
-            Text(Self.money(cost))
+            Text("\(Self.tokens(input + output)) tokens")
                 .font(.system(size: 22, weight: .bold, design: .rounded))
             Text("\(Self.tokens(input)) in · \(Self.tokens(output)) out")
                 .font(AppFont.mono(11))
                 .foregroundStyle(.secondary)
+            Text("≈ \(Self.money(cost)) API value")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
@@ -198,18 +260,19 @@ struct UsageView: View {
 
     private var barChart: some View {
         let data = buckets
-        let maxCost = max(data.map(\.costUsd).max() ?? 0, 0.01)
+        let maxTokens = max(data.map { $0.inputTokens + $0.outputTokens }.max() ?? 0, 1)
         return HStack(alignment: .bottom, spacing: 6) {
             ForEach(data) { b in
+                let total = b.inputTokens + b.outputTokens
                 VStack(spacing: 4) {
-                    Text(b.costUsd > 0 ? Self.money(b.costUsd, compact: true) : "")
+                    Text(total > 0 ? Self.tokens(total) : "")
                         .font(AppFont.mono(9))
                         .foregroundStyle(.secondary)
                     RoundedRectangle(cornerRadius: 3)
                         .fill(b.start == data.last?.start
                               ? Color.brandOrange
                               : Color.brandOrange.opacity(0.45))
-                        .frame(height: max(3, 90 * b.costUsd / maxCost))
+                        .frame(height: max(3, CGFloat(90 * total / maxTokens)))
                     Text(b.label)
                         .font(AppFont.mono(9))
                         .foregroundStyle(.tertiary)
@@ -231,9 +294,10 @@ struct UsageView: View {
                     Text("\(Self.tokens(row.inputTokens)) in · \(Self.tokens(row.outputTokens)) out")
                         .font(AppFont.mono(11))
                         .foregroundStyle(.secondary)
-                    Text(Self.money(row.costUsd))
+                    Text("≈ \(Self.money(row.costUsd))")
                         .font(AppFont.mono(11.5))
-                        .frame(width: 70, alignment: .trailing)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 76, alignment: .trailing)
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)

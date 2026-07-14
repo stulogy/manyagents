@@ -712,7 +712,8 @@ final class AgentSession: ObservableObject, Identifiable {
             UsageLog.append(cwd: cwd,
                             inputTokens: usage?.inputTokens ?? 0,
                             outputTokens: usage?.outputTokens ?? 0,
-                            costUsd: cost ?? 0)
+                            costUsd: cost ?? 0,
+                            model: model)
             if isError {
                 status = .error
                 lastError = resultText

@@ -14,7 +14,11 @@ enum UsageLog {
         let cwd: String
         let inputTokens: Int
         let outputTokens: Int
+        /// API-equivalent pricing from the CLI — NOT subscription quota.
         let costUsd: Double
+        /// Model id, e.g. claude-fable-5. Optional: absent on records
+        /// written before this field existed.
+        let model: String?
     }
 
     static var fileURL: URL {
@@ -33,12 +37,14 @@ enum UsageLog {
 
     /// Append one turn's usage. Called from AgentSession on `.result`.
     /// Zero-usage turns (errors without usage payloads) are skipped.
-    static func append(cwd: String, inputTokens: Int, outputTokens: Int, costUsd: Double) {
+    static func append(cwd: String, inputTokens: Int, outputTokens: Int,
+                       costUsd: Double, model: String? = nil) {
         guard inputTokens > 0 || outputTokens > 0 || costUsd > 0 else { return }
         let record = Record(ts: Date(), cwd: cwd,
                             inputTokens: inputTokens,
                             outputTokens: outputTokens,
-                            costUsd: costUsd)
+                            costUsd: costUsd,
+                            model: model)
         guard var data = try? encoder.encode(record) else { return }
         data.append(0x0A)
         let url = fileURL
