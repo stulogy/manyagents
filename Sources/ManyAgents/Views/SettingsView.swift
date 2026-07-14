@@ -81,7 +81,17 @@ private struct ConnectorsSettingsTab: View {
                                     Button("Authenticate") {
                                         MCPConnectors.shared.login(server.name)
                                     }
-                                    .disabled(connectors.loginInFlight != nil)
+                                    .disabled(connectors.loginInFlight != nil || connectors.logoutInFlight != nil)
+                                }
+                            } else if server.status == .connected {
+                                if connectors.logoutInFlight == server.name {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Button("Disconnect") {
+                                        MCPConnectors.shared.logout(server.name)
+                                    }
+                                    .controlSize(.small)
+                                    .disabled(connectors.loginInFlight != nil || connectors.logoutInFlight != nil)
                                 }
                             }
                         }

@@ -111,6 +111,28 @@ final class MCPConnectors: ObservableObject {
     /// a flow that's still waiting (regular OAuth callback servers).
     private var loginProcess: Process?
 
+    /// Name of the server whose `claude mcp logout` is currently running.
+    @Published private(set) var logoutInFlight: String?
+
+    /// Clear stored OAuth credentials for a server via `claude mcp
+    /// logout`. For claude.ai connectors, fully switching Google accounts
+    /// may also need a disconnect at claude.ai/settings/connectors —
+    /// the footer link covers that.
+    func logout(_ name: String) {
+        guard logoutInFlight == nil, loginInFlight == nil else { return }
+        logoutInFlight = name
+        runClaude(["mcp", "logout", name], timeout: 60) { [weak self] code, output in
+            guard let self else { return }
+            self.logoutInFlight = nil
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.lastLoginSucceeded = code == 0
+            self.lastLoginMessage = code == 0
+                ? "\(name) disconnected."
+                : (trimmed.isEmpty ? "Disconnect failed (exit \(code))." : String(trimmed.suffix(400)))
+            self.refresh()
+        }
+    }
+
     /// Abort the in-flight authorization watch — the browser flow errored
     /// or the user changed their mind. Everything re-enables immediately.
     func cancelLogin() {

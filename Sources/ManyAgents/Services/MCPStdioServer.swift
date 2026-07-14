@@ -230,8 +230,13 @@ private final class ServerState {
                 "serverInfo": ["name": "manyagents-mcp", "version": "0.3.0"],
                 "capabilities": ["tools": [String: Any]()]
             ])
-        case "initialized":
-            // Notification; no response.
+        case "initialized", "notifications/initialized":
+            // Notification; no response. The spec method is
+            // "notifications/initialized" — only matching the bare name
+            // sent this into default:, which answered with an id-less
+            // error frame. Notifications must NEVER be answered; claude
+            // ≥ ~2.1.19x treats a server that does as broken and leaves
+            // it "still connecting" forever (2.1.168 tolerated it).
             break
         case "tools/list":
             respond(id: id, result: ["tools": toolDescriptors])
@@ -240,7 +245,11 @@ private final class ServerState {
         case "ping":
             respond(id: id, result: [String: Any]())
         default:
-            respond(id: id, error: ["code": -32601, "message": "Method not found: \(method)"])
+            // Method-not-found only for actual REQUESTS. Any notification
+            // (no id) — known or future — gets silence, per JSON-RPC.
+            if id != nil {
+                respond(id: id, error: ["code": -32601, "message": "Method not found: \(method)"])
+            }
         }
     }
 
