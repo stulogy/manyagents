@@ -199,7 +199,8 @@ final class MCPConnectors: ObservableObject {
                     self.lastLoginMessage = "\(name) is managed on claude.ai (link below)."
                 } else if code == 0 {
                     self.lastLoginSucceeded = true
-                    self.lastLoginMessage = "\(name) disconnected."
+                    // Silent success — the row flipping orange says it.
+                    self.lastLoginMessage = nil
                 } else {
                     self.lastLoginSucceeded = false
                     let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -274,7 +275,8 @@ final class MCPConnectors: ObservableObject {
             if status == .connected {
                 self.loginInFlight = nil
                 self.lastLoginSucceeded = true
-                self.lastLoginMessage = "\(name) authorized. Sessions reconnect on their next message."
+                // Silent success — the row flipping green IS the feedback.
+                self.lastLoginMessage = nil
                 NotificationCenter.default.post(name: Self.authChanged, object: nil)
             } else {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in

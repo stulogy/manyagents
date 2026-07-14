@@ -132,12 +132,8 @@ private struct ConnectorsSettingsTab: View {
                     .disabled(connectors.refreshing)
                 }
             } footer: {
-                HStack(spacing: 4) {
-                    Text("Sessions pick up changes on their next message.")
-                    Link("Manage connectors on claude.ai", destination: URL(string: "https://claude.ai/settings/connectors")!)
-                }
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                Link("Manage connectors on claude.ai", destination: URL(string: "https://claude.ai/settings/connectors")!)
+                    .font(.system(size: 11))
             }
         }
         .formStyle(.grouped)
