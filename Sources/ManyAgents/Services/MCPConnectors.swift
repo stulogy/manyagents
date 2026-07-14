@@ -115,21 +115,35 @@ final class MCPConnectors: ObservableObject {
     @Published private(set) var logoutInFlight: String?
 
     /// Clear stored OAuth credentials for a server via `claude mcp
-    /// logout`. For claude.ai connectors, fully switching Google accounts
-    /// may also need a disconnect at claude.ai/settings/connectors —
-    /// the footer link covers that.
+    /// logout`, then VERIFY against the health list — for claude.ai
+    /// connectors the grant lives on the claude.ai account, so the CLI
+    /// re-derives credentials immediately and logout is a no-op. Say so
+    /// instead of falsely reporting "disconnected".
     func logout(_ name: String) {
         guard logoutInFlight == nil, loginInFlight == nil else { return }
         logoutInFlight = name
         runClaude(["mcp", "logout", name], timeout: 60) { [weak self] code, output in
             guard let self else { return }
-            self.logoutInFlight = nil
-            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            self.lastLoginSucceeded = code == 0
-            self.lastLoginMessage = code == 0
-                ? "\(name) disconnected."
-                : (trimmed.isEmpty ? "Disconnect failed (exit \(code))." : String(trimmed.suffix(400)))
-            self.refresh()
+            self.runClaude(["mcp", "list"], timeout: 60) { [weak self] _, listOut in
+                guard let self else { return }
+                self.logoutInFlight = nil
+                let parsed = Self.parseList(listOut)
+                if !parsed.isEmpty { self.servers = parsed }
+                let stillConnected = parsed.first(where: { $0.name == name })?.status == .connected
+                if stillConnected {
+                    self.lastLoginSucceeded = false
+                    self.lastLoginMessage = "\(name) reconnects from your claude.ai account. To disconnect it or switch its Google account, use claude.ai (link below), then refresh here."
+                } else if code == 0 {
+                    self.lastLoginSucceeded = true
+                    self.lastLoginMessage = "\(name) disconnected."
+                } else {
+                    self.lastLoginSucceeded = false
+                    let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.lastLoginMessage = trimmed.isEmpty
+                        ? "Disconnect failed (exit \(code))."
+                        : String(trimmed.suffix(400))
+                }
+            }
         }
     }
 

@@ -44,6 +44,7 @@ private struct GeneralSettingsTab: View {
 
 private struct ConnectorsSettingsTab: View {
     @ObservedObject private var connectors = MCPConnectors.shared
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         Form {
@@ -84,7 +85,16 @@ private struct ConnectorsSettingsTab: View {
                                     .disabled(connectors.loginInFlight != nil || connectors.logoutInFlight != nil)
                                 }
                             } else if server.status == .connected {
-                                if connectors.logoutInFlight == server.name {
+                                if server.name.hasPrefix("claude.ai") {
+                                    // These grants live on the claude.ai
+                                    // account; local logout is a no-op, so
+                                    // don't offer a Disconnect that lies.
+                                    Button("Manage…") {
+                                        openURL(URL(string: "https://claude.ai/settings/connectors")!)
+                                    }
+                                    .controlSize(.small)
+                                    .help("claude.ai connectors are managed on claude.ai — disconnect or switch the Google account there, then refresh here.")
+                                } else if connectors.logoutInFlight == server.name {
                                     ProgressView().controlSize(.small)
                                 } else {
                                     Button("Disconnect") {
