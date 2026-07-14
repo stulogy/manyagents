@@ -88,6 +88,11 @@ final class AgentManager: ObservableObject {
         // status flip). Debounced so we don't churn UserDefaults on every
         // token of a streaming response.
         $sessions
+            // The initial [] emission must never persist: it fires on
+            // launch BEFORE the user accepts the restore sheet, and an
+            // empty persist deletes the stored snapshot — losing every
+            // tab if the sheet is dismissed or the timing races.
+            .dropFirst()
             .debounce(for: .milliseconds(500), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in self?.persist() }
             .store(in: &cancellables)
@@ -189,6 +194,7 @@ final class AgentManager: ObservableObject {
         // the session.
         wireTurnCompletion(for: session)
         wireFinishNotifications(for: session)
+        hadSessionsThisRun = true
         sessions.append(session)
         activeSessionId = session.id
         session.connect()
@@ -514,6 +520,11 @@ final class AgentManager: ObservableObject {
         }
     }
 
+    /// True once this run has had at least one live session. Gates the
+    /// empty-snapshot delete below: a run that never had sessions has no
+    /// business erasing the previous run's snapshot.
+    private var hadSessionsThisRun = false
+
     private func persist() {
         let snap = Snapshot(agents: sessions.map { s in
             Snapshot.SavedAgent(
@@ -527,7 +538,12 @@ final class AgentManager: ObservableObject {
             )
         })
         if snap.agents.isEmpty {
-            UserDefaults.standard.removeObject(forKey: Self.snapshotKey)
+            // Deleting the snapshot is only legitimate when the user
+            // actually closed their sessions this run — never as the
+            // side effect of an empty launch.
+            if hadSessionsThisRun {
+                UserDefaults.standard.removeObject(forKey: Self.snapshotKey)
+            }
         } else if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: Self.snapshotKey)
         }
