@@ -8,6 +8,8 @@ struct SettingsView: View {
         TabView {
             GeneralSettingsTab()
                 .tabItem { Label("General", systemImage: "gearshape") }
+            ConnectorsSettingsTab()
+                .tabItem { Label("Connectors", systemImage: "puzzlepiece.extension") }
             NotificationSettingsTab()
                 .tabItem { Label("Notifications", systemImage: "bell.badge") }
             UpdateSettingsTab()
@@ -37,6 +39,98 @@ private struct GeneralSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+private struct ConnectorsSettingsTab: View {
+    @ObservedObject private var connectors = MCPConnectors.shared
+
+    var body: some View {
+        Form {
+            Section {
+                if connectors.servers.isEmpty {
+                    HStack {
+                        Text(connectors.refreshing ? "Checking MCP servers…" : "No MCP servers configured.")
+                            .foregroundStyle(.secondary)
+                        if connectors.refreshing { ProgressView().controlSize(.small) }
+                    }
+                } else {
+                    ForEach(connectors.servers) { server in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(statusColor(server.status))
+                                .frame(width: 7, height: 7)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(server.name)
+                                    .font(.system(size: 12.5, weight: .medium))
+                                Text(statusLabel(server.status))
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if server.status == .needsAuth {
+                                if connectors.loginInFlight == server.name {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Button("Authenticate") {
+                                        MCPConnectors.shared.login(server.name)
+                                    }
+                                    .disabled(connectors.loginInFlight != nil)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
+                if let msg = connectors.lastLoginMessage {
+                    Text(msg)
+                        .font(.system(size: 11))
+                        .foregroundStyle(connectors.lastLoginSucceeded == true ? .green : .secondary)
+                        .textSelection(.enabled)
+                }
+            } header: {
+                HStack {
+                    Text("MCP Servers")
+                    Spacer()
+                    Button {
+                        MCPConnectors.shared.refresh()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(connectors.refreshing)
+                }
+            } footer: {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Authenticate runs the CLI's own browser sign-in and stores the token in your keychain, so it covers every session. Sessions reconnect on their next message.")
+                    Text("Some claude.ai connectors (like Google Drive) can only be authorized on claude.ai itself. If Authenticate says so, use the link below, then hit refresh here.")
+                    Link("Manage connectors on claude.ai", destination: URL(string: "https://claude.ai/settings/connectors")!)
+                        .font(.system(size: 11))
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { MCPConnectors.shared.refresh() }
+    }
+
+    private func statusColor(_ s: MCPConnectors.Server.Status) -> Color {
+        switch s {
+        case .connected: return .green
+        case .needsAuth: return .orange
+        case .failed:    return .red
+        }
+    }
+
+    private func statusLabel(_ s: MCPConnectors.Server.Status) -> String {
+        switch s {
+        case .connected:        return "Connected"
+        case .needsAuth:        return "Needs authentication"
+        case .failed(let why):  return why
+        }
     }
 }
 

@@ -261,6 +261,24 @@ struct MessageView: View {
         name == "Edit" || name == "Write" || name == "MultiEdit" || name == "NotebookEdit"
     }
 
+    /// Detects a tool result complaining that an MCP server needs
+    /// authentication and extracts the quoted server name, e.g.
+    ///   This is a claude.ai MCP connector. Ask the user to run /mcp and
+    ///   select "claude.ai Google Drive" to authenticate.
+    /// Returns nil when the text isn't an MCP auth complaint or no name
+    /// can be recovered.
+    static func mcpAuthNeededServer(in content: String) -> String? {
+        let lower = content.lowercased()
+        guard lower.contains("authenticat"),
+              lower.contains("mcp"),
+              let open = content.range(of: "\""),
+              let close = content.range(of: "\"", range: open.upperBound..<content.endIndex)
+        else { return nil }
+        let name = String(content[open.upperBound..<close.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty || name.count > 80 ? nil : name
+    }
+
     // MARK: - Block rendering
 
     @ViewBuilder
@@ -378,8 +396,16 @@ struct MessageView: View {
             if fileEditOutcomes[toolUseId] == false {
                 EmptyView()
             } else {
-                ToolResultRow(content: content, isError: isError, sessionCwd: sessionCwd,
-                              isSubagentResult: subagentToolUseIds.contains(toolUseId))
+                VStack(alignment: .leading, spacing: 6) {
+                    ToolResultRow(content: content, isError: isError, sessionCwd: sessionCwd,
+                                  isSubagentResult: subagentToolUseIds.contains(toolUseId))
+                    // An MCP server refused for lack of auth — offer the fix
+                    // inline instead of the dead-end "run /mcp" instruction
+                    // (headless sessions have no /mcp).
+                    if let server = Self.mcpAuthNeededServer(in: content) {
+                        MCPAuthorizeButton(serverName: server)
+                    }
+                }
             }
         case .image(_, let data, _):
             if let img = NSImage(data: data) {
@@ -1125,6 +1151,53 @@ private struct ImageZoomView: View {
             Text("Couldn't load image.")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+/// Inline "authorize this MCP server" affordance shown under a tool
+/// result that reported an authentication-required failure. Runs the
+/// CLI's own `claude mcp login` flow via MCPConnectors; on success the
+/// session's process is recycled (AgentManager listens for the auth
+/// notification), so the user just sends their next message.
+struct MCPAuthorizeButton: View {
+    let serverName: String
+    @ObservedObject private var connectors = MCPConnectors.shared
+
+    private var isRunning: Bool { connectors.loginInFlight == serverName }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                MCPConnectors.shared.login(serverName)
+            } label: {
+                HStack(spacing: 5) {
+                    if isRunning {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "key.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    Text(isRunning ? "Authorizing \(serverName)…" : "Authorize \(serverName)")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(Color.brandOrange)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color.brandOrange.opacity(0.12)))
+                .overlay(Capsule().strokeBorder(Color.brandOrange.opacity(0.3), lineWidth: 0.5))
+            }
+            .buttonStyle(.plain)
+            .disabled(connectors.loginInFlight != nil)
+            .help("Runs the claude CLI's sign-in for this MCP server; the token is stored in your keychain and shared with every session.")
+            if !isRunning, let msg = connectors.lastLoginMessage,
+               connectors.lastLoginSucceeded != nil {
+                Text(msg)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(connectors.lastLoginSucceeded == true ? Color.green : Color.secondary)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+            }
         }
     }
 }

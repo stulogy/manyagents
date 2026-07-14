@@ -327,6 +327,18 @@ final class ClaudeBridge {
         try? handle.write(contentsOf: bytes)
     }
 
+    /// Kill the persistent process ONLY when no turn is in flight, so the
+    /// next send respawns it (with --resume) and reconnects MCP servers.
+    /// Used after `claude mcp login` succeeds — a live process holds MCP
+    /// connections from before the credentials existed.
+    func recycleIfIdle() {
+        guard !turnInFlight, let p = activeProcess, p.isRunning else { return }
+        try? activeStdin?.close()
+        activeStdin = nil
+        p.terminate()
+        activeProcess = nil
+    }
+
     /// Cancel any in-flight turn. The corresponding `.processExited` event
     /// will fire on the termination handler.
     func cancel() {

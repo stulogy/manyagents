@@ -131,6 +131,18 @@ final class AgentManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.persist() }
             .store(in: &cancellables)
+
+        // MCP credentials changed (user completed `claude mcp login` via
+        // the Connectors UI). Idle session processes are recycled so their
+        // next turn respawns and connects to the newly-authorized server;
+        // busy ones pick it up whenever their process next restarts.
+        NotificationCenter.default.publisher(for: MCPConnectors.authChanged)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                for session in self.sessions { session.bridge.recycleIfIdle() }
+            }
+            .store(in: &cancellables)
     }
 
     /// Re-dispatch every session that was flagged as awaiting network.
