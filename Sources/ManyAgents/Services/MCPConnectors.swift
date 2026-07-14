@@ -65,8 +65,45 @@ final class MCPConnectors: ObservableObject {
         runClaude(["mcp", "list"], timeout: 60) { [weak self] _, output in
             guard let self else { return }
             self.servers = Self.parseList(output)
-            self.refreshing = false
+            // `mcp list` is only trusted for ENUMERATION. Its statuses can
+            // be flat wrong — it reported ✔ Connected for claude.ai
+            // connectors that `mcp get` (and claude.ai itself) said needed
+            // authentication. Verify every server with the per-server query.
+            let names = self.servers.map(\.name)
+            guard !names.isEmpty else { self.refreshing = false; return }
+            var remaining = names.count
+            for name in names {
+                self.fetchStatus(name) { status in
+                    if let status,
+                       let idx = self.servers.firstIndex(where: { $0.name == name }) {
+                        let s = self.servers[idx]
+                        self.servers[idx] = Server(name: s.name, detail: s.detail, status: status)
+                    }
+                    remaining -= 1
+                    if remaining == 0 { self.refreshing = false }
+                }
+            }
         }
+    }
+
+    /// True status of one server via `claude mcp get` — the reliable
+    /// signal. nil when the output couldn't be parsed.
+    private func fetchStatus(_ name: String,
+                             completion: @escaping @MainActor (Server.Status?) -> Void) {
+        runClaude(["mcp", "get", name], timeout: 60) { _, output in
+            completion(Self.parseGetStatus(output))
+        }
+    }
+
+    nonisolated static func parseGetStatus(_ output: String) -> Server.Status? {
+        guard let line = output.split(separator: "\n")
+            .first(where: { $0.contains("Status:") }) else { return nil }
+        let s = String(line)
+        if s.localizedCaseInsensitiveContains("needs authentication") { return .needsAuth }
+        if s.contains("✔") || s.localizedCaseInsensitiveContains("connected") { return .connected }
+        let detail = s.replacingOccurrences(of: "Status:", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        return .failed(detail.isEmpty ? "Unknown status" : detail)
     }
 
     /// Parses `claude mcp list` lines of the shape
@@ -124,12 +161,15 @@ final class MCPConnectors: ObservableObject {
         logoutInFlight = name
         runClaude(["mcp", "logout", name], timeout: 60) { [weak self] code, output in
             guard let self else { return }
-            self.runClaude(["mcp", "list"], timeout: 60) { [weak self] _, listOut in
+            self.fetchStatus(name) { [weak self] status in
                 guard let self else { return }
                 self.logoutInFlight = nil
-                let parsed = Self.parseList(listOut)
-                if !parsed.isEmpty { self.servers = parsed }
-                let stillConnected = parsed.first(where: { $0.name == name })?.status == .connected
+                if let status,
+                   let idx = self.servers.firstIndex(where: { $0.name == name }) {
+                    let s = self.servers[idx]
+                    self.servers[idx] = Server(name: s.name, detail: s.detail, status: status)
+                }
+                let stillConnected = status == .connected
                 if stillConnected {
                     self.lastLoginSucceeded = false
                     self.lastLoginMessage = "\(name) reconnects from your claude.ai account. To disconnect it or switch its Google account, use claude.ai (link below), then refresh here."
@@ -200,11 +240,14 @@ final class MCPConnectors: ObservableObject {
             refresh()
             return
         }
-        runClaude(["mcp", "list"], timeout: 60) { [weak self] _, output in
+        fetchStatus(name) { [weak self] status in
             guard let self, generation == self.loginGeneration else { return }
-            let parsed = Self.parseList(output)
-            if !parsed.isEmpty { self.servers = parsed }
-            if parsed.first(where: { $0.name == name })?.status == .connected {
+            if let status,
+               let idx = self.servers.firstIndex(where: { $0.name == name }) {
+                let s = self.servers[idx]
+                self.servers[idx] = Server(name: s.name, detail: s.detail, status: status)
+            }
+            if status == .connected {
                 self.loginInFlight = nil
                 self.lastLoginSucceeded = true
                 self.lastLoginMessage = "\(name) authorized. Sessions reconnect on their next message."
