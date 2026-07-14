@@ -87,6 +87,18 @@ struct ManyAgentsApp: App {
                 }
                 .keyboardShortcut("f", modifiers: .command)
             }
+            // View menu — was empty (macOS shows a blank dropdown), which
+            // read as broken. Sidebar toggle keeps ⌘⇧S via its in-view
+            // binding; the menu item just posts the same action.
+            CommandGroup(after: .sidebar) {
+                Button("Toggle Sidebar") {
+                    NotificationCenter.default.post(name: .maToggleSidebar, object: nil)
+                }
+                Button("Toggle Card / List View") {
+                    NotificationCenter.default.post(name: .maToggleViewMode, object: nil)
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+            }
             CommandGroup(after: .newItem) {
                 Button("New Tab in Project") {
                     NotificationCenter.default.post(name: .maNewTab, object: nil)
@@ -112,11 +124,6 @@ struct ManyAgentsApp: App {
                     NotificationCenter.default.post(name: .maCycleTab, object: nil)
                 }
                 .keyboardShortcut("`", modifiers: [.command, .shift])
-                Divider()
-                Button("Toggle Card / List View") {
-                    NotificationCenter.default.post(name: .maToggleViewMode, object: nil)
-                }
-                .keyboardShortcut("l", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .help) {
                 Button("Keyboard Shortcuts") {
@@ -164,6 +171,7 @@ extension Notification.Name {
     static let maCycleProject     = Notification.Name("ManyAgents.cycleProject")
     static let maCycleTab         = Notification.Name("ManyAgents.cycleTab")
     static let maToggleViewMode   = Notification.Name("ManyAgents.toggleViewMode")
+    static let maToggleSidebar    = Notification.Name("ManyAgents.toggleSidebar")
     static let maShowShortcuts    = Notification.Name("ManyAgents.showShortcuts")
     static let maFind             = Notification.Name("ManyAgents.find")
     static let maFocusSession     = Notification.Name("ManyAgents.focusSession")

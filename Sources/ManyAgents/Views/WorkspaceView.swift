@@ -30,6 +30,9 @@ struct WorkspaceView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .animation(.easeInOut(duration: 0.2), value: sidebarCollapsed)
+        .onReceive(NotificationCenter.default.publisher(for: .maToggleSidebar)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) { sidebarCollapsed.toggle() }
+        }
         .background(mainBackground)
         .sheet(isPresented: Binding(
             get: { manager.pendingRestore != nil },

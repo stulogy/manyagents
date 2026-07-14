@@ -48,6 +48,7 @@ struct UsageView: View {
     }
 
     var body: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Picker("", selection: $period) {
@@ -134,14 +135,13 @@ struct UsageView: View {
                 }
             }
 
-            Spacer(minLength: 0)
-
             // Session/weekly limit data isn't exposed outside the TUI —
             // the real bars live on claude.ai.
             Link("Plan limits on claude.ai", destination: URL(string: "https://claude.ai/settings/usage")!)
                 .font(.system(size: 11))
         }
         .padding(20)
+        }
         .frame(minWidth: 560, minHeight: 480)
         .onAppear { records = UsageLog.loadAll() }
     }
