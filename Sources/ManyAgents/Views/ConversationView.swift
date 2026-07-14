@@ -358,6 +358,20 @@ struct ConversationView: View {
                 .padding(.horizontal, 18)
                 .padding(.bottom, 6)
             }
+            // MCP server needs authorization — an unmissable banner above
+            // the composer, because the inline button under the tool
+            // result gets buried in the agent's prose (and the agent's
+            // own advice is usually "/mcp", which doesn't exist here).
+            if let server = session.pendingMCPAuthServer {
+                HStack {
+                    Spacer(minLength: 0)
+                    MCPAuthBanner(session: session, serverName: server)
+                        .frame(maxWidth: 760)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 8)
+            }
             // Permission prompt — claude wants to perform a sensitive
             // action (write to a sensitive path, edit settings, etc.)
             // and is blocked waiting on the user's Allow / Deny. Sits

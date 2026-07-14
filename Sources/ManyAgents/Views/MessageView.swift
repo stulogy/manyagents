@@ -261,22 +261,10 @@ struct MessageView: View {
         name == "Edit" || name == "Write" || name == "MultiEdit" || name == "NotebookEdit"
     }
 
-    /// Detects a tool result complaining that an MCP server needs
-    /// authentication and extracts the quoted server name, e.g.
-    ///   This is a claude.ai MCP connector. Ask the user to run /mcp and
-    ///   select "claude.ai Google Drive" to authenticate.
-    /// Returns nil when the text isn't an MCP auth complaint or no name
-    /// can be recovered.
+    /// Detection lives on MCPConnectors (AgentSession uses it too for the
+    /// composer banner); kept as a pass-through so call sites read local.
     static func mcpAuthNeededServer(in content: String) -> String? {
-        let lower = content.lowercased()
-        guard lower.contains("authenticat"),
-              lower.contains("mcp"),
-              let open = content.range(of: "\""),
-              let close = content.range(of: "\"", range: open.upperBound..<content.endIndex)
-        else { return nil }
-        let name = String(content[open.upperBound..<close.lowerBound])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty || name.count > 80 ? nil : name
+        MCPConnectors.authNeededServer(in: content)
     }
 
     // MARK: - Block rendering
@@ -1199,5 +1187,66 @@ struct MCPAuthorizeButton: View {
                     .textSelection(.enabled)
             }
         }
+    }
+}
+
+/// Unmissable authorize banner shown above the composer while a tool
+/// result reports an MCP server needing authorization. The inline
+/// MCPAuthorizeButton under the tool result remains as the in-context
+/// affordance; this is the one the user actually sees.
+struct MCPAuthBanner: View {
+    @ObservedObject var session: AgentSession
+    let serverName: String
+    @ObservedObject private var connectors = MCPConnectors.shared
+
+    private var isRunning: Bool { connectors.loginInFlight == serverName }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "key.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.brandOrange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(serverName) needs your authorization")
+                    .font(.system(size: 12.5, weight: .semibold))
+                Text(isRunning
+                     ? (connectors.lastLoginMessage ?? "Finish the sign-in in your browser…")
+                     : "The agent can't use this connector until you approve it in your browser.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 10)
+            if isRunning {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Authorize") {
+                    MCPConnectors.shared.login(serverName)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color.brandOrange)
+                .controlSize(.small)
+                .disabled(connectors.loginInFlight != nil)
+            }
+            Button {
+                session.pendingMCPAuthServer = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.brandOrange.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.brandOrange.opacity(0.35), lineWidth: 1)
+        )
     }
 }

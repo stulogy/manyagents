@@ -248,6 +248,12 @@ final class AgentSession: ObservableObject, Identifiable {
     /// above the composer with the request details.
     @Published var pendingPermission: PendingPermission?
 
+    /// Name of an MCP server a tool result reported as needing
+    /// authorization. While non-nil an authorize banner sits above the
+    /// composer. Cleared on dismiss or when the server authenticates
+    /// (AgentManager clears it on the auth-changed notification).
+    @Published var pendingMCPAuthServer: String?
+
     struct PendingPermission: Identifiable, Equatable {
         let id: String                    // matches MCP relay request id
         let toolName: String
@@ -663,6 +669,13 @@ final class AgentSession: ObservableObject, Identifiable {
                 break
             }
         case .toolResult(let toolUseId, let content, let isError, let parentToolUseId):
+            // An MCP server just refused for lack of auth — raise the
+            // banner above the composer so the user can't miss it. The
+            // inline button under the tool result stays as a secondary
+            // affordance; this is the primary one.
+            if let server = MCPConnectors.authNeededServer(in: content) {
+                pendingMCPAuthServer = server
+            }
             // Claude itself runs tools and reports the result. Render as a
             // dedicated message so the conversation stays linear. The
             // parentToolUseId, if set, tells the renderer this result

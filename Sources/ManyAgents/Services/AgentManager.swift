@@ -140,7 +140,11 @@ final class AgentManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self else { return }
-                for session in self.sessions { session.bridge.recycleIfIdle() }
+                for session in self.sessions {
+                    session.bridge.recycleIfIdle()
+                    // Auth landed — the banner's job is done.
+                    session.pendingMCPAuthServer = nil
+                }
             }
             .store(in: &cancellables)
     }

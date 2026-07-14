@@ -760,8 +760,20 @@ final class ClaudeBridge {
     // MARK: - Binary resolution
 
     static func resolveClaudePath() -> String? {
+        // Prefer whatever the user's terminal would run: walk their real
+        // login-shell PATH in order. The hardcoded fallbacks previously
+        // shadowed newer installs — an old /opt/homebrew/bin/claude won
+        // over the native installer's ~/.local/bin/claude, so sessions
+        // (and `claude mcp login`) ran a stale CLI.
+        for dir in userPath.split(separator: ":") {
+            let candidate = "\(dir)/claude"
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
         let home = NSHomeDirectory()
         let candidates = [
+            "\(home)/.local/bin/claude",
             "/opt/homebrew/bin/claude",
             "/usr/local/bin/claude",
             "\(home)/.claude/local/claude",

@@ -37,6 +37,24 @@ final class MCPConnectors: ObservableObject {
     /// the newly-authorized server.
     static let authChanged = Notification.Name("ManyAgents.mcpAuthChanged")
 
+    /// Detects a tool result complaining that an MCP server needs
+    /// authentication and extracts the quoted server name, e.g.
+    ///   This is a claude.ai MCP connector. Ask the user to run /mcp and
+    ///   select "claude.ai Google Drive" to authenticate.
+    /// Returns nil when the text isn't an MCP auth complaint or no name
+    /// can be recovered. Pure string work — callable from any context.
+    nonisolated static func authNeededServer(in content: String) -> String? {
+        let lower = content.lowercased()
+        guard lower.contains("authenticat"),
+              lower.contains("mcp"),
+              let open = content.range(of: "\""),
+              let close = content.range(of: "\"", range: open.upperBound..<content.endIndex)
+        else { return nil }
+        let name = String(content[open.upperBound..<close.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty || name.count > 80 ? nil : name
+    }
+
     private init() {}
 
     // MARK: - List
