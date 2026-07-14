@@ -29,6 +29,9 @@ struct ConversationView: View {
     @State private var findScrollTick = 0
     /// Bumped to jump back to the live turn when the sticky turn-bar is tapped.
     @State private var stickyScrollTick = 0
+    /// Bumped to scroll to the anchor prompt (the turn being read) when
+    /// the sticky bar's label side is tapped.
+    @State private var anchorScrollTick = 0
     /// Scroll-tracking metrics. Driven by GeometryReader-derived
     /// preferences on each scroll/layout pass. We compute "near the
     /// bottom" as (content - scrollY - viewport < tolerance) — a real
@@ -202,48 +205,66 @@ struct ConversationView: View {
     // MARK: - Sticky turn bar
 
     /// Pinned summary shown while a turn runs and the user has scrolled up:
-    /// "↑ <your prompt>     <what it's doing> · <elapsed>". Tap to jump back.
+    /// "↑ <prompt being read>     <what it's doing> · <elapsed>". Two click
+    /// zones: the label side scrolls to that prompt's message; the status
+    /// side (chevron-down) jumps to the live turn.
     private var turnStickyBar: some View {
-        Button {
-            stickyScrollTick += 1
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(Color.brandOrange)
-                Text(stickyPromptText.isEmpty ? "Working…" : stickyPromptText)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 12)
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(stickyStatusText(now: context.date))
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .fixedSize()
+        HStack(spacing: 10) {
+            Button {
+                if scrolledContextAnchorId != nil {
+                    anchorScrollTick += 1
+                } else {
+                    stickyScrollTick += 1
                 }
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Color.brandOrange)
+                    Text(stickyPromptText.isEmpty ? "Working…" : stickyPromptText)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .frame(maxWidth: 760)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(nsColor: .windowBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.brandOrange.opacity(0.30), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
+            .buttonStyle(.plain)
+            .help("Scroll to this message")
+            Button {
+                stickyScrollTick += 1
+            } label: {
+                HStack(spacing: 8) {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(stickyStatusText(now: context.date))
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Jump to the live turn")
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .frame(maxWidth: 760)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .windowBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.brandOrange.opacity(0.30), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
         .padding(.top, 10)
         .padding(.horizontal, 18)
-        .help("Jump to the live turn")
     }
 
     private var stickyPromptText: String {
@@ -260,6 +281,9 @@ struct ConversationView: View {
     /// by the UserRowsKey preference as the user scrolls. Empty when no
     /// prompt row has crossed the top (reading the very start).
     @State private var scrolledContextPrompt: String = ""
+    /// Message id of that prompt — the scroll target when the sticky
+    /// bar's label is clicked.
+    @State private var scrolledContextAnchorId: UUID?
 
     /// Reports a user-prompt row's position in the scroll space so the
     /// sticky bar can track which turn is being read. Non-user rows
@@ -278,14 +302,14 @@ struct ConversationView: View {
         }
     }
 
-    /// The user prompt immediately BEFORE `messageId` in the transcript.
-    /// Used when the anchor prompt has scrolled above the viewport and
-    /// LazyVStack has dematerialized its row — geometry can't see it, but
-    /// the model still can.
-    private func promptBefore(messageId: UUID) -> String? {
+    /// The user prompt message immediately BEFORE `messageId` in the
+    /// transcript. Used when the anchor prompt has scrolled above the
+    /// viewport and LazyVStack has dematerialized its row — geometry
+    /// can't see it, but the model still can.
+    private func promptBefore(messageId: UUID) -> Message? {
         guard let idx = session.messages.firstIndex(where: { $0.id == messageId })
         else { return nil }
-        return session.messages[..<idx].last(where: { $0.role == .user })?.flatText
+        return session.messages[..<idx].last(where: { $0.role == .user })
     }
 
     private func stickyStatusText(now: Date) -> String {
@@ -851,8 +875,11 @@ struct ConversationView: View {
                 guard !rows.isEmpty else { return }
                 if let above = rows.filter({ $0.minY <= 60 }).max(by: { $0.minY < $1.minY }) {
                     scrolledContextPrompt = above.text
+                    scrolledContextAnchorId = above.id
                 } else if let firstBelow = rows.min(by: { $0.minY < $1.minY }) {
-                    scrolledContextPrompt = promptBefore(messageId: firstBelow.id) ?? ""
+                    let prev = promptBefore(messageId: firstBelow.id)
+                    scrolledContextPrompt = prev?.flatText ?? ""
+                    scrolledContextAnchorId = prev?.id
                 }
             }
             // NOTE: we deliberately do NOT use .defaultScrollAnchor(.bottom).
@@ -908,6 +935,14 @@ struct ConversationView: View {
             .onChange(of: stickyScrollTick) { _, _ in
                 withAnimation(.easeInOut(duration: 0.25)) {
                     scrollToLatest(proxy)
+                }
+            }
+            // Sticky-bar label click: land on the prompt of the turn being
+            // read, its top aligned under the bar — not the bottom of chat.
+            .onChange(of: anchorScrollTick) { _, _ in
+                guard let id = scrolledContextAnchorId else { return }
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(id, anchor: .top)
                 }
             }
             // Restore-from-snapshot bug: ConversationView is keyed on

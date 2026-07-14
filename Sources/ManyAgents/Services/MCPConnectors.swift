@@ -45,7 +45,10 @@ final class MCPConnectors: ObservableObject {
     /// can be recovered. Pure string work — callable from any context.
     nonisolated static func authNeededServer(in content: String) -> String? {
         let lower = content.lowercased()
-        guard lower.contains("authenticat"),
+        // "authenticat…" covers authenticate/authentication; "authoriz…"
+        // covers the CLI's expired-token wording: MCP server "X" requires
+        // re-authorization (token expired).
+        guard lower.contains("authenticat") || lower.contains("authoriz"),
               lower.contains("mcp"),
               let open = content.range(of: "\""),
               let close = content.range(of: "\"", range: open.upperBound..<content.endIndex)
