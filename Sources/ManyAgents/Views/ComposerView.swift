@@ -208,6 +208,13 @@ struct ComposerView: View {
         return (hasText || !pendingImages.isEmpty) && !voice.isRecording
     }
 
+    /// Friendly one-liner for a queued invisible prompt.
+    private func queuedAutoLabel(_ p: AgentSession.PendingPrompt) -> String {
+        if p.isBoardWake ?? false { return "Board update (automatic)" }
+        if p.text.hasPrefix("[Orchestrator catch-up") { return "Orchestrator catch-up (automatic)" }
+        return "Automatic message"
+    }
+
     /// Strip above the composer listing pending queued prompts. Click X
     /// on any to remove it before it fires.
     private var queuedStrip: some View {
@@ -218,9 +225,15 @@ struct ComposerView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.brandOrange.opacity(0.85))
                         .padding(.top, 4)
-                    Text(p.text.isEmpty ? "(image only)" : p.text)
+                    // Hidden plumbing prompts (catch-up brief, board wakes,
+                    // compaction) queue like anything else, but their raw
+                    // meta-text isn't something the user wrote — show a
+                    // compact label instead of the guts.
+                    Text(!p.visible ? queuedAutoLabel(p)
+                         : p.text.isEmpty ? "(image only)" : p.text)
                         .font(.system(size: 14))
-                        .foregroundStyle(.primary.opacity(0.85))
+                        .italic(!p.visible)
+                        .foregroundStyle(p.visible ? Color.primary.opacity(0.85) : Color.secondary)
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     // Force-send: bumps this prompt to the front and
