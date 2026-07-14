@@ -78,11 +78,13 @@ final class MCPConnectors: ObservableObject {
 
     // MARK: - Login
 
-    /// Run `claude mcp login <name>`. The CLI owns the flow: for plain
-    /// OAuth servers it opens the browser and catches the callback; for
-    /// claude.ai connectors whose identity provider only accepts
-    /// claude.ai's redirect it prints guidance instead — either way we
-    /// surface the outcome and re-list.
+    /// Run `claude mcp login <name>`. The CLI owns the flow, but for
+    /// claude.ai connectors it only HANDS OFF to the browser and exits —
+    /// "Once authorized on claude.ai, the connector will be available the
+    /// next time you start Claude Code." Exit 0 therefore does NOT mean
+    /// authorized. We poll the health list until the server actually
+    /// flips to connected before declaring success (and recycling
+    /// session processes), instead of trusting the exit code.
     func login(_ name: String) {
         guard loginInFlight == nil else { return }
         loginInFlight = name
@@ -90,17 +92,48 @@ final class MCPConnectors: ObservableObject {
         lastLoginSucceeded = nil
         runClaude(["mcp", "login", name], timeout: 300) { [weak self] code, output in
             guard let self else { return }
-            self.loginInFlight = nil
-            self.lastLoginSucceeded = code == 0
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            self.lastLoginMessage = trimmed.isEmpty
-                ? (code == 0 ? "Authenticated." : "Login failed (exit \(code)).")
-                : String(trimmed.suffix(400))
-            if code == 0 {
-                NotificationCenter.default.post(name: Self.authChanged, object: nil)
+            let handedOffToBrowser = trimmed.localizedCaseInsensitiveContains("authoriz")
+                || trimmed.localizedCaseInsensitiveContains("claude.ai")
+            if code == 0 || handedOffToBrowser {
+                self.lastLoginMessage = "Finish the sign-in in your browser — watching for \(name) to come online…"
+                self.pollUntilConnected(name)
+            } else {
+                self.loginInFlight = nil
+                self.lastLoginSucceeded = false
+                self.lastLoginMessage = trimmed.isEmpty
+                    ? "Login failed (exit \(code))."
+                    : String(trimmed.suffix(400))
+                self.refresh()
             }
-            self.refreshing = false
-            self.refresh()
+        }
+    }
+
+    /// Re-check `claude mcp list` every few seconds until `name` reports
+    /// connected (success: notify + stop) or ~3 minutes pass (give up
+    /// with guidance). Runs while the user completes the browser flow.
+    private func pollUntilConnected(_ name: String, attempt: Int = 0) {
+        guard attempt < 30 else {
+            loginInFlight = nil
+            lastLoginSucceeded = false
+            lastLoginMessage = "Still waiting on \(name). Finish the authorization in the browser, then refresh here."
+            refresh()
+            return
+        }
+        runClaude(["mcp", "list"], timeout: 60) { [weak self] _, output in
+            guard let self else { return }
+            let parsed = Self.parseList(output)
+            if !parsed.isEmpty { self.servers = parsed }
+            if parsed.first(where: { $0.name == name })?.status == .connected {
+                self.loginInFlight = nil
+                self.lastLoginSucceeded = true
+                self.lastLoginMessage = "\(name) authorized. Sessions reconnect on their next message."
+                NotificationCenter.default.post(name: Self.authChanged, object: nil)
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+                    self?.pollUntilConnected(name, attempt: attempt + 1)
+                }
+            }
         }
     }
 
