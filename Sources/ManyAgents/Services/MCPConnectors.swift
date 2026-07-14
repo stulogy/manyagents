@@ -103,19 +103,43 @@ final class MCPConnectors: ObservableObject {
     /// authorized. We poll the health list until the server actually
     /// flips to connected before declaring success (and recycling
     /// session processes), instead of trusting the exit code.
+    /// Bumped on every login start AND on cancel. Poll/login callbacks
+    /// carry the generation they were started under and bail out when it
+    /// no longer matches — cancellation without cancellation tokens.
+    private var loginGeneration = 0
+    /// The running `claude mcp login` process, kept so Cancel can kill
+    /// a flow that's still waiting (regular OAuth callback servers).
+    private var loginProcess: Process?
+
+    /// Abort the in-flight authorization watch — the browser flow errored
+    /// or the user changed their mind. Everything re-enables immediately.
+    func cancelLogin() {
+        guard loginInFlight != nil else { return }
+        loginGeneration += 1
+        loginProcess?.terminate()
+        loginProcess = nil
+        loginInFlight = nil
+        lastLoginSucceeded = false
+        lastLoginMessage = "Authorization canceled. You can retry any time."
+        refresh()
+    }
+
     func login(_ name: String) {
         guard loginInFlight == nil else { return }
+        loginGeneration += 1
+        let gen = loginGeneration
         loginInFlight = name
         lastLoginMessage = nil
         lastLoginSucceeded = nil
-        runClaude(["mcp", "login", name], timeout: 300) { [weak self] code, output in
-            guard let self else { return }
+        loginProcess = runClaude(["mcp", "login", name], timeout: 300) { [weak self] code, output in
+            guard let self, gen == self.loginGeneration else { return }
+            self.loginProcess = nil
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             let handedOffToBrowser = trimmed.localizedCaseInsensitiveContains("authoriz")
                 || trimmed.localizedCaseInsensitiveContains("claude.ai")
             if code == 0 || handedOffToBrowser {
                 self.lastLoginMessage = "Finish the sign-in in your browser — watching for \(name) to come online…"
-                self.pollUntilConnected(name)
+                self.pollUntilConnected(name, generation: gen)
             } else {
                 self.loginInFlight = nil
                 self.lastLoginSucceeded = false
@@ -128,9 +152,11 @@ final class MCPConnectors: ObservableObject {
     }
 
     /// Re-check `claude mcp list` every few seconds until `name` reports
-    /// connected (success: notify + stop) or ~3 minutes pass (give up
-    /// with guidance). Runs while the user completes the browser flow.
-    private func pollUntilConnected(_ name: String, attempt: Int = 0) {
+    /// connected (success: notify + stop), the user cancels (generation
+    /// mismatch), or ~3 minutes pass (give up with guidance). Runs while
+    /// the user completes the browser flow.
+    private func pollUntilConnected(_ name: String, generation: Int, attempt: Int = 0) {
+        guard generation == loginGeneration else { return }
         guard attempt < 30 else {
             loginInFlight = nil
             lastLoginSucceeded = false
@@ -139,7 +165,7 @@ final class MCPConnectors: ObservableObject {
             return
         }
         runClaude(["mcp", "list"], timeout: 60) { [weak self] _, output in
-            guard let self else { return }
+            guard let self, generation == self.loginGeneration else { return }
             let parsed = Self.parseList(output)
             if !parsed.isEmpty { self.servers = parsed }
             if parsed.first(where: { $0.name == name })?.status == .connected {
@@ -149,7 +175,7 @@ final class MCPConnectors: ObservableObject {
                 NotificationCenter.default.post(name: Self.authChanged, object: nil)
             } else {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
-                    self?.pollUntilConnected(name, attempt: attempt + 1)
+                    self?.pollUntilConnected(name, generation: generation, attempt: attempt + 1)
                 }
             }
         }
@@ -159,11 +185,13 @@ final class MCPConnectors: ObservableObject {
 
     /// Run the claude CLI with `args`, calling back on main with the exit
     /// code and combined stdout+stderr. Kills the process at `timeout`.
+    /// Returns the Process so callers can terminate it early (Cancel).
+    @discardableResult
     private func runClaude(_ args: [String], timeout: TimeInterval,
-                           completion: @escaping @MainActor (Int32, String) -> Void) {
+                           completion: @escaping @MainActor (Int32, String) -> Void) -> Process? {
         guard let claudePath = ClaudeBridge.resolveClaudePath() else {
             completion(-1, "claude binary not found on PATH")
-            return
+            return nil
         }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: claudePath)
@@ -206,6 +234,8 @@ final class MCPConnectors: ObservableObject {
         do { try p.run() } catch {
             watchdog.cancel()
             completion(-1, "failed to launch claude: \(error.localizedDescription)")
+            return nil
         }
+        return p
     }
 }

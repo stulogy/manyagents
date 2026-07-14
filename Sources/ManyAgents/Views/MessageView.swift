@@ -1157,7 +1157,14 @@ struct MCPAuthorizeButton: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Button {
-                MCPConnectors.shared.login(serverName)
+                // Tap toggles: idle → start the flow; running → cancel it
+                // (the browser attempt errored, or wrong account — let the
+                // user bail instead of waiting out the watcher).
+                if isRunning {
+                    MCPConnectors.shared.cancelLogin()
+                } else {
+                    MCPConnectors.shared.login(serverName)
+                }
             } label: {
                 HStack(spacing: 5) {
                     if isRunning {
@@ -1166,7 +1173,7 @@ struct MCPAuthorizeButton: View {
                         Image(systemName: "key.fill")
                             .font(.system(size: 10, weight: .semibold))
                     }
-                    Text(isRunning ? "Authorizing \(serverName)…" : "Authorize \(serverName)")
+                    Text(isRunning ? "Authorizing \(serverName)… (click to cancel)" : "Authorize \(serverName)")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .foregroundStyle(Color.brandOrange)
@@ -1219,6 +1226,10 @@ struct MCPAuthBanner: View {
             Spacer(minLength: 10)
             if isRunning {
                 ProgressView().controlSize(.small)
+                Button("Cancel") {
+                    MCPConnectors.shared.cancelLogin()
+                }
+                .controlSize(.small)
             } else {
                 Button("Authorize") {
                     MCPConnectors.shared.login(serverName)

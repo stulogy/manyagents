@@ -70,7 +70,13 @@ private struct ConnectorsSettingsTab: View {
                             Spacer()
                             if server.status == .needsAuth {
                                 if connectors.loginInFlight == server.name {
-                                    ProgressView().controlSize(.small)
+                                    HStack(spacing: 6) {
+                                        ProgressView().controlSize(.small)
+                                        Button("Cancel") {
+                                            MCPConnectors.shared.cancelLogin()
+                                        }
+                                        .controlSize(.small)
+                                    }
                                 } else {
                                     Button("Authenticate") {
                                         MCPConnectors.shared.login(server.name)
