@@ -151,6 +151,16 @@ final class AutoNamer: ObservableObject {
                 t = String(t.dropFirst(label.count)).trimmingCharacters(in: .whitespaces)
             }
         }
+        // Strip markdown tokens that leak into titles ("**Operative…").
+        // A tab title is plain text, so bold/italic/code/heading markers
+        // are just noise.
+        for token in ["**", "__", "`", "###", "##", "# ", "*", "_"] {
+            t = t.replacingOccurrences(of: token, with: "")
+        }
+        // [label](url) → label
+        t = t.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]+\)"#,
+                                   with: "$1", options: .regularExpression)
+        t = t.trimmingCharacters(in: .whitespaces)
         if t.count > 36 {
             t = String(t.prefix(36)).trimmingCharacters(in: .whitespacesAndNewlines)
         }
