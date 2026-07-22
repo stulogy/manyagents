@@ -276,9 +276,10 @@ enum TranscriptLoader {
         if s.hasPrefix("<") && s.contains("system-reminder") { return "" }
         if s.hasPrefix("<command-") { return "" }
         if s.hasPrefix("<local-command-stdout>") { return "" }
-        // Our injected orchestrator onboarding brief (sent visible:false
-        // live) — drop the prompt on restore; its reply stays visible.
+        // Our injected plumbing prompts (sent visible:false live) — drop
+        // them on restore; their assistant reply stays visible.
         if s.hasPrefix("[Orchestrator catch-up") { return "" }
+        if s.hasPrefix("[The ManyAgents app restarted") { return "" }
         return s
     }
 
