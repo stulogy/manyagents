@@ -268,9 +268,8 @@ final class AgentManager: ObservableObject {
         if source.suppressedOrchestratorTurns.remove(source.completedTurns) != nil {
             return
         }
-        guard let orch = orchestrator,
+        guard let orch = orchestrator(for: source.cwd),
               orch.id != source.id,
-              source.cwd == orch.cwd,            // only tabs in the orchestrator's own project
               !source.hiddenFromOrchestrator,
               !orch.mutedTabIds.contains(source.id)
         else { return }
@@ -292,8 +291,13 @@ final class AgentManager: ObservableObject {
 
     // MARK: - Orchestrator (v2)
 
-    /// The single tab currently wearing the orchestrator hat, if any.
-    var orchestrator: AgentSession? { sessions.first { $0.isCoordinator } }
+    /// The orchestrator for a given PROJECT (cwd). Orchestration is
+    /// per-project — each project can have its own orchestrator, and a
+    /// worker's pings/board updates go only to the orchestrator in its
+    /// own project, never a different session's.
+    func orchestrator(for cwd: String) -> AgentSession? {
+        sessions.first { $0.isCoordinator && $0.cwd == cwd }
+    }
 
     /// Designate / un-designate a tab as the orchestrator. Exclusive: making
     /// one orchestrator clears the hat from any other tab.
@@ -319,9 +323,12 @@ final class AgentManager: ObservableObject {
     /// next watched-tab completion — potentially forever if every tab was
     /// idle or mid-task — and was never even told it had the job.
     func designateOrchestrator(_ session: AgentSession) {
-        // Exclusive: the previous orchestrator loses the hat AND its role
-        // name, otherwise you end up with two tabs called "Orchestrator".
-        for s in sessions where s.isCoordinator { undesignateOrchestrator(s) }
+        // Exclusive PER PROJECT: only the previous orchestrator in THIS
+        // project loses the hat + name. Other projects keep their own
+        // orchestrators (orchestration is per-project, not global).
+        for s in sessions where s.isCoordinator && s.cwd == session.cwd {
+            undesignateOrchestrator(s)
+        }
         session.isCoordinator = true
         // The orchestrator tab is always called "Orchestrator" — a fixed
         // role name. AutoNamer skips coordinator tabs so it stays put.

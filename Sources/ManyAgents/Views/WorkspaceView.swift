@@ -287,7 +287,7 @@ private struct AgentTab: View {
                     OrchestratorIndicatorPopover(orchestrator: session)
                         .environmentObject(manager)
                 }
-            } else if session.hiddenFromOrchestrator && manager.orchestrator != nil {
+            } else if session.hiddenFromOrchestrator && manager.orchestrator(for: session.cwd) != nil {
                 Image(systemName: "eye.slash")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.secondary)
@@ -383,7 +383,7 @@ private struct AgentTab: View {
                 Button(session.hiddenFromOrchestrator ? "Show to Orchestrator" : "Hide from Orchestrator") {
                     session.hiddenFromOrchestrator.toggle()
                 }
-                .disabled(manager.orchestrator == nil)
+                .disabled(manager.orchestrator(for: session.cwd) == nil)
             }
             Divider()
             Button("Close Tab", role: .destructive, action: onClose)

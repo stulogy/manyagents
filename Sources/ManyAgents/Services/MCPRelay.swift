@@ -154,19 +154,23 @@ final class MCPRelay {
     @MainActor
     private func notifyOrchestrator(req: [String: Any], id: String) async -> [String: Any] {
         guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
-        guard let orch = mgr.orchestrator else {
-            return ["id": id, "ok": false, "error": "no orchestrator is designated"]
-        }
         guard let message = (req["message"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty
         else { return ["id": id, "ok": false, "error": "empty message"] }
+        // Route ONLY to the orchestrator in the caller's OWN project — a
+        // worker must never wake a different session's orchestrator.
         let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
-        let sender = sourceUUID.flatMap { uid in mgr.sessions.first { $0.id == uid } }
+        guard let sender = sourceUUID.flatMap({ uid in mgr.sessions.first { $0.id == uid } }) else {
+            return ["id": id, "ok": false, "error": "unknown source session"]
+        }
+        guard let orch = mgr.orchestrator(for: sender.cwd) else {
+            return ["id": id, "ok": false, "error": "no orchestrator in this project"]
+        }
         // Don't let the orchestrator ping itself.
-        if let sender, sender.id == orch.id {
+        if sender.id == orch.id {
             return ["id": id, "ok": false, "error": "you are the orchestrator"]
         }
-        let name = sender?.aiTitle ?? sender?.displayName ?? "a tab"
+        let name = sender.aiTitle ?? sender.displayName
         orch.send("[Message from tab \"\(name)\" — it pinged you and needs a turn]\n\n\(message)")
         return ["id": id, "ok": true]
     }
