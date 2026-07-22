@@ -212,11 +212,21 @@ struct ComposerView: View {
     /// insertion line.
     @State private var dropTargetId: UUID?
 
-    /// Friendly one-liner for a queued invisible prompt.
-    private func queuedAutoLabel(_ p: AgentSession.PendingPrompt) -> String {
-        if p.isBoardWake ?? false { return "Board update (automatic)" }
-        if p.text.hasPrefix("[Orchestrator catch-up") { return "Orchestrator catch-up (automatic)" }
-        return "Automatic message"
+    /// Every queued prompt names itself — never a bare "Automatic
+    /// message" and never raw bracket meta-text.
+    private func queuedDisplay(_ p: AgentSession.PendingPrompt) -> (label: String, isAuto: Bool) {
+        if p.isBoardWake ?? false { return ("Board update", true) }
+        if p.isCatchUp ?? false || p.text.hasPrefix("[Orchestrator catch-up") {
+            return ("Orchestrator catch-up", true)
+        }
+        if p.text.hasPrefix("[Compacted from prior conversation") {
+            return ("Compaction brief", true)
+        }
+        if p.text.hasPrefix("[Message from orchestrator") {
+            return ("Message from Orchestrator", true)
+        }
+        if !p.visible { return ("Background instruction", true) }
+        return (p.text.isEmpty ? "(image only)" : p.text, false)
     }
 
     /// Strip above the composer listing pending queued prompts. Click X
@@ -229,15 +239,15 @@ struct ComposerView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.brandOrange.opacity(0.85))
                         .padding(.top, 4)
-                    // Hidden plumbing prompts (catch-up brief, board wakes,
-                    // compaction) queue like anything else, but their raw
-                    // meta-text isn't something the user wrote — show a
-                    // compact label instead of the guts.
-                    Text(!p.visible ? queuedAutoLabel(p)
-                         : p.text.isEmpty ? "(image only)" : p.text)
+                    // Plumbing prompts (catch-up, board wakes, compaction
+                    // seeds, orchestrator traffic) queue like anything
+                    // else, but their raw meta-text isn't something the
+                    // user wrote — show a named label instead of the guts.
+                    let d = queuedDisplay(p)
+                    Text(d.label)
                         .font(.system(size: 14))
-                        .italic(!p.visible)
-                        .foregroundStyle(p.visible ? Color.primary.opacity(0.85) : Color.secondary)
+                        .italic(d.isAuto)
+                        .foregroundStyle(d.isAuto ? Color.secondary : Color.primary.opacity(0.85))
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     // Force-send: bumps this prompt to the front and
