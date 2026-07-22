@@ -140,9 +140,35 @@ final class MCPRelay {
             return await permissionPrompt(req: req, id: id)
         case "open_preview":
             return await openPreview(req: req, id: id)
+        case "notify_orchestrator":
+            return await notifyOrchestrator(req: req, id: id)
         default:
             return ["id": id, "ok": false, "error": "unknown op: \(op)"]
         }
+    }
+
+    /// A worker tab pings the orchestrator, waking it to take a turn.
+    /// Fire-and-forget (no wait_for_result) — the worker carries on. The
+    /// board digest rides along on the dispatch, so the orchestrator wakes
+    /// with fresh context.
+    @MainActor
+    private func notifyOrchestrator(req: [String: Any], id: String) async -> [String: Any] {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        guard let orch = mgr.orchestrator else {
+            return ["id": id, "ok": false, "error": "no orchestrator is designated"]
+        }
+        guard let message = (req["message"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty
+        else { return ["id": id, "ok": false, "error": "empty message"] }
+        let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
+        let sender = sourceUUID.flatMap { uid in mgr.sessions.first { $0.id == uid } }
+        // Don't let the orchestrator ping itself.
+        if let sender, sender.id == orch.id {
+            return ["id": id, "ok": false, "error": "you are the orchestrator"]
+        }
+        let name = sender?.aiTitle ?? sender?.displayName ?? "a tab"
+        orch.send("[Message from tab \"\(name)\" — it pinged you and needs a turn]\n\n\(message)")
+        return ["id": id, "ok": true]
     }
 
     @MainActor

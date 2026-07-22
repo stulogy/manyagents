@@ -401,6 +401,18 @@ private final class ServerState {
                     "required": ["url"],
                     "additionalProperties": false
                 ]
+            ],
+            [
+                "name": "notify_orchestrator",
+                "description": "Wake this project's orchestrator and hand it a message — it takes a turn to read and act on it. Use when you're blocked and need a decision, or when a long task you were told to run (a test suite, a deploy, a build) has FINISHED and the orchestrator should know. Fire-and-forget: you don't wait for a reply, you just carry on. Does nothing (returns an error you can ignore) if no orchestrator is designated.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "message": ["type": "string", "description": "What to tell the orchestrator — be specific (e.g. 'Playwright suite done: 3 failures in checkout.spec.ts' or 'Blocked: need your call on whether to migrate the schema')."]
+                    ],
+                    "required": ["message"],
+                    "additionalProperties": false
+                ]
             ]
         ]
     }
@@ -546,6 +558,17 @@ private final class ServerState {
                                                 "url": url])
                 respondToolResult(id: id,
                                   text: (res["ok"] as? Bool) == true ? "Preview opened: \(url)" : "Error: \(res["error"] as? String ?? "failed")",
+                                  isError: (res["ok"] as? Bool) != true)
+            case "notify_orchestrator":
+                guard let message = arguments["message"] as? String else {
+                    respondToolResult(id: id, text: "Error: missing message.", isError: true)
+                    return
+                }
+                let res = try await awaitRelay(["op": "notify_orchestrator",
+                                                "source_session_id": args.sourceSessionId as Any,
+                                                "message": message])
+                respondToolResult(id: id,
+                                  text: (res["ok"] as? Bool) == true ? "Orchestrator notified." : "Error: \(res["error"] as? String ?? "failed")",
                                   isError: (res["ok"] as? Bool) != true)
             default:
                 respondToolResult(id: id, text: "Unknown tool: \(name)", isError: true)

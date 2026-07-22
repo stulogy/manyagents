@@ -280,6 +280,10 @@ struct MessageView: View {
             label = "Conversation compacted"
         } else if text.hasPrefix("[Message from orchestrator") {
             label = "Message from Orchestrator"
+        } else if text.hasPrefix("[Message from tab") {
+            // Worker pinged the orchestrator (notify_orchestrator).
+            let name = text.split(separator: "\"").dropFirst().first.map(String.init)
+            label = name.map { "Message from \($0)" } ?? "Message from a tab"
         } else {
             return nil
         }

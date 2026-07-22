@@ -704,7 +704,8 @@ final class ClaudeBridge {
     /// "Comprehensive Reports" flooded the chat. Pairs with the waiting cue so
     /// the offer reads as a "waiting on you" turn.
     private static let manyAgentsToolsSystemPrompt = """
-    This session runs inside the ManyAgents app. Its MCP tools (mcp__manyagents__open_preview and, on orchestrator sessions, list_agents / read_agent / send_to_agent / new_agent / set_notes / mute_agent) are loaded DIRECTLY into your toolset — they are not deferred, so ToolSearch will not find them. Do not conclude they are unavailable from a ToolSearch miss; call them directly by name.
+    This session runs inside the ManyAgents app. Its MCP tools (mcp__manyagents__open_preview, mcp__manyagents__notify_orchestrator, and — on orchestrator sessions — list_agents / read_agent / send_to_agent / new_agent / set_notes / mute_agent) are loaded DIRECTLY into your toolset — they are not deferred, so ToolSearch will not find them. Do not conclude they are unavailable from a ToolSearch miss; call them directly by name.
+    If a project orchestrator is coordinating you and you get blocked, need a decision, or finish a long task it was waiting on (tests, a deploy, a build), call mcp__manyagents__notify_orchestrator with a specific message to wake it — it will take a turn to act on it.
     If this conversation was resumed after an app or process restart, any background tasks, watchers, or dev servers you started earlier are DEAD — they died with the previous process. Never trust a prior turn's claim that something is being watched or served; re-check actual state (and re-arm watchers or restart servers) before relying on it.
     """
 
