@@ -208,6 +208,10 @@ struct ComposerView: View {
         return (hasText || !pendingImages.isEmpty) && !voice.isRecording
     }
 
+    /// Row currently hovered by a queued-prompt drag — draws the
+    /// insertion line.
+    @State private var dropTargetId: UUID?
+
     /// Friendly one-liner for a queued invisible prompt.
     private func queuedAutoLabel(_ p: AgentSession.PendingPrompt) -> String {
         if p.isBoardWake ?? false { return "Board update (automatic)" }
@@ -263,6 +267,24 @@ struct ComposerView: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(Color.primary.opacity(0.04))
                 )
+                // Drag-to-reorder: same String-payload pattern as tab
+                // reordering. Dropping on a row inserts before it.
+                .overlay(alignment: .top) {
+                    if dropTargetId == p.id {
+                        Rectangle().fill(Color.brandOrange).frame(height: 2)
+                    }
+                }
+                .contentShape(Rectangle())
+                .draggable(p.id.uuidString)
+                .dropDestination(for: String.self) { items, _ in
+                    guard let raw = items.first,
+                          let movedId = UUID(uuidString: raw),
+                          movedId != p.id else { return false }
+                    session.reorderQueued(movedId: movedId, before: p.id)
+                    return true
+                } isTargeted: { targeted in
+                    dropTargetId = targeted ? p.id : (dropTargetId == p.id ? nil : dropTargetId)
+                }
             }
         }
     }

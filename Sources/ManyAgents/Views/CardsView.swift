@@ -72,7 +72,7 @@ private struct AgentCard: View {
 
     private var lastUserText: String? {
         for msg in session.messages.reversed() where msg.role == .user {
-            let t = msg.flatText
+            let t = Self.plainText(msg.flatText)
             if !t.isEmpty { return t }
         }
         return nil
@@ -80,10 +80,24 @@ private struct AgentCard: View {
 
     private var lastAssistantText: String? {
         for msg in session.messages.reversed() where msg.role == .assistant {
-            let t = msg.flatText
+            let t = Self.plainText(msg.flatText)
             if !t.isEmpty { return t }
         }
         return nil
+    }
+
+    /// Cards render plain Text, so markdown tokens read as literal
+    /// noise ("**Deploy done**", backticks). Strip the common inline
+    /// syntax; snippets are previews, not documents.
+    static func plainText(_ raw: String) -> String {
+        var s = raw
+        for token in ["**", "__", "`", "###", "##", "# "] {
+            s = s.replacingOccurrences(of: token, with: "")
+        }
+        // [label](url) → label
+        s = s.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]+\)"#,
+                                   with: "$1", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var body: some View {

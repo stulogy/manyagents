@@ -533,7 +533,10 @@ final class AgentSession: ObservableObject, Identifiable {
         awaitingNetworkResume = false
         let prompt = PendingPrompt(text: text, images: images, visible: visible,
                                    isBoardWake: boardWake, isCatchUp: catchUp)
-        if status == .running || bridge.isBusy {
+        // isCompacting: a prompt sent mid-compaction must NOT dispatch —
+        // the teardown window flips status to idle, so it raced the fresh
+        // session's seed and "resumed" the old turn. Queue until seeded.
+        if status == .running || bridge.isBusy || isCompacting {
             pendingPrompts.append(prompt)
             return
         }
@@ -653,7 +656,7 @@ final class AgentSession: ObservableObject, Identifiable {
     /// Pop the next queued prompt (if any) and send it. Called whenever a
     /// turn finishes so the queue drains FIFO without further user action.
     private func drainQueueIfReady() {
-        guard status != .running, !bridge.isBusy,
+        guard status != .running, !bridge.isBusy, !isCompacting,
               let next = pendingPrompts.first else { return }
         pendingPrompts.removeFirst()
         dispatch(next)
@@ -663,6 +666,19 @@ final class AgentSession: ObservableObject, Identifiable {
     /// on the queued-prompts strip).
     func removeQueued(id: UUID) {
         pendingPrompts.removeAll { $0.id == id }
+    }
+
+    /// Drag-and-drop reorder in the queued strip: move `movedId` so it
+    /// fires before `targetId` (nil → last).
+    func reorderQueued(movedId: UUID, before targetId: UUID?) {
+        guard movedId != targetId,
+              let idx = pendingPrompts.firstIndex(where: { $0.id == movedId }) else { return }
+        let moving = pendingPrompts.remove(at: idx)
+        if let targetId, let t = pendingPrompts.firstIndex(where: { $0.id == targetId }) {
+            pendingPrompts.insert(moving, at: t)
+        } else {
+            pendingPrompts.append(moving)
+        }
     }
 
     /// User picked an option from the AskUserQuestion picker. Interrupts the

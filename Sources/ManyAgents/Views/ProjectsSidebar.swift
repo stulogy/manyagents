@@ -147,9 +147,14 @@ struct ProjectsSidebar: View {
     }
 
     /// Icon-only Browser toggle, living with the view-mode switcher.
+    /// Exclusive third state: the browser renders in the row-mode pane,
+    /// so entering it forces row mode (cards ignores previewActive).
     private var browserToggle: some View {
         Button {
             manager.previewActive.toggle()
+            if manager.previewActive && viewMode == .card {
+                viewMode = .row
+            }
         } label: {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(manager.previewActive ? Color.brandOrange : Color.clear)
@@ -167,9 +172,12 @@ struct ProjectsSidebar: View {
     }
 
     private func toggleButton(_ mode: WorkspaceMode, icon: String) -> some View {
-        let isActive = viewMode == mode
+        let isActive = viewMode == mode && !manager.previewActive
         return Button {
+            // Mutually exclusive with the browser — picking a view mode
+            // always leaves the browser (both lit at once read as broken).
             viewMode = mode
+            manager.previewActive = false
         } label: {
             // Background first, icon as overlay — and a contentShape that
             // matches the full rectangle so the entire pill area is
