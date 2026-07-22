@@ -151,15 +151,19 @@ final class MCPRelay {
               let urlStr = req["url"] as? String,
               let url = URL(string: urlStr)
         else { return ["id": id, "ok": false, "error": "missing or invalid url"] }
-        // Store under the calling session's cwd so switching tabs restores
-        // each worktree's dev server URL automatically.
+        // Store under the CALLING tab's id (per-tab, no cross-tab fight).
         let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
-        let cwd = sourceUUID.flatMap { uid in mgr.sessions.first { $0.id == uid }?.cwd }
-                  ?? mgr.activeSession?.cwd
-        if let cwd {
-            mgr.previewURLs[cwd] = url
+        let targetId = sourceUUID ?? mgr.activeSessionId
+        if let targetId {
+            mgr.previewURLs[targetId] = url
         }
-        mgr.previewActive = true
+        // Only steal focus into the browser when the ACTIVE tab is the one
+        // that called it — a background agent stores its URL silently and
+        // you see it when you switch to that tab, instead of yanking you
+        // away from whatever you're reading.
+        if targetId == mgr.activeSessionId {
+            mgr.previewActive = true
+        }
         return ["id": id, "ok": true, "url": urlStr]
     }
 

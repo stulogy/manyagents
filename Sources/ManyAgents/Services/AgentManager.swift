@@ -10,16 +10,17 @@ final class AgentManager: ObservableObject {
     @Published var activeSessionId: UUID?
 
     // MARK: - Preview panel
-    /// Per-worktree preview URLs keyed by cwd. Switching tabs auto-navigates
-    /// the preview to that worktree's stored URL. Set by open_preview MCP tool.
-    @Published var previewURLs: [String: URL] = [:]
+    /// Per-TAB preview URLs keyed by session id. Keyed by tab (not cwd) so
+    /// multiple agents in the same project don't fight over one slot and
+    /// each tab keeps its own page. Set by the open_preview MCP tool.
+    @Published var previewURLs: [UUID: URL] = [:]
     /// Whether the preview panel is currently shown instead of the conversation.
     @Published var previewActive: Bool = false
 
-    /// The URL for the currently active session's worktree, if any.
+    /// The preview URL for the currently active tab, if any.
     var activePreviewURL: URL? {
-        guard let cwd = activeSession?.cwd else { return nil }
-        return previewURLs[cwd]
+        guard let id = activeSessionId else { return nil }
+        return previewURLs[id]
     }
 
     private static let snapshotKey = "manyagents.snapshot.v1"

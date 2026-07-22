@@ -344,8 +344,10 @@ struct MessageView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if let url = localhostURL(in: text) {
                         Button {
-                            if let cwd = sessionCwd {
-                                manager.previewURLs[cwd] = url
+                            // User-initiated (they clicked the pill), so
+                            // focusing the browser is expected.
+                            if let id = sessionId {
+                                manager.previewURLs[id] = url
                             }
                             manager.previewActive = true
                         } label: {
