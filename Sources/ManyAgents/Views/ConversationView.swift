@@ -735,6 +735,57 @@ struct ConversationView: View {
     @State private var cachedSubagentIds: Set<String> = []
     @State private var cachedEditOutcomes: [String: Bool] = [:]
 
+    // Windowed rendering. Only the trailing `visibleTopCount` top-level
+    // messages are fed to SwiftUI. LazyVStack skips DRAWING off-screen
+    // rows, but diffing thousands of ForEach items on every streaming
+    // tick is what made huge conversations crawl — the window caps that
+    // cost regardless of transcript length. Earlier history loads in
+    // chunks via the "show earlier" button (or automatically when find
+    // jumps to an out-of-window match). State resets per tab because
+    // ConversationView is keyed on session.id.
+    @State private var visibleTopCount = 150
+    @State private var totalTopCount = 0
+    private static let windowChunk = 250
+
+    /// Grow the window by one chunk, keeping the reader anchored to the
+    /// previously-first row instead of yanking them to the new top.
+    private func expandWindow(proxy: ScrollViewProxy) {
+        let anchorId = cachedTop.first?.id
+        visibleTopCount += Self.windowChunk
+        refreshDerived()
+        if let anchorId {
+            DispatchQueue.main.async {
+                proxy.scrollTo(anchorId, anchor: .top)
+            }
+        }
+    }
+
+    /// Make sure `id` is inside the rendered window (top-level or nested
+    /// child), expanding just enough when it isn't. Used by find so a
+    /// match in old history can actually be scrolled to.
+    private func ensureRendered(_ id: UUID) {
+        guard !cachedTop.contains(where: { $0.id == id }) else { return }
+        let g = grouped
+        // A child message renders inside its parent's card — expand to the
+        // parent instead.
+        var targetId = id
+        for (parentToolUseId, kids) in g.children where kids.contains(where: { $0.id == id }) {
+            if let parent = g.top.first(where: { m in
+                m.blocks.contains { b in
+                    if case .toolUse(_, let tuid, _, _, _) = b { return tuid == parentToolUseId }
+                    return false
+                }
+            }) { targetId = parent.id }
+            break
+        }
+        guard let idx = g.top.firstIndex(where: { $0.id == targetId }) else { return }
+        let needed = g.top.count - idx
+        if needed > visibleTopCount {
+            visibleTopCount = needed + 20   // small margin above the match
+            refreshDerived()
+        }
+    }
+
     /// Cheap O(1) signature: message count + the last message's block count.
     /// Bumps when a message or a block is appended (the only events that change
     /// the derivations), but NOT on per-token text growth.
@@ -744,7 +795,8 @@ struct ConversationView: View {
 
     private func refreshDerived() {
         let g = grouped
-        cachedTop = g.top
+        totalTopCount = g.top.count
+        cachedTop = g.top.count > visibleTopCount ? Array(g.top.suffix(visibleTopCount)) : g.top
         cachedChildren = g.children
         cachedSubagentIds = subagentToolUseIds
         cachedEditOutcomes = fileEditOutcomes
@@ -756,6 +808,20 @@ struct ConversationView: View {
                 LazyVStack(alignment: .leading, spacing: 28) {
                     if session.messages.isEmpty {
                         emptyState
+                    }
+                    if totalTopCount > cachedTop.count {
+                        Button {
+                            expandWindow(proxy: proxy)
+                        } label: {
+                            Text("Show earlier · \(totalTopCount - cachedTop.count) hidden")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity)
                     }
                     // Memoized — see refreshDerived(); never recomputed inline.
                     let answered = session.answeredQuestions
@@ -925,8 +991,11 @@ struct ConversationView: View {
                 followBottom(proxy)
             }
             // Find: scroll the current match to the middle of the viewport.
+            // Expand the render window first if the match lives in hidden
+            // history — scrollTo silently no-ops on unrendered ids.
             .onChange(of: findScrollTick) { _, _ in
                 guard currentMatch < matchIds.count else { return }
+                ensureRendered(matchIds[currentMatch])
                 withAnimation(.easeInOut(duration: 0.2)) {
                     proxy.scrollTo(matchIds[currentMatch], anchor: .center)
                 }
@@ -941,6 +1010,7 @@ struct ConversationView: View {
             // read, its top aligned under the bar — not the bottom of chat.
             .onChange(of: anchorScrollTick) { _, _ in
                 guard let id = scrolledContextAnchorId else { return }
+                ensureRendered(id)
                 withAnimation(.easeInOut(duration: 0.25)) {
                     proxy.scrollTo(id, anchor: .top)
                 }
