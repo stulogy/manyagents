@@ -396,6 +396,38 @@ struct ConversationView: View {
                 .padding(.horizontal, 18)
                 .padding(.bottom, 8)
             }
+            // Context nearly full — unmissable banner. The CLI will
+            // auto-compact at the ceiling anyway (summarizing on ITS
+            // terms); compacting deliberately first keeps control of
+            // what survives.
+            if contextNearlyFull {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.red)
+                    Text("Context \(Int(contextPct * 100))% full — auto-compaction is imminent")
+                        .font(.system(size: 12, weight: .semibold))
+                    Spacer(minLength: 10)
+                    Button("Compact now") { compactConversation() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                        .controlSize(.small)
+                        .disabled(session.isCompacting || session.status == .running)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .frame(maxWidth: 760)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.red.opacity(0.10))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.red.opacity(0.35), lineWidth: 1)
+                )
+                .padding(.horizontal, 18)
+                .padding(.bottom, 8)
+            }
             // Permission prompt — claude wants to perform a sensitive
             // action (write to a sensitive path, edit settings, etc.)
             // and is blocked waiting on the user's Allow / Deny. Sits
@@ -623,6 +655,16 @@ struct ConversationView: View {
         session.compact()
     }
 
+    /// Fraction of claude's context window in use, 0…1.
+    private var contextPct: Double {
+        min(max(Double(session.lastTurnContextTokens) / Double(session.contextWindowTokens), 0), 1)
+    }
+
+    /// Banner trigger — 95% and beyond.
+    private var contextNearlyFull: Bool {
+        session.lastTurnContextTokens > 0 && contextPct >= 0.95 && !session.isCompacting
+    }
+
     /// Compact "N% context" pill showing how full claude's context window
     /// is. Tints warm at 60%, red past 85% so the user has a visual cue
     /// to /compact before the model starts thrashing.
@@ -636,16 +678,6 @@ struct ConversationView: View {
             return Color.activeHighlight
         }()
         return HStack(spacing: 6) {
-            // Hard warning at 95% — one tap runs the existing compaction.
-            if pct >= 0.95 && !session.isCompacting {
-                Button("Compact") { compactConversation() }
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .controlSize(.mini)
-                    .disabled(session.status == .running)
-                    .help("Context is nearly full — compact to reset the window")
-            }
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 2, style: .continuous)
                     .fill(Color.primary.opacity(0.12))

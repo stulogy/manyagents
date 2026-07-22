@@ -255,26 +255,39 @@ final class AgentManager: ObservableObject {
             }
     }
 
-    /// Called when a session's turn lands cleanly. Drives the orchestrator
-    /// "watch & nudge" loop: a finished tab wakes the orchestrator so it can
-    /// decide whether to act.
+    /// Called when a session's turn lands cleanly. Appends one line to the
+    /// orchestrator's pending board digest — zero tokens; the digest rides
+    /// along with the orchestrator's next prompt. (Replaced the timed
+    /// board-wake turns, which burned a full context read per wake.)
     private func handleTurnCompleted(on source: AgentSession, payload: String) {
-        // The orchestrator's own turn finishing must not wake itself.
+        // The orchestrator's own turn finishing must not log itself.
         if source.isCoordinator { return }
-        // Anti-loop: a turn the orchestrator itself dispatched into this tab
-        // doesn't ping back — the orchestrator already got the reply.
+        // A turn the orchestrator itself dispatched doesn't need logging —
+        // the orchestrator already got the reply via the dispatch tool.
         if source.suppressedOrchestratorTurns.remove(source.completedTurns) != nil {
             return
         }
-        // A watched tab finished — schedule a (debounced, rate-limited) wake.
         guard let orch = orchestrator,
               orch.id != source.id,
               source.cwd == orch.cwd,            // only tabs in the orchestrator's own project
               !source.hiddenFromOrchestrator,
               !orch.mutedTabIds.contains(source.id)
         else { return }
-        scheduleOrchestratorWake()
+        let time = Self.digestTimeFormatter.string(from: Date())
+        let snippet = String(source.latestSnippet.prefix(140))
+        orch.pendingBoardUpdates.append(
+            "• \(time) \(source.aiTitle ?? source.displayName) [\(source.id)] finished — \(snippet)")
+        // Cap: keep the newest entries; an old flood isn't actionable.
+        if orch.pendingBoardUpdates.count > 30 {
+            orch.pendingBoardUpdates.removeFirst(orch.pendingBoardUpdates.count - 30)
+        }
     }
+
+    private static let digestTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
 
     // MARK: - Orchestrator (v2)
 
@@ -298,9 +311,6 @@ final class AgentManager: ObservableObject {
     func designateOrchestrator(_ session: AgentSession) {
         for s in sessions where s.isCoordinator { s.isCoordinator = false }
         session.isCoordinator = true
-        // Fresh hat, fresh eyes — don't let a signature from a previous
-        // orchestrator suppress this one's first wake.
-        lastOrchestratorStatusSig = ""
         deliverOrchestratorCatchUp(to: session)
     }
 
@@ -320,67 +330,9 @@ final class AgentManager: ObservableObject {
         2. Reply to the user with a short digest: one line per tab saying what it's doing, then flag any overlap or conflict you can see (e.g. two tabs touching the same files or branches). No preamble, no restating these instructions.
         3. Call set_notes with your running understanding.
 
-        From here on you'll receive automatic board updates whenever a watched tab finishes a turn.
+        From here on, watched-tab activity accumulates silently and arrives as an automatic board digest attached to your next message — you are NOT woken for it. Act on digests when they arrive; use read_agent when something needs a closer look.
         """
         orch.send(prompt, visible: false)
-    }
-
-    // Wake throttling. Tab completions are bursty and frequent; without this
-    // the orchestrator narrated "holding" on every single turn of every tab.
-    private var orchestratorWakeWork: DispatchWorkItem?
-    private var lastOrchestratorWakeAt: Date = .distantPast
-    private var lastOrchestratorStatusSig: String = ""
-    /// Coalesce a burst of completions into one wake.
-    private static let orchestratorWakeDebounce: TimeInterval = 12
-    /// Never wake the orchestrator more often than this.
-    private static let orchestratorMinWakeInterval: TimeInterval = 90
-
-    /// Schedule a debounced, rate-limited wake. Each new completion resets the
-    /// timer (coalescing bursts); the wake also can't fire sooner than
-    /// `orchestratorMinWakeInterval` after the previous one, and is skipped
-    /// entirely if no watched tab's STATUS changed since the last wake.
-    private func scheduleOrchestratorWake() {
-        orchestratorWakeWork?.cancel()
-        let earliest = lastOrchestratorWakeAt.addingTimeInterval(Self.orchestratorMinWakeInterval)
-        let delay = max(Self.orchestratorWakeDebounce, earliest.timeIntervalSinceNow)
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, let orch = self.orchestrator else { return }
-            // Busy → try again after the window rather than queueing onto it.
-            if orch.status == .running { self.scheduleOrchestratorWake(); return }
-            let sig = self.orchestratorStatusSignature(for: orch)
-            // Nothing meaningfully changed since the last wake — stay quiet.
-            guard sig != self.lastOrchestratorStatusSig else { return }
-            self.lastOrchestratorStatusSig = sig
-            self.lastOrchestratorWakeAt = Date()
-            self.deliverOrchestratorPing(to: orch)
-        }
-        orchestratorWakeWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-
-    /// Coarse signature of the board — each tab's status plus its clean-
-    /// completion count. The count matters: without it, a tab that finishes
-    /// turn after turn ending in the same status (waiting → waiting) never
-    /// changes the signature and the orchestrator misses all of it. Token-
-    /// level churn still doesn't count as change.
-    private func orchestratorStatusSignature(for orch: AgentSession) -> String {
-        sessions
-            .filter { $0.cwd == orch.cwd && $0.id != orch.id && !$0.hiddenFromOrchestrator }
-            .map { "\($0.id.uuidString.prefix(8)):\($0.status.boardLabel):\($0.completedTurns)" }
-            .sorted()
-            .joined(separator: "|")
-    }
-
-    /// Deliver a (non-visible) wake prompt to the orchestrator with the board.
-    private func deliverOrchestratorPing(to orch: AgentSession) {
-        let prompt = """
-        [Board update — automatic, not from the user. Do NOT reply with a long status report.]
-        Current board:
-        \(orchestratorBoardText(for: orch))
-
-        Decide if anything needs doing. If something does, act (read_agent / send_to_agent / new_agent) and update set_notes. If nothing does — which is common — reply with at most ONE short line (e.g. "Holding, nothing actionable.") and don't restate your reasoning. Update set_notes only when your plan actually changes.
-        """
-        orch.send(prompt, visible: false, boardWake: true)
     }
 
     /// Compact board snapshot the orchestrator sees on every wake. Hidden

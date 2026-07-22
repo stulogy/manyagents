@@ -214,6 +214,12 @@ final class AgentSession: ObservableObject, Identifiable {
     /// the board for reference, but their turn-completions don't wake it.
     /// Managed via the `mute_agent`/`unmute_agent` tools. Orchestrator only.
     @Published var mutedTabIds: Set<UUID> = []
+    /// Accumulated board-update lines since the orchestrator's last turn.
+    /// Watched-tab completions append here silently (zero tokens) and the
+    /// whole digest rides along with the orchestrator's next prompt —
+    /// push-accumulate, pull-read, replacing the old timed wake turns.
+    /// Orchestrator only. Capped in the appender.
+    @Published var pendingBoardUpdates: [String] = []
     /// Set while the orchestrator is mid-turn and a watched tab finished —
     /// coalesces a burst of completions into a single follow-up "recheck"
     /// ping once the current orchestrator turn lands. Orchestrator only.
@@ -223,6 +229,10 @@ final class AgentSession: ObservableObject, Identifiable {
     /// completions with the same end status still register as change) and
     /// indexes the anti-loop suppression below.
     private(set) var completedTurns: Int = 0
+
+    /// tool_use ids whose cards were dropped from the transcript
+    /// (orchestrator set_notes) — their results are dropped to match.
+    private var hiddenToolUseIds: Set<String> = []
 
     /// Turn indices (values of `completedTurns` at completion time) whose
     /// completion must NOT ping the orchestrator — set on a TARGET tab when
@@ -540,12 +550,27 @@ final class AgentSession: ObservableObject, Identifiable {
                 lastError = "Coordinator setup failed: \(error.localizedDescription)"
             }
         }
+        // Orchestrator: attach the accumulated board digest to whatever
+        // is being sent (user message, dispatch reply prompt) — the
+        // transcript shows only the typed text; claude gets both. This
+        // replaces the timed board-wake turns: updates cost nothing
+        // until a turn was happening anyway.
+        var outgoingText = prompt.text
+        if isCoordinator, prompt.visible, !pendingBoardUpdates.isEmpty {
+            let digest = pendingBoardUpdates.joined(separator: "\n")
+            pendingBoardUpdates.removeAll()
+            outgoingText += """
+            \n\n[Automatic board digest — activity on your other tabs since your last turn. Not from the user:
+            \(digest)
+            Use read_agent if anything needs a closer look; otherwise just answer the user.]
+            """
+        }
         // Kick the bridge off the main thread — process.run() + stdin
         // write was blocking SwiftUI rendering, so the "Thinking…"
         // indicator didn't appear until the spawn returned.
         let bridgeRef = bridge
-        Task.detached(priority: .userInitiated) {
-            bridgeRef.send(text: prompt.text, imagesPng: prompt.images)
+        Task.detached(priority: .userInitiated) { [outgoingText] in
+            bridgeRef.send(text: outgoingText, imagesPng: prompt.images)
         }
         armTurnStartWatchdog()
     }
@@ -690,9 +715,21 @@ final class AgentSession: ObservableObject, Identifiable {
             if let model {
                 self.model = model
             }
-        case .assistantBlocks(let blocks):
+        case .assistantBlocks(let rawBlocks):
             // A fresh assistant turn supersedes any answered-question chip.
             answeredAsk = nil
+            // Orchestrator housekeeping (set_notes) is visible in the brain
+            // popover — its tool cards are transcript noise. Drop them and
+            // remember the ids so their results are dropped too.
+            let blocks = rawBlocks.filter { b in
+                if case .toolUse(_, let tuid, let name, _, _) = b,
+                   name == "mcp__manyagents__set_notes" {
+                    hiddenToolUseIds.insert(tuid)
+                    return false
+                }
+                return true
+            }
+            if blocks.isEmpty { return }
             // Either append to an in-progress assistant message or start a
             // new one. The CLI emits each assistant *message* as a single
             // event (not per-delta) when streaming is off.
@@ -725,6 +762,8 @@ final class AgentSession: ObservableObject, Identifiable {
                 break
             }
         case .toolResult(let toolUseId, let content, let isError, let parentToolUseId):
+            // Result of a hidden housekeeping call — hidden too.
+            if hiddenToolUseIds.contains(toolUseId) { return }
             // An MCP server just refused for lack of auth — raise the
             // banner above the composer so the user can't miss it. The
             // inline button under the tool result stays as a secondary
