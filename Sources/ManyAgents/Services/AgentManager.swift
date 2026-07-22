@@ -299,10 +299,19 @@ final class AgentManager: ObservableObject {
     /// one orchestrator clears the hat from any other tab.
     func toggleOrchestrator(_ session: AgentSession) {
         if session.isCoordinator {
-            session.isCoordinator = false
+            undesignateOrchestrator(session)
         } else {
             designateOrchestrator(session)
         }
+    }
+
+    /// Drop the orchestrator hat AND shed the fixed "Orchestrator" name so
+    /// the tab doesn't linger as a mis-named, icon-less ghost orchestrator
+    /// (which then still behaves like one). AutoNamer regenerates a real
+    /// title from its conversation.
+    private func undesignateOrchestrator(_ session: AgentSession) {
+        session.isCoordinator = false
+        if session.aiTitle == "Orchestrator" { session.aiTitle = nil }
     }
 
     /// Put the hat on `session` and immediately deliver the catch-up brief.
@@ -310,7 +319,9 @@ final class AgentManager: ObservableObject {
     /// next watched-tab completion — potentially forever if every tab was
     /// idle or mid-task — and was never even told it had the job.
     func designateOrchestrator(_ session: AgentSession) {
-        for s in sessions where s.isCoordinator { s.isCoordinator = false }
+        // Exclusive: the previous orchestrator loses the hat AND its role
+        // name, otherwise you end up with two tabs called "Orchestrator".
+        for s in sessions where s.isCoordinator { undesignateOrchestrator(s) }
         session.isCoordinator = true
         // The orchestrator tab is always called "Orchestrator" — a fixed
         // role name. AutoNamer skips coordinator tabs so it stays put.
