@@ -216,7 +216,7 @@ struct ComposerView: View {
     /// message" and never raw bracket meta-text.
     private func queuedDisplay(_ p: AgentSession.PendingPrompt) -> (label: String, isAuto: Bool) {
         if p.isBoardWake ?? false { return ("Board update", true) }
-        if p.isCatchUp ?? false || p.text.hasPrefix("[Orchestrator catch-up") {
+        if p.text.hasPrefix("[Orchestrator catch-up") {
             return ("Orchestrator catch-up", true)
         }
         if p.text.hasPrefix("[Compacted from prior conversation") {

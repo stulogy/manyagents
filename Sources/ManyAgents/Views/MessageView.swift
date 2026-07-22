@@ -67,7 +67,7 @@ struct MessageView: View {
                         .frame(width: 14, alignment: .center)
                         .padding(.top, 3)
                     VStack(alignment: .leading, spacing: 14) {
-                        ForEach(renderableBlocks) { block in
+                        ForEach(message.blocks) { block in
                             blockView(block)
                         }
                     }
@@ -272,14 +272,22 @@ struct MessageView: View {
         MCPConnectors.authNeededServer(in: content)
     }
 
-    /// Catch-up turns render only their text (the digest) — the gathering
-    /// machinery lives behind the inline setup card.
-    private var renderableBlocks: [ContentBlock] {
-        guard message.fromCatchUp else { return message.blocks }
-        return message.blocks.filter {
-            if case .text = $0 { return true }
-            return false
+    /// Classify an injected user-role message into a banner (label, body).
+    /// nil = a real typed prompt (renders as the amber bubble).
+    static func syntheticUserBanner(_ text: String) -> (label: String, body: String)? {
+        let label: String
+        if text.hasPrefix("[Compacted from prior conversation") {
+            label = "Conversation compacted"
+        } else if text.hasPrefix("[Message from orchestrator") {
+            label = "Message from Orchestrator"
+        } else {
+            return nil
         }
+        let body: String = {
+            guard let close = text.range(of: "]") else { return text }
+            return String(text[close.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }()
+        return (label, body)
     }
 
     /// Grey-marker label for orchestrator housekeeping tools; nil for
@@ -306,14 +314,12 @@ struct MessageView: View {
         case .text(_, let text):
             switch message.role {
             case .user:
-                if text.hasPrefix("[Compacted from prior conversation") {
-                    // The compact seed is plumbing, not something the user
-                    // typed — show a short banner, summary on demand.
-                    CompactedSeedRow(fullText: text)
-                } else if text.hasPrefix("[Message from orchestrator") {
-                    // Inter-tab traffic — a grey banner, content on demand,
-                    // instead of an amber bubble the user never typed.
-                    OrchestratorMessageRow(fullText: text)
+                if let synthetic = Self.syntheticUserBanner(text) {
+                    // Injected user-role text (compaction seed, inter-tab
+                    // orchestrator message) is plumbing, not something the
+                    // user typed — one grey banner, content behind a toggle,
+                    // never an amber bubble.
+                    SyntheticUserRow(label: synthetic.label, content: synthetic.body)
                 } else {
                 Text(SearchHighlight.attributed(text, query: highlight))
                     .userTextStyle()
@@ -1315,62 +1321,13 @@ struct MCPAuthBanner: View {
     }
 }
 
-/// The compaction seed rendered as a short banner instead of a wall of
-/// meta-text. Summary available on demand.
-struct CompactedSeedRow: View {
-    let fullText: String
+/// One grey banner for any injected user-role message (compaction seed,
+/// inter-tab orchestrator message) — never an amber "you typed this"
+/// bubble. Content sits behind a Show toggle.
+struct SyntheticUserRow: View {
+    let label: String
+    let content: String
     @State private var expanded = false
-
-    /// Everything after the bracketed plumbing header.
-    private var summary: String {
-        guard let close = fullText.range(of: "]") else { return fullText }
-        return String(fullText[close.upperBound...])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "rectangle.compress.vertical")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text("Conversation compacted")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Button(expanded ? "Hide summary" : "Show summary") {
-                    withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 11))
-                .foregroundStyle(Color.brandOrange)
-            }
-            if expanded {
-                Text(summary)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.primary.opacity(0.04))
-        )
-    }
-}
-
-/// A message another tab's orchestrator sent into this conversation —
-/// grey banner, full text behind a toggle.
-struct OrchestratorMessageRow: View {
-    let fullText: String
-    @State private var expanded = false
-
-    private var body_: String {
-        guard let close = fullText.range(of: "]") else { return fullText }
-        return String(fullText[close.upperBound...])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1378,18 +1335,20 @@ struct OrchestratorMessageRow: View {
                 Image(systemName: "brain.head.profile")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
-                Text("Message from Orchestrator")
+                Text(label)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                Button(expanded ? "Hide" : "Show") {
-                    withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
+                if !content.isEmpty {
+                    Button(expanded ? "Hide" : "Show") {
+                        withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.brandOrange)
                 }
-                .buttonStyle(.plain)
-                .font(.system(size: 11))
-                .foregroundStyle(Color.brandOrange)
             }
-            if expanded {
-                Text(body_)
+            if expanded && !content.isEmpty {
+                Text(content)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)

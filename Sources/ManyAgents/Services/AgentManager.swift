@@ -314,7 +314,6 @@ final class AgentManager: ObservableObject {
         // The orchestrator tab is always called "Orchestrator" — a fixed
         // role name. AutoNamer skips coordinator tabs so it stays put.
         session.aiTitle = "Orchestrator"
-        session.isCatchingUp = true
         deliverOrchestratorCatchUp(to: session)
     }
 
@@ -336,7 +335,7 @@ final class AgentManager: ObservableObject {
 
         From here on, watched-tab activity accumulates silently and arrives as an automatic board digest attached to your next message — you are NOT woken for it. Act on digests when they arrive; use read_agent when something needs a closer look.
         """
-        orch.send(prompt, visible: false, catchUp: true)
+        orch.send(prompt, visible: false)
     }
 
     /// Compact board snapshot the orchestrator sees on every wake. Hidden

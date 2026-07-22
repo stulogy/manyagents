@@ -151,10 +151,6 @@ final class AgentSession: ObservableObject, Identifiable {
         /// assistant messages get tagged so silent "holding" turns can be
         /// hidden from the transcript.
         var isBoardWake: Bool? = nil
-        /// True for the orchestrator catch-up brief — its turn renders as
-        /// the inline setup card + final digest only. Optional for old
-        /// snapshot back-compat.
-        var isCatchUp: Bool? = nil
     }
 
     /// Set while a board-wake turn is dispatching, so the assistant messages it
@@ -315,14 +311,6 @@ final class AgentSession: ObservableObject, Identifiable {
     /// shows a spinner instead of the status-placeholder label.
     @Published var isAutoNaming: Bool = false
 
-    /// True from orchestrator designation until the catch-up turn lands —
-    /// the conversation shows an inline "reading your tabs" card and the
-    /// gathering machinery stays hidden behind it.
-    @Published var isCatchingUp: Bool = false
-    /// Set by dispatch() for the catch-up prompt so this turn's messages
-    /// are tagged fromCatchUp.
-    private var currentTurnIsCatchUp = false
-
     /// Live composer text for THIS session. Owned on the session (not
     /// in ComposerView's @State) so flipping tabs doesn't wipe a half-
     /// typed draft — each session remembers what its operator was
@@ -384,9 +372,20 @@ final class AgentSession: ObservableObject, Identifiable {
     ///      window starts essentially empty.
     /// Visual continuity stays — same tab, same UUID, same project, but
     /// the model's working memory is genuinely reset.
+    private var compactWatchdog: DispatchWorkItem?
+
     func compact() {
         guard !isCompacting, status != .running, !bridge.isBusy else { return }
         isCompacting = true
+        // Safety net: no matter what event is missed, the spinner can't
+        // hang forever. 120s covers a big summary; then bail cleanly.
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isCompacting else { return }
+            self.lastError = "Compaction timed out — kept the conversation. Try again."
+            self.cancelCompact()
+        }
+        compactWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120, execute: work)
         // Subscribe ONCE — turnCompleted is a PassthroughSubject, so we
         // need a dedicated cancellable rather than reusing the manager's.
         compactCancellable = turnCompleted
@@ -423,6 +422,8 @@ final class AgentSession: ObservableObject, Identifiable {
     /// prompts resume draining into the existing session.
     func cancelCompact() {
         guard isCompacting else { return }
+        compactWatchdog?.cancel()
+        compactWatchdog = nil
         compactCancellable?.cancel()
         compactCancellable = nil
         pendingCompactSeed = nil
@@ -544,12 +545,12 @@ final class AgentSession: ObservableObject, Identifiable {
     /// `visible = false` skips the visible transcript append (used by
     /// the compaction summariser).
     func send(_ text: String, images: [Data] = [], visible: Bool = true,
-              boardWake: Bool = false, catchUp: Bool = false) {
+              boardWake: Bool = false) {
         // Clear any waiting-for-net state — the user just hit send
         // again, so they're taking control back from the auto-resumer.
         awaitingNetworkResume = false
         let prompt = PendingPrompt(text: text, images: images, visible: visible,
-                                   isBoardWake: boardWake, isCatchUp: catchUp)
+                                   isBoardWake: boardWake)
         // isCompacting: a prompt sent mid-compaction must NOT dispatch —
         // the teardown window flips status to idle, so it raced the fresh
         // session's seed and "resumed" the old turn. Queue until seeded.
@@ -576,7 +577,6 @@ final class AgentSession: ObservableObject, Identifiable {
         }
         // Tag the assistant output of this turn if it's an automatic board-wake.
         currentTurnIsBoardWake = (prompt.isBoardWake == true)
-        currentTurnIsCatchUp = (prompt.isCatchUp == true)
         status = .running
         // Normally a fresh turn starts the timer now; but a force-send carries
         // the interrupted turn's start time so the timer continues unbroken.
@@ -785,13 +785,11 @@ final class AgentSession: ObservableObject, Identifiable {
             // event (not per-delta) when streaming is off.
             if let lastIdx = messages.indices.last,
                messages[lastIdx].role == .assistant,
-               messages[lastIdx].fromBoardWake == currentTurnIsBoardWake,
-               messages[lastIdx].fromCatchUp == currentTurnIsCatchUp {
+               messages[lastIdx].fromBoardWake == currentTurnIsBoardWake {
                 messages[lastIdx].blocks.append(contentsOf: blocks)
             } else {
                 messages.append(Message(role: .assistant, blocks: blocks,
-                                        fromBoardWake: currentTurnIsBoardWake,
-                                        fromCatchUp: currentTurnIsCatchUp))
+                                        fromBoardWake: currentTurnIsBoardWake))
             }
             status = .running
             // Derive a current-phase label from what just arrived so the
@@ -831,8 +829,7 @@ final class AgentSession: ObservableObject, Identifiable {
                                                 content: content,
                                                 isError: isError,
                                                 parentToolUseId: parentToolUseId)
-            messages.append(Message(role: .system, blocks: [block],
-                                    fromCatchUp: currentTurnIsCatchUp))
+            messages.append(Message(role: .system, blocks: [block]))
         case .toolResultImage(_, let data, let mediaType, _):
             // An image a tool returned (e.g. a screenshot the agent Read).
             // Render it inline as an image block.
@@ -892,10 +889,6 @@ final class AgentSession: ObservableObject, Identifiable {
             }
             currentTurnStartedAt = nil
             currentTurnIsBoardWake = false
-            if currentTurnIsCatchUp {
-                currentTurnIsCatchUp = false
-                isCatchingUp = false
-            }
             // The logical turn finished — clear any carried token base so the
             // next fresh turn starts its count from 0.
             carriedTurnTokens = 0
