@@ -250,6 +250,8 @@ struct ComposerView: View {
                         .foregroundStyle(d.isAuto ? Color.secondary : Color.primary.opacity(0.85))
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        // Hover reveals what a labeled row actually carries.
+                        .help(String(p.text.prefix(400)))
                     // Force-send: bumps this prompt to the front and
                     // cancels the in-flight turn so it fires now.
                     Button {

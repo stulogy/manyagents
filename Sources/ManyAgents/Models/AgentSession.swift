@@ -410,8 +410,25 @@ final class AgentSession: ObservableObject, Identifiable {
         no apology, no "here's a summary" sentence — just the brief itself.
         """
         // Hidden from the visible transcript — this is internal
-        // plumbing, not something the user typed.
-        send(summarisePrompt, visible: false)
+        // plumbing, not something the user typed. MUST bypass send():
+        // its isCompacting guard (added so USER prompts hold until the
+        // fresh session) would queue the summarise prompt itself and
+        // deadlock the whole compaction — spinner forever, "Background
+        // instruction" rows stuck in the strip. The guards above
+        // (!running, !busy) make direct dispatch safe here.
+        dispatch(PendingPrompt(text: summarisePrompt, images: [], visible: false))
+    }
+
+    /// Abort a compaction — banner Cancel, or a stuck phase. Queued
+    /// prompts resume draining into the existing session.
+    func cancelCompact() {
+        guard isCompacting else { return }
+        compactCancellable?.cancel()
+        compactCancellable = nil
+        pendingCompactSeed = nil
+        isCompacting = false
+        if status == .running { bridge.cancel() }
+        DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
     }
 
     @MainActor

@@ -535,13 +535,25 @@ struct ConversationView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Compacting conversation…")
                     .font(.system(size: 12, weight: .semibold))
-                Text("Summarising what we know, then spawning a fresh claude session seeded with the brief.")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                // Live phase readout so compaction reads as a process:
+                // summarize turn (elapsed + tokens ticking), then restart.
+                if session.status == .running,
+                   let start = session.currentTurnStartedAt {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let s = max(0, Int(context.date.timeIntervalSince(start)))
+                        Text("Summarising — \(s)s · ↓ \(session.currentTurnOutputTokens.formatted()) tokens")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("Restarting the session with the brief…")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer()
+            Button("Cancel") { session.cancelCompact() }
+                .controlSize(.small)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
