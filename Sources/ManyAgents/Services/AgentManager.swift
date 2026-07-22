@@ -605,6 +605,17 @@ final class AgentManager: ObservableObject {
                     session.messages = prior
                     session.status = .waiting
                 }
+                // Seed the context gauge from the transcript's last usage
+                // so restored tabs don't sit empty until their next turn.
+                // Off-main: big JSONLs take a moment to scan.
+                Task.detached { [weak session] in
+                    let ctx = TranscriptLoader.lastContextTokens(cwd: a.cwd, sessionId: sid)
+                    await MainActor.run {
+                        guard let session, let ctx,
+                              session.lastTurnContextTokens == 0 else { return }
+                        session.lastTurnContextTokens = ctx
+                    }
+                }
             }
         }
     }

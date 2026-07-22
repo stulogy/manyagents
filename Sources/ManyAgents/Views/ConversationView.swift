@@ -636,6 +636,16 @@ struct ConversationView: View {
             return Color.activeHighlight
         }()
         return HStack(spacing: 6) {
+            // Hard warning at 95% — one tap runs the existing compaction.
+            if pct >= 0.95 && !session.isCompacting {
+                Button("Compact") { compactConversation() }
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .controlSize(.mini)
+                    .disabled(session.status == .running)
+                    .help("Context is nearly full — compact to reset the window")
+            }
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 2, style: .continuous)
                     .fill(Color.primary.opacity(0.12))

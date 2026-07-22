@@ -27,13 +27,15 @@ final class AutoNamer: ObservableObject {
             if inflight.contains(session.id) { continue }
             guard let (userText, assistantText) = extractContext(session) else { continue }
             inflight.insert(session.id)
+            session.isAutoNaming = true
             Task.detached { [sid = session.id] in
                 let title = Self.requestTitle(userText: userText,
                                               assistantText: assistantText)
                 await MainActor.run {
                     self.inflight.remove(sid)
-                    guard let title, !title.isEmpty,
-                          let live = manager.sessions.first(where: { $0.id == sid }),
+                    let live = manager.sessions.first(where: { $0.id == sid })
+                    live?.isAutoNaming = false
+                    guard let title, !title.isEmpty, let live,
                           live.aiTitle == nil || live.aiTitle?.isEmpty == true
                     else { return }
                     live.aiTitle = title

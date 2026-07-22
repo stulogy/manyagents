@@ -56,6 +56,31 @@ enum TranscriptLoader {
         return out
     }
 
+    /// Last known context size for a session, read from its transcript's
+    /// final assistant entry (each carries `message.usage` for that API
+    /// call: input + cache read + cache creation = the model's context on
+    /// that call). Lets restored tabs show a real gauge immediately
+    /// instead of sitting empty until their first live turn.
+    static func lastContextTokens(cwd: String, sessionId: String) -> Int? {
+        let path = jsonlPath(cwd: cwd, sessionId: sessionId)
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        var context: Int? = nil
+        raw.enumerateLines { line, _ in
+            guard line.contains("\"usage\""),
+                  let data = line.data(using: .utf8),
+                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  obj["type"] as? String == "assistant",
+                  let usage = (obj["message"] as? [String: Any])?["usage"] as? [String: Any],
+                  let inT = usage["input_tokens"] as? Int
+            else { return }
+            let cr = usage["cache_read_input_tokens"] as? Int ?? 0
+            let cc = usage["cache_creation_input_tokens"] as? Int ?? 0
+            let total = inT + cr + cc
+            if total > 0 { context = total }
+        }
+        return context
+    }
+
     /// Claude Code stores transcripts at
     ///   ~/.claude/projects/<slugified-cwd>/<session-id>.jsonl
     /// where the slug is "every / replaced with -". Absolute cwds already

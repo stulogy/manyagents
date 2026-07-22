@@ -293,6 +293,10 @@ final class AgentSession: ObservableObject, Identifiable {
     /// just ended (whatever the model said last).
     let turnCompleted = PassthroughSubject<String, Never>()
 
+    /// True while AutoNamer is generating this tab's title — the tab row
+    /// shows a spinner instead of the status-placeholder label.
+    @Published var isAutoNaming: Bool = false
+
     /// Live composer text for THIS session. Owned on the session (not
     /// in ComposerView's @State) so flipping tabs doesn't wipe a half-
     /// typed draft — each session remembers what its operator was

@@ -318,10 +318,17 @@ private struct AgentTab: View {
                     .foregroundStyle(.secondary)
                     .help("Hidden from the orchestrator")
             }
-            Text(label)
-                .font(.system(size: 12, weight: isActive ? .semibold : .medium))
-                .lineLimit(1)
-                .frame(maxWidth: 220, alignment: .leading)
+            if session.isAutoNaming && (session.aiTitle?.isEmpty ?? true) {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(maxWidth: 220, alignment: .leading)
+                    .help("Naming…")
+            } else {
+                Text(label)
+                    .font(.system(size: 12, weight: isActive ? .semibold : .medium))
+                    .lineLimit(1)
+                    .frame(maxWidth: 220, alignment: .leading)
+            }
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
