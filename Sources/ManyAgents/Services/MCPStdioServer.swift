@@ -343,11 +343,11 @@ private final class ServerState {
             ],
             [
                 "name": "new_agent",
-                "description": "Spin up a new tab (session) to do work in — for when a task needs its own working context and no suitable tab exists. If an EMPTY tab already exists in that project (no history), it's reused instead of opening another. Give the project's cwd (from list_agents) and an optional first prompt. Returns the tab's id so you can read_agent / send_to_agent it like any other. Doesn't steal the user's focus.",
+                "description": "Spin up a new TAB in your own project to do work in — for when a task needs its own context and no suitable tab exists. OMIT cwd to open the tab in YOUR project (the normal case — it appears as a tab alongside the others). Only pass cwd for a genuinely different project. Passing a subfolder of your project (e.g. a git worktree path) creates a SEPARATE project row, which is usually not what you want. If an EMPTY tab already exists in the target project, it's reused. Returns the tab's id for read_agent / send_to_agent. Doesn't steal the user's focus.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
-                        "cwd": ["type": "string", "description": "Absolute project path (the cwd from list_agents) the new tab runs in."],
+                        "cwd": ["type": "string", "description": "Optional. Omit to spawn in your own project (default). Only set to open a tab in a different existing project (an absolute cwd from list_agents)."],
                         "prompt": ["type": "string", "description": "Optional first task to hand the new tab immediately."]
                     ],
                     "required": ["cwd"],

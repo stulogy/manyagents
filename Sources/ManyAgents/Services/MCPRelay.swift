@@ -288,8 +288,21 @@ final class MCPRelay {
     @MainActor
     private func newAgent(req: [String: Any], id: String) async -> [String: Any] {
         guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
-        guard let cwd = req["cwd"] as? String, !cwd.isEmpty else {
-            return ["id": id, "ok": false, "error": "missing cwd"]
+        // Default to the ORCHESTRATOR's own cwd so the new tab lands in
+        // the same project (a tab in that row), not a fresh top-level
+        // project. A subdir cwd (e.g. a worktree) groups as its own
+        // project because the sidebar keys projects by exact cwd — which
+        // fragmented spawned agents out of the orchestrator's project.
+        var sourceCwd: String? = nil
+        if let sidStr = req["source_session_id"] as? String,
+           let sid = UUID(uuidString: sidStr),
+           let src = mgr.sessions.first(where: { $0.id == sid }) {
+            sourceCwd = src.cwd
+        }
+        let requested = req["cwd"] as? String
+        let cwd = (requested?.isEmpty == false ? requested : nil) ?? sourceCwd
+        guard let cwd else {
+            return ["id": id, "ok": false, "error": "no cwd and no source session to default from"]
         }
         let prompt = (req["prompt"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
