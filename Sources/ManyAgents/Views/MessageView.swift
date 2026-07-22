@@ -287,11 +287,13 @@ struct MessageView: View {
     /// open_preview — real actions worth auditing).
     static func housekeepingLabel(_ name: String) -> String? {
         switch name {
-        case "mcp__manyagents__set_notes":    return "Orchestrator updated its notes"
-        case "mcp__manyagents__list_agents":  return "Orchestrator checked the board"
-        case "mcp__manyagents__read_agent":   return "Orchestrator read a tab"
-        case "mcp__manyagents__mute_agent":   return "Orchestrator muted a tab"
-        case "mcp__manyagents__unmute_agent": return "Orchestrator unmuted a tab"
+        case "mcp__manyagents__set_notes":     return "Orchestrator updated its notes"
+        case "mcp__manyagents__list_agents":   return "Orchestrator checked the board"
+        case "mcp__manyagents__read_agent":    return "Orchestrator read a tab"
+        case "mcp__manyagents__mute_agent":    return "Orchestrator muted a tab"
+        case "mcp__manyagents__unmute_agent":  return "Orchestrator unmuted a tab"
+        case "mcp__manyagents__send_to_agent": return "Orchestrator messaged a tab"
+        case "mcp__manyagents__new_agent":     return "Orchestrator started a tab"
         default: return nil
         }
     }
@@ -308,6 +310,10 @@ struct MessageView: View {
                     // The compact seed is plumbing, not something the user
                     // typed — show a short banner, summary on demand.
                     CompactedSeedRow(fullText: text)
+                } else if text.hasPrefix("[Message from orchestrator") {
+                    // Inter-tab traffic — a grey banner, content on demand,
+                    // instead of an amber bubble the user never typed.
+                    OrchestratorMessageRow(fullText: text)
                 } else {
                 Text(SearchHighlight.attributed(text, query: highlight))
                     .userTextStyle()
@@ -1340,6 +1346,50 @@ struct CompactedSeedRow: View {
             }
             if expanded {
                 Text(summary)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
+        )
+    }
+}
+
+/// A message another tab's orchestrator sent into this conversation —
+/// grey banner, full text behind a toggle.
+struct OrchestratorMessageRow: View {
+    let fullText: String
+    @State private var expanded = false
+
+    private var body_: String {
+        guard let close = fullText.range(of: "]") else { return fullText }
+        return String(fullText[close.upperBound...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "brain.head.profile")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text("Message from Orchestrator")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Button(expanded ? "Hide" : "Show") {
+                    withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundStyle(Color.brandOrange)
+            }
+            if expanded {
+                Text(body_)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)

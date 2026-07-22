@@ -556,6 +556,9 @@ final class AgentManager: ObservableObject {
             session.displayName = a.displayName
             session.aiTitle = a.aiTitle
             session.isCoordinator = a.isOrchestrator ?? false
+            // Enforce the fixed role name on restore too — orchestrators
+            // designated before this rule kept their old auto-names.
+            if session.isCoordinator { session.aiTitle = "Orchestrator" }
             session.hiddenFromOrchestrator = a.hiddenFromOrchestrator ?? false
             // Restore the queued stack as STAGED items (visible in the strip,
             // not auto-fired) — so reopening can't trigger a surprise burst;
