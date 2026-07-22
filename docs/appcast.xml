@@ -7,12 +7,12 @@
     <language>en</language>
     <item>
       <title>0.8.3</title>
-      <sparkle:version>46</sparkle:version>
+      <sparkle:version>47</sparkle:version>
       <sparkle:shortVersionString>0.8.3</sparkle:shortVersionString>
       <link>https://github.com/stulogy/manyagents/releases/tag/v0.8.3</link>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <pubDate>Wed, 22 Jul 2026 12:02:19 +0000</pubDate>
-      <enclosure url="https://github.com/stulogy/manyagents/releases/download/v0.8.3/ManyAgents-0.8.3.dmg" sparkle:edSignature="MzQUEx6D0uE0LXyGwrQYsoHM0RyLm9wzhLcVSOupYM7QZZdpi3rdKOGmRzoK1MLquKPEnmIoZt9ZCClcfftLAQ==" length="2676825" type="application/octet-stream"/>
+      <pubDate>Wed, 22 Jul 2026 12:20:48 +0000</pubDate>
+      <enclosure url="https://github.com/stulogy/manyagents/releases/download/v0.8.3/ManyAgents-0.8.3.dmg" sparkle:edSignature="ZB0B6KCkoYbQOKRAmH8N/UfysvJRLvZQaDUdtYLloOpfbNXrEO7cFruWOo7d5AeweTDTurulMLeWYxgyd2CMDQ==" length="2679094" type="application/octet-stream"/>
     </item>
     <item>
       <title>0.8.2</title>
