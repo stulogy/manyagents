@@ -474,6 +474,11 @@ final class AgentManager: ObservableObject {
             /// orchestrator memorized keep working. Optional for
             /// back-compat with older snapshots.
             let tabId: UUID?
+            /// True if the session was mid-turn (.running) when the app
+            /// quit. On restore we auto-continue these so the user never
+            /// has to type "continue"/"try again" in each interrupted tab.
+            /// Optional for back-compat.
+            let wasRunning: Bool?
 
             var id: String { (claudeSessionId ?? "") + cwd }
         }
@@ -494,7 +499,8 @@ final class AgentManager: ObservableObject {
                 pendingPrompts: s.pendingPrompts.isEmpty ? nil : s.pendingPrompts,
                 isOrchestrator: s.isCoordinator ? true : nil,
                 hiddenFromOrchestrator: s.hiddenFromOrchestrator ? true : nil,
-                tabId: s.id
+                tabId: s.id,
+                wasRunning: s.status == .running ? true : nil
             )
         })
         if snap.agents.isEmpty {
@@ -579,6 +585,12 @@ final class AgentManager: ObservableObject {
                               session.lastTurnContextTokens == 0 else { return }
                         session.lastTurnContextTokens = ctx
                     }
+                }
+                // Auto-continue turns the app restart interrupted, so the
+                // user never has to type "continue"/"try again" per tab.
+                // Next runloop so all restore state has settled first.
+                if a.wasRunning == true {
+                    DispatchQueue.main.async { session.continueAfterRestart() }
                 }
             }
         }

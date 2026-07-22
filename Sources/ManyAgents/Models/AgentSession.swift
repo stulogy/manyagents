@@ -544,6 +544,15 @@ final class AgentSession: ObservableObject, Identifiable {
     /// otherwise queues it for FIFO delivery once the current turn lands.
     /// `visible = false` skips the visible transcript append (used by
     /// the compaction summariser).
+    /// Resume a turn interrupted by an app restart. Sends an invisible
+    /// nudge (no fake "Continue" bubble) so the resumed claude session
+    /// keeps going with whatever it was mid-way through — the user never
+    /// types "continue"/"try again" per tab.
+    func continueAfterRestart() {
+        send("[The ManyAgents app restarted and interrupted your previous turn. Continue exactly where you left off and finish the task you were working on. Do not restart it, re-summarize, or ask what to do — just carry on.]",
+             visible: false)
+    }
+
     func send(_ text: String, images: [Data] = [], visible: Bool = true,
               boardWake: Bool = false) {
         // Clear any waiting-for-net state — the user just hit send
