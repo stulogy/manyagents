@@ -751,6 +751,21 @@ struct ConversationView: View {
     /// pass. MessageView uses this to fold a *successful* edit's verbose
     /// "…updated successfully" result into a ✓ on the tool card, while real
     /// errors ("File has not been read yet") still render as their own row.
+    /// tool_use ids of orchestrator housekeeping calls — their results
+    /// are suppressed (the grey marker row stands in for the pair).
+    private var housekeepingIds: Set<String> {
+        var ids: Set<String> = []
+        for msg in session.messages {
+            for block in msg.blocks {
+                if case .toolUse(_, let id, let name, _, _) = block,
+                   MessageView.housekeepingLabel(name) != nil {
+                    ids.insert(id)
+                }
+            }
+        }
+        return ids
+    }
+
     private var fileEditOutcomes: [String: Bool] {
         var editIds: Set<String> = []
         var errorById: [String: Bool] = [:]
@@ -780,6 +795,7 @@ struct ConversationView: View {
     @State private var cachedChildren: [String: [Message]] = [:]
     @State private var cachedSubagentIds: Set<String> = []
     @State private var cachedEditOutcomes: [String: Bool] = [:]
+    @State private var cachedHousekeepingIds: Set<String> = []
 
     // Windowed rendering. Only the trailing `visibleTopCount` top-level
     // messages are fed to SwiftUI. LazyVStack skips DRAWING off-screen
@@ -846,6 +862,7 @@ struct ConversationView: View {
         cachedChildren = g.children
         cachedSubagentIds = subagentToolUseIds
         cachedEditOutcomes = fileEditOutcomes
+        cachedHousekeepingIds = housekeepingIds
     }
 
     private var conversationScroll: some View {
@@ -876,6 +893,7 @@ struct ConversationView: View {
                                     subagentChildren: cachedChildren,
                                     subagentToolUseIds: cachedSubagentIds,
                                     fileEditOutcomes: cachedEditOutcomes,
+                                    housekeepingToolUseIds: cachedHousekeepingIds,
                                     answeredQuestions: answered,
                                     sessionCwd: session.cwd,
                                     sessionId: session.id,

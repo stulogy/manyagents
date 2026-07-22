@@ -178,8 +178,8 @@ final class AgentManager: ObservableObject {
 
     /// Spawn a fresh agent in `cwd`. Returns the new session.
     @discardableResult
-    func spawn(cwd: String, resumeSessionId: String? = nil) -> AgentSession {
-        let session = AgentSession(cwd: cwd, resumeSessionId: resumeSessionId)
+    func spawn(cwd: String, resumeSessionId: String? = nil, id: UUID = UUID()) -> AgentSession {
+        let session = AgentSession(cwd: cwd, resumeSessionId: resumeSessionId, id: id)
         // Forward inner-session changes both to UI (objectWillChange) and to
         // the debounced persist pipeline (sessionsDirty). Without the latter,
         // a tab rename or a freshly-arrived claudeSessionId wouldn't make
@@ -467,6 +467,10 @@ final class AgentManager: ObservableObject {
             /// regenerated on relaunch, so it wouldn't round-trip meaningfully.)
             let isOrchestrator: Bool?
             let hiddenFromOrchestrator: Bool?
+            /// Stable tab UUID, restored on relaunch so ids the
+            /// orchestrator memorized keep working. Optional for
+            /// back-compat with older snapshots.
+            let tabId: UUID?
 
             var id: String { (claudeSessionId ?? "") + cwd }
         }
@@ -486,7 +490,8 @@ final class AgentManager: ObservableObject {
                 aiTitle: s.aiTitle,
                 pendingPrompts: s.pendingPrompts.isEmpty ? nil : s.pendingPrompts,
                 isOrchestrator: s.isCoordinator ? true : nil,
-                hiddenFromOrchestrator: s.hiddenFromOrchestrator ? true : nil
+                hiddenFromOrchestrator: s.hiddenFromOrchestrator ? true : nil,
+                tabId: s.id
             )
         })
         if snap.agents.isEmpty {
@@ -542,7 +547,8 @@ final class AgentManager: ObservableObject {
             guard fm.fileExists(atPath: a.cwd, isDirectory: &isDir), isDir.boolValue else {
                 continue
             }
-            let session = spawn(cwd: a.cwd, resumeSessionId: a.claudeSessionId)
+            let session = spawn(cwd: a.cwd, resumeSessionId: a.claudeSessionId,
+                                id: a.tabId ?? UUID())
             session.displayName = a.displayName
             session.aiTitle = a.aiTitle
             session.isCoordinator = a.isOrchestrator ?? false

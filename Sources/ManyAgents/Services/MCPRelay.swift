@@ -355,7 +355,7 @@ final class MCPRelay {
         guard let targetIdStr = req["agent_id"] as? String,
               let targetUUID = UUID(uuidString: targetIdStr),
               let target = mgr.sessions.first(where: { $0.id == targetUUID })
-        else { return ["id": id, "ok": false, "error": "unknown agent_id"] }
+        else { return ["id": id, "ok": false, "error": "unknown agent_id — that tab may have been closed; call list_agents for current ids"] }
         guard let prompt = req["prompt"] as? String,
               !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return ["id": id, "ok": false, "error": "empty prompt"] }

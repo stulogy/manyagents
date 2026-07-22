@@ -25,6 +25,10 @@ struct MessageView: View {
     /// suppressed and shown as a ✓ on the tool card instead; errors like
     /// "File has not been read yet" still render as their own row.
     var fileEditOutcomes: [String: Bool] = [:]
+    /// tool_use ids of orchestrator housekeeping calls (set_notes, board
+    /// reads…). Their tool_use renders as a grey marker; their results
+    /// are suppressed entirely.
+    var housekeepingToolUseIds: Set<String> = []
     /// AskUserQuestion answers the user has given this session, keyed by the
     /// question's tool_use id. Lets us render a permanent "you chose X" card
     /// where the (otherwise skipped) AskUserQuestion tool_use sits, so the
@@ -189,6 +193,7 @@ struct MessageView: View {
                 // message holding only one must count as empty — otherwise
                 // it leaves an orphan marker dot with nothing beside it.
                 if fileEditOutcomes[id] == false { return true }
+                if housekeepingToolUseIds.contains(id) { return true }
                 return c.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             case .image:              return false
             }
@@ -267,6 +272,20 @@ struct MessageView: View {
         MCPConnectors.authNeededServer(in: content)
     }
 
+    /// Grey-marker label for orchestrator housekeeping tools; nil for
+    /// tools that keep their full card (send_to_agent, new_agent,
+    /// open_preview — real actions worth auditing).
+    static func housekeepingLabel(_ name: String) -> String? {
+        switch name {
+        case "mcp__manyagents__set_notes":    return "Orchestrator updated its notes"
+        case "mcp__manyagents__list_agents":  return "Orchestrator checked the board"
+        case "mcp__manyagents__read_agent":   return "Orchestrator read a tab"
+        case "mcp__manyagents__mute_agent":   return "Orchestrator muted a tab"
+        case "mcp__manyagents__unmute_agent": return "Orchestrator unmuted a tab"
+        default: return nil
+        }
+    }
+
     // MARK: - Block rendering
 
     @ViewBuilder
@@ -343,10 +362,22 @@ struct MessageView: View {
                 }
             }
         case .toolUse(_, let toolUseId, let name, let input, _):
-            // AskUserQuestion is rendered as a native picker below the
-            // conversation, so skip the raw tool-use card here to avoid
-            // double-rendering the same prompt.
-            if name == "AskUserQuestion" {
+            // Orchestrator housekeeping renders as a one-line grey marker —
+            // the user wants to SEE that an event happened without the
+            // under-the-hood payload. Works for live and restored
+            // transcripts alike because it's pure rendering.
+            if let label = Self.housekeepingLabel(name) {
+                HStack(spacing: 6) {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text(label)
+                        .font(.system(size: 11.5, weight: .medium))
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(Color.primary.opacity(0.05)))
+            } else if name == "AskUserQuestion" {
                 // While pending, the live picker (below the conversation)
                 // owns the question — render nothing here. Once answered,
                 // leave a permanent record of the choice in the transcript.
@@ -381,7 +412,7 @@ struct MessageView: View {
             // A successful file-edit result ("…updated successfully") is
             // redundant with the tool card's ✓ — suppress it. Edit *errors*
             // (isError → outcome true) and all non-edit results still render.
-            if fileEditOutcomes[toolUseId] == false {
+            if fileEditOutcomes[toolUseId] == false || housekeepingToolUseIds.contains(toolUseId) {
                 EmptyView()
             } else {
                 VStack(alignment: .leading, spacing: 6) {

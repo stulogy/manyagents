@@ -23,7 +23,7 @@ enum AgentStatus {
 /// to claude over JSON-stream stdio instead of a PTY.
 @MainActor
 final class AgentSession: ObservableObject, Identifiable {
-    let id = UUID()
+    let id: UUID
     let cwd: String
     let createdAt: Date
 
@@ -230,10 +230,6 @@ final class AgentSession: ObservableObject, Identifiable {
     /// indexes the anti-loop suppression below.
     private(set) var completedTurns: Int = 0
 
-    /// tool_use ids whose cards were dropped from the transcript
-    /// (orchestrator set_notes) — their results are dropped to match.
-    private var hiddenToolUseIds: Set<String> = []
-
     /// Turn indices (values of `completedTurns` at completion time) whose
     /// completion must NOT ping the orchestrator — set on a TARGET tab when
     /// the orchestrator dispatches a prompt into it, since it already gets
@@ -343,7 +339,12 @@ final class AgentSession: ObservableObject, Identifiable {
     let bridge: ClaudeBridge
     private var bridgeCancellable: AnyCancellable?
 
-    init(cwd: String, resumeSessionId: String? = nil) {
+    init(cwd: String, resumeSessionId: String? = nil, id: UUID = UUID()) {
+        // Stable across restarts when restored from a snapshot — the
+        // orchestrator holds tab ids in its conversation context, and
+        // regenerating them on relaunch made every remembered id die
+        // ("unknown agent_id") after any app restart.
+        self.id = id
         self.cwd = cwd
         self.createdAt = Date()
         self.resumeSessionId = resumeSessionId
@@ -715,21 +716,9 @@ final class AgentSession: ObservableObject, Identifiable {
             if let model {
                 self.model = model
             }
-        case .assistantBlocks(let rawBlocks):
+        case .assistantBlocks(let blocks):
             // A fresh assistant turn supersedes any answered-question chip.
             answeredAsk = nil
-            // Orchestrator housekeeping (set_notes) is visible in the brain
-            // popover — its tool cards are transcript noise. Drop them and
-            // remember the ids so their results are dropped too.
-            let blocks = rawBlocks.filter { b in
-                if case .toolUse(_, let tuid, let name, _, _) = b,
-                   name == "mcp__manyagents__set_notes" {
-                    hiddenToolUseIds.insert(tuid)
-                    return false
-                }
-                return true
-            }
-            if blocks.isEmpty { return }
             // Either append to an in-progress assistant message or start a
             // new one. The CLI emits each assistant *message* as a single
             // event (not per-delta) when streaming is off.
@@ -762,8 +751,6 @@ final class AgentSession: ObservableObject, Identifiable {
                 break
             }
         case .toolResult(let toolUseId, let content, let isError, let parentToolUseId):
-            // Result of a hidden housekeeping call — hidden too.
-            if hiddenToolUseIds.contains(toolUseId) { return }
             // An MCP server just refused for lack of auth — raise the
             // banner above the composer so the user can't miss it. The
             // inline button under the tool result stays as a secondary
