@@ -116,7 +116,7 @@ struct ComposerView: View {
         PasteAwareTextEditor(
             text: draft,
             height: $editorHeight,
-            placeholder: "Message…",
+            placeholder: session.isCompacting ? "Compacting…" : "Message…",
             // Bumped from 13.5 — the composer needs to read at LEAST
             // as confidently as the assistant prose above it, otherwise
             // typing feels like a relegated afterthought.
@@ -129,6 +129,9 @@ struct ComposerView: View {
             }
         )
         .frame(height: editorHeight)
+        // No typing while the session is torn down + reseeded.
+        .disabled(session.isCompacting)
+        .opacity(session.isCompacting ? 0.5 : 1)
     }
 
     /// Normalize, dedupe, and cap pasted images before they land in the
@@ -204,8 +207,10 @@ struct ComposerView: View {
     private var canSubmit: Bool {
         let hasText = !session.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         // Allow submission while running — the prompt gets queued and
-        // dispatched FIFO when the current turn lands.
-        return (hasText || !pendingImages.isEmpty) && !voice.isRecording
+        // dispatched FIFO when the current turn lands. But NOT while
+        // compacting: the session is being torn down and reseeded, so a
+        // prompt now would race the fresh session.
+        return (hasText || !pendingImages.isEmpty) && !voice.isRecording && !session.isCompacting
     }
 
     /// Row currently hovered by a queued-prompt drag — draws the

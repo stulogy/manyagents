@@ -485,7 +485,7 @@ final class AgentSession: ObservableObject, Identifiable {
 
         \(trimmed)
 
-        Ready to continue.
+        This is your restored context after compaction. Do NOT resume, continue, or take any action on prior work. Reply with a single short line confirming you're caught up, then stop and wait for my next instruction.
         """
         let charCount = trimmed.count
         let lineCount = trimmed.components(separatedBy: "\n").count

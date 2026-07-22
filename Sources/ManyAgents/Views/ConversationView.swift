@@ -676,9 +676,15 @@ struct ConversationView: View {
         min(max(Double(session.lastTurnContextTokens) / Double(session.contextWindowTokens), 0), 1)
     }
 
-    /// Banner trigger — 95% and beyond.
+    /// Banner trigger — 95% and beyond, but ONLY once we have the real
+    /// context window (a canonical value from a live turn or a restored
+    /// snapshot). Without it the denominator is a guess and a restored
+    /// tab false-alarms at "100%".
     private var contextNearlyFull: Bool {
-        session.lastTurnContextTokens > 0 && contextPct >= 0.95 && !session.isCompacting
+        session.lastTurnContextWindow != nil
+            && session.lastTurnContextTokens > 0
+            && contextPct >= 0.95
+            && !session.isCompacting
     }
 
     /// Compact "N% context" pill showing how full claude's context window

@@ -480,6 +480,10 @@ final class AgentManager: ObservableObject {
             /// has to type "continue"/"try again" in each interrupted tab.
             /// Optional for back-compat.
             let wasRunning: Bool?
+            /// Canonical context window for this session's model, so the
+            /// restored context gauge has the right denominator (and
+            /// doesn't false-alarm at "100%" against a default guess).
+            let contextWindow: Int?
 
             var id: String { (claudeSessionId ?? "") + cwd }
         }
@@ -501,7 +505,8 @@ final class AgentManager: ObservableObject {
                 isOrchestrator: s.isCoordinator ? true : nil,
                 hiddenFromOrchestrator: s.hiddenFromOrchestrator ? true : nil,
                 tabId: s.id,
-                wasRunning: s.status == .running ? true : nil
+                wasRunning: s.status == .running ? true : nil,
+                contextWindow: s.lastTurnContextWindow
             )
         })
         if snap.agents.isEmpty {
@@ -566,6 +571,8 @@ final class AgentManager: ObservableObject {
             // designated before this rule kept their old auto-names.
             if session.isCoordinator { session.aiTitle = "Orchestrator" }
             session.hiddenFromOrchestrator = a.hiddenFromOrchestrator ?? false
+            // Restore the real window so the gauge's denominator is right.
+            session.lastTurnContextWindow = a.contextWindow
             // Restore the queued stack as STAGED items (visible in the strip,
             // not auto-fired) — so reopening can't trigger a surprise burst;
             // they drain normally on the next turn. Never lose staged work.
