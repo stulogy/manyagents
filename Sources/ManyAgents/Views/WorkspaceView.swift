@@ -392,6 +392,10 @@ private struct AgentTab: View {
             if session.aiTitle?.isEmpty == false {
                 Button("Reset to Auto-Name") {
                     session.aiTitle = nil
+                    // Raise the spinner NOW — AutoNamer's debounced scan
+                    // starts ~600ms later, and without this the label
+                    // flashes the status placeholder in the gap.
+                    session.isAutoNaming = true
                 }
             }
             Divider()

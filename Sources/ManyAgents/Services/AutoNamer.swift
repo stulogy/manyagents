@@ -23,7 +23,15 @@ final class AutoNamer: ObservableObject {
     private func scan() {
         guard let manager else { return }
         for session in manager.sessions {
-            if !shouldName(session) { continue }
+            if !shouldName(session) {
+                // Clear a spinner raised optimistically (Reset to Auto-Name)
+                // for a session we won't actually name — e.g. too little
+                // conversation yet — so it can't spin forever.
+                if session.isAutoNaming && !inflight.contains(session.id) {
+                    session.isAutoNaming = false
+                }
+                continue
+            }
             if inflight.contains(session.id) { continue }
             guard let (userText, assistantText) = extractContext(session) else { continue }
             inflight.insert(session.id)
