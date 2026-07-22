@@ -311,11 +311,9 @@ final class AgentManager: ObservableObject {
     func designateOrchestrator(_ session: AgentSession) {
         for s in sessions where s.isCoordinator { s.isCoordinator = false }
         session.isCoordinator = true
-        // A fresh tab has no conversation for AutoNamer to work from —
-        // "Orchestrator" beats the "Ready" placeholder.
-        if session.aiTitle?.isEmpty ?? true, session.messages.isEmpty {
-            session.aiTitle = "Orchestrator"
-        }
+        // The orchestrator tab is always called "Orchestrator" — a fixed
+        // role name. AutoNamer skips coordinator tabs so it stays put.
+        session.aiTitle = "Orchestrator"
         session.isCatchingUp = true
         deliverOrchestratorCatchUp(to: session)
     }

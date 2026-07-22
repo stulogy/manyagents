@@ -53,6 +53,8 @@ final class AutoNamer: ObservableObject {
     }
 
     private func shouldName(_ session: AgentSession) -> Bool {
+        // The orchestrator keeps its fixed role name.
+        if session.isCoordinator { return false }
         if let t = session.aiTitle, !t.isEmpty { return false }
         let userPrompts = session.messages.filter { $0.role == .user && !$0.flatText.isEmpty }
         let assistantText = session.messages
@@ -127,6 +129,14 @@ final class AutoNamer: ObservableObject {
         }
         if (t.hasPrefix("\"") && t.hasSuffix("\"")) || (t.hasPrefix("'") && t.hasSuffix("'")) {
             t = String(t.dropFirst().dropLast())
+        }
+        // Models sometimes label their answer despite instructions —
+        // "Conversation Title: Cabin Maintenance" ended up verbatim as
+        // a tab name. Strip any leading label.
+        for label in ["Conversation Title:", "Conversation title:", "Title:", "title:"] {
+            if t.hasPrefix(label) {
+                t = String(t.dropFirst(label.count)).trimmingCharacters(in: .whitespaces)
+            }
         }
         if t.count > 36 {
             t = String(t.prefix(36)).trimmingCharacters(in: .whitespacesAndNewlines)

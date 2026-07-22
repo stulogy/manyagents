@@ -137,7 +137,14 @@ struct WorkspaceView: View {
                         .buttonStyle(.plain)
                         .help("Show sidebar")
                     }
-                    tabStrip(for: project)
+                    // The browser is one shared surface for all tabs — the
+                    // tab strip only confuses there (tabs looked clickable
+                    // over a view that isn't per-tab).
+                    if manager.previewActive {
+                        Spacer(minLength: 0)
+                    } else {
+                        tabStrip(for: project)
+                    }
                 }
                 // Contained "panel" — same shape as ClaudeDeck's right pane,
                 // so the conversation reads as a distinct surface inside the

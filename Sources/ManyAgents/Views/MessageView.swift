@@ -304,6 +304,11 @@ struct MessageView: View {
         case .text(_, let text):
             switch message.role {
             case .user:
+                if text.hasPrefix("[Compacted from prior conversation") {
+                    // The compact seed is plumbing, not something the user
+                    // typed — show a short banner, summary on demand.
+                    CompactedSeedRow(fullText: text)
+                } else {
                 Text(SearchHighlight.attributed(text, query: highlight))
                     .userTextStyle()
                     .padding(.horizontal, 12)
@@ -316,6 +321,7 @@ struct MessageView: View {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .stroke(Color.brandOrange.opacity(0.28), lineWidth: 0.5)
                     )
+                }
             case .assistant:
                 // Block-level markdown — headings, code blocks, lists,
                 // blockquotes, inline code, links. Inline `code` spans
@@ -1299,6 +1305,51 @@ struct MCPAuthBanner: View {
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.brandOrange.opacity(0.35), lineWidth: 1)
+        )
+    }
+}
+
+/// The compaction seed rendered as a short banner instead of a wall of
+/// meta-text. Summary available on demand.
+struct CompactedSeedRow: View {
+    let fullText: String
+    @State private var expanded = false
+
+    /// Everything after the bracketed plumbing header.
+    private var summary: String {
+        guard let close = fullText.range(of: "]") else { return fullText }
+        return String(fullText[close.upperBound...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "rectangle.compress.vertical")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text("Conversation compacted")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Button(expanded ? "Hide summary" : "Show summary") {
+                    withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundStyle(Color.brandOrange)
+            }
+            if expanded {
+                Text(summary)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
         )
     }
 }

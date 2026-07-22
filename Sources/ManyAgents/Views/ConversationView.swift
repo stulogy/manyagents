@@ -1071,8 +1071,17 @@ struct ConversationView: View {
             // user scroll or after 1.2s.
             .onAppear {
                 initialLanding = true
-                DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                // Multiple fixed passes on top of the height-settle chase:
+                // one huge trailing row (a compact seed, a big report) can
+                // measure so late the viewport ends past materialized
+                // content — a blank pane until the user scrolls. The timed
+                // passes re-land as rows materialize.
+                for delay in [0.0, 0.25, 0.6, 1.1] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        if initialLanding { proxy.scrollTo("bottom", anchor: .bottom) }
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
                     initialLanding = false
                 }
             }
