@@ -182,6 +182,11 @@ final class ClaudeBridge {
             // Keep answers concise; offer (don't dump) long reports. Pairs with
             // the waiting cue so the offer surfaces as a "waiting on you" state.
             "--append-system-prompt", Self.brevitySystemPrompt,
+            // The manyagents MCP tools are few enough that the CLI loads
+            // them directly instead of deferring — so ToolSearch finds
+            // nothing and models conclude the tools don't exist. Tell
+            // them to call directly.
+            "--append-system-prompt", Self.manyAgentsToolsSystemPrompt,
             // Remove AskUserQuestion entirely. In headless stream-json mode the
             // CLI auto-resolves it (the picker is cosmetic and the agent moves
             // on without the answer — known CLI gap). With the tool gone the
@@ -698,6 +703,10 @@ final class ClaudeBridge {
     /// instead of dumping one unprompted — Stu found long auto-generated
     /// "Comprehensive Reports" flooded the chat. Pairs with the waiting cue so
     /// the offer reads as a "waiting on you" turn.
+    private static let manyAgentsToolsSystemPrompt = """
+    This session runs inside the ManyAgents app. Its MCP tools (mcp__manyagents__open_preview and, on orchestrator sessions, list_agents / read_agent / send_to_agent / new_agent / set_notes / mute_agent) are loaded DIRECTLY into your toolset — they are not deferred, so ToolSearch will not find them. Do not conclude they are unavailable from a ToolSearch miss; call them directly by name.
+    """
+
     private static let brevitySystemPrompt = """
     NEVER write "comprehensive reports", status write-ups, exhaustive summaries, \
     recap documents, or multi-section reports on your own initiative. The user \
