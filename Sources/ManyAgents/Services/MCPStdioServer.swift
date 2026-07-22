@@ -200,10 +200,20 @@ private final class ServerState {
     // MARK: - Stdin / JSON-RPC loop
 
     func runLoop() {
-        let stdin = FileHandle.standardInput
+        // POSIX read(2), NOT FileHandle.read(upToCount:). FileHandle's
+        // variant loops until it fills the REQUESTED length or hits EOF —
+        // and claude holds stdin open for the session's lifetime, so a
+        // ~300-byte initialize left us blocked waiting for 64KB that
+        // never arrived: no reply, ever, and the CLI showed the server
+        // "still connecting" forever. read(2) returns as soon as any
+        // bytes are available. (Every hand-probe passed because closing
+        // stdin forced EOF and flushed the loop — masking this.)
         var inbuf = Data()
-        while let chunk = try? stdin.read(upToCount: 64 * 1024), !chunk.isEmpty {
-            inbuf.append(chunk)
+        var buf = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let n = read(0, &buf, buf.count)
+            if n <= 0 { break }
+            inbuf.append(buf, count: n)
             while let nl = inbuf.firstIndex(of: 0x0A) {
                 let line = inbuf.prefix(upTo: nl)
                 inbuf.removeSubrange(inbuf.startIndex...nl)
@@ -225,10 +235,26 @@ private final class ServerState {
 
         switch method {
         case "initialize":
+            // Echo the CLIENT's protocol version. Answering with a fixed
+            // old date (2024-11-05) made claude ≥ ~2.1.209 (which asks
+            // for 2025-11-25) treat the server as incompatible and stall
+            // in "still connecting" forever — it never even sent
+            // initialized. Our surface is tools-only and stable across
+            // protocol revisions, so mirroring the request is safe.
+            let requested = (params["protocolVersion"] as? String) ?? "2025-06-18"
             respond(id: id, result: [
-                "protocolVersion": "2024-11-05",
-                "serverInfo": ["name": "manyagents-mcp", "version": "0.3.0"],
-                "capabilities": ["tools": [String: Any]()]
+                "protocolVersion": requested,
+                "serverInfo": [
+                    "name": "manyagents-mcp",
+                    "title": "ManyAgents",
+                    "version": "0.4.0"
+                ],
+                "capabilities": ["tools": [String: Any]()],
+                // Injected into the agent's context by the client — the
+                // canonical place to explain the app.
+                "instructions": """
+                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server. If this session is the project's orchestrator, the board tools (list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent) let you coordinate the user's other tabs. Refer to the app as "ManyAgents".
+                """
             ])
         case "initialized", "notifications/initialized":
             // Notification; no response. The spec method is
