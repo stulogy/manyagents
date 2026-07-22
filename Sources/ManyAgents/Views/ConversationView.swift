@@ -29,6 +29,10 @@ struct ConversationView: View {
     @State private var findScrollTick = 0
     /// Bumped to jump back to the live turn when the sticky turn-bar is tapped.
     @State private var stickyScrollTick = 0
+    /// True during the post-mount landing window: content-height settles
+    /// keep re-pinning to the bottom until layout stabilizes. Closed by
+    /// the first user scroll-away or a 1.2s timeout.
+    @State private var initialLanding = true
     /// Bumped to scroll to the anchor prompt (the turn being read) when
     /// the sticky bar's label side is tapped.
     @State private var anchorScrollTick = 0
@@ -925,6 +929,11 @@ struct ConversationView: View {
                 // promptly mid-stream, so streaming-follow beat them). Drives
                 // `atBottom` authoritatively.
                 .background(ScrollBottomWatcher(atBottom: $atBottom))
+                // A real user scroll during the landing window means they
+                // grabbed the view — stop yanking them to the bottom.
+                .onChange(of: atBottom) { _, nowAtBottom in
+                    if !nowAtBottom { initialLanding = false }
+                }
             }
             .coordinateSpace(name: "scroll")
             // Jump-to-bottom button — appears bottom-right whenever the user
@@ -969,7 +978,15 @@ struct ConversationView: View {
             // `atBottom` is driven authoritatively by ScrollBottomWatcher
             // (real NSScrollView events); these just keep the height metrics
             // around and no longer touch the follow gate.
-            .onPreferenceChange(ContentHeightKey.self) { contentHeight = $0 }
+            .onPreferenceChange(ContentHeightKey.self) { h in
+                contentHeight = h
+                // Landing window: late-measuring trailing rows grow the
+                // content after the mount scroll — chase the bottom until
+                // layout settles (window closed by user scroll / timeout).
+                if initialLanding {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            }
             .onPreferenceChange(ScrollYKey.self) { scrollY = $0 }
             .onPreferenceChange(ViewportHeightKey.self) { viewportHeight = $0 }
             // Track which turn the user is reading for the sticky bar: the
@@ -999,11 +1016,17 @@ struct ConversationView: View {
             // ourselves, but only when they're already there (see below).
             // Land at the bottom on first mount (also forces the LazyVStack to
             // materialize its trailing rows — the blank-on-tab-switch fix).
-            // Two passes: trailing rows often aren't measured on the first tick.
+            // Fixed passes weren't enough once big trailing rows (markdown,
+            // tool cards) measured late — the viewport settled short, at the
+            // last USER message instead of the true end. During the landing
+            // window, every content-height settle re-pins to the bottom
+            // (see onPreferenceChange below); the window closes on first
+            // user scroll or after 1.2s.
             .onAppear {
+                initialLanding = true
                 DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    initialLanding = false
                 }
             }
             // Auto-follow. Earlier attempts triggered off `contentHeight` (a
