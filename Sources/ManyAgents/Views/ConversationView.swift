@@ -925,7 +925,10 @@ struct ConversationView: View {
                             .background(userRowReporter(for: msg))
                             .id(msg.id)
                     }
-                    if session.status == .running {
+                    // Hidden during compaction — the compacting banner above
+                    // the composer already shows the summarise progress, so
+                    // the normal indicator would just duplicate it.
+                    if session.status == .running && !session.isCompacting {
                         ThinkingIndicator(session: session)
                             .id("thinking")
                     }
