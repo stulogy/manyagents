@@ -18,13 +18,19 @@ struct Message: Identifiable, Equatable {
     /// "holding, nothing actionable" housekeeping) are hidden from the
     /// transcript so the orchestrator's silent checks don't flood it.
     let fromBoardWake: Bool
+    /// True when this message belongs to the orchestrator catch-up turn.
+    /// Only its TEXT blocks render (the final digest); the gathering
+    /// machinery stays behind the inline setup card.
+    let fromCatchUp: Bool
 
-    init(id: UUID = UUID(), role: MessageRole, blocks: [ContentBlock], fromBoardWake: Bool = false) {
+    init(id: UUID = UUID(), role: MessageRole, blocks: [ContentBlock],
+         fromBoardWake: Bool = false, fromCatchUp: Bool = false) {
         self.id = id
         self.role = role
         self.blocks = blocks
         self.createdAt = Date()
         self.fromBoardWake = fromBoardWake
+        self.fromCatchUp = fromCatchUp
     }
 
     var isEmpty: Bool { blocks.isEmpty }

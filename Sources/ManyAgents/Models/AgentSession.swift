@@ -151,6 +151,10 @@ final class AgentSession: ObservableObject, Identifiable {
         /// assistant messages get tagged so silent "holding" turns can be
         /// hidden from the transcript.
         var isBoardWake: Bool? = nil
+        /// True for the orchestrator catch-up brief — its turn renders as
+        /// the inline setup card + final digest only. Optional for old
+        /// snapshot back-compat.
+        var isCatchUp: Bool? = nil
     }
 
     /// Set while a board-wake turn is dispatching, so the assistant messages it
@@ -303,6 +307,14 @@ final class AgentSession: ObservableObject, Identifiable {
     /// shows a spinner instead of the status-placeholder label.
     @Published var isAutoNaming: Bool = false
 
+    /// True from orchestrator designation until the catch-up turn lands —
+    /// the conversation shows an inline "reading your tabs" card and the
+    /// gathering machinery stays hidden behind it.
+    @Published var isCatchingUp: Bool = false
+    /// Set by dispatch() for the catch-up prompt so this turn's messages
+    /// are tagged fromCatchUp.
+    private var currentTurnIsCatchUp = false
+
     /// Live composer text for THIS session. Owned on the session (not
     /// in ComposerView's @State) so flipping tabs doesn't wipe a half-
     /// typed draft — each session remembers what its operator was
@@ -399,10 +411,15 @@ final class AgentSession: ObservableObject, Identifiable {
         let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
         // If the summary came back empty or trivially short, bail out
         // rather than blow away the transcript for nothing. Surface as
-        // an error so the user can retry.
-        guard trimmed.count > 80 else {
+        // an error so the user can retry. The floor scales with the
+        // conversation: a long session summarized into a one-liner (a
+        // real occurrence — 184 chars for a full working session) means
+        // the summarizer under-delivered, and seeding it would silently
+        // discard nearly everything.
+        let floor = messages.count >= 30 ? 600 : 80
+        guard trimmed.count > floor else {
             isCompacting = false
-            lastError = "Compaction failed — model returned an empty summary. Try again."
+            lastError = "Compaction summary looked too thin (\(trimmed.count) chars) — kept the conversation. Try again."
             return
         }
 
@@ -501,11 +518,13 @@ final class AgentSession: ObservableObject, Identifiable {
     /// otherwise queues it for FIFO delivery once the current turn lands.
     /// `visible = false` skips the visible transcript append (used by
     /// the compaction summariser).
-    func send(_ text: String, images: [Data] = [], visible: Bool = true, boardWake: Bool = false) {
+    func send(_ text: String, images: [Data] = [], visible: Bool = true,
+              boardWake: Bool = false, catchUp: Bool = false) {
         // Clear any waiting-for-net state — the user just hit send
         // again, so they're taking control back from the auto-resumer.
         awaitingNetworkResume = false
-        let prompt = PendingPrompt(text: text, images: images, visible: visible, isBoardWake: boardWake)
+        let prompt = PendingPrompt(text: text, images: images, visible: visible,
+                                   isBoardWake: boardWake, isCatchUp: catchUp)
         if status == .running || bridge.isBusy {
             pendingPrompts.append(prompt)
             return
@@ -529,6 +548,7 @@ final class AgentSession: ObservableObject, Identifiable {
         }
         // Tag the assistant output of this turn if it's an automatic board-wake.
         currentTurnIsBoardWake = (prompt.isBoardWake == true)
+        currentTurnIsCatchUp = (prompt.isCatchUp == true)
         status = .running
         // Normally a fresh turn starts the timer now; but a force-send carries
         // the interrupted turn's start time so the timer continues unbroken.
@@ -724,11 +744,13 @@ final class AgentSession: ObservableObject, Identifiable {
             // event (not per-delta) when streaming is off.
             if let lastIdx = messages.indices.last,
                messages[lastIdx].role == .assistant,
-               messages[lastIdx].fromBoardWake == currentTurnIsBoardWake {
+               messages[lastIdx].fromBoardWake == currentTurnIsBoardWake,
+               messages[lastIdx].fromCatchUp == currentTurnIsCatchUp {
                 messages[lastIdx].blocks.append(contentsOf: blocks)
             } else {
                 messages.append(Message(role: .assistant, blocks: blocks,
-                                        fromBoardWake: currentTurnIsBoardWake))
+                                        fromBoardWake: currentTurnIsBoardWake,
+                                        fromCatchUp: currentTurnIsCatchUp))
             }
             status = .running
             // Derive a current-phase label from what just arrived so the
@@ -768,7 +790,8 @@ final class AgentSession: ObservableObject, Identifiable {
                                                 content: content,
                                                 isError: isError,
                                                 parentToolUseId: parentToolUseId)
-            messages.append(Message(role: .system, blocks: [block]))
+            messages.append(Message(role: .system, blocks: [block],
+                                    fromCatchUp: currentTurnIsCatchUp))
         case .toolResultImage(_, let data, let mediaType, _):
             // An image a tool returned (e.g. a screenshot the agent Read).
             // Render it inline as an image block.
@@ -828,6 +851,10 @@ final class AgentSession: ObservableObject, Identifiable {
             }
             currentTurnStartedAt = nil
             currentTurnIsBoardWake = false
+            if currentTurnIsCatchUp {
+                currentTurnIsCatchUp = false
+                isCatchingUp = false
+            }
             // The logical turn finished — clear any carried token base so the
             // next fresh turn starts its count from 0.
             carriedTurnTokens = 0

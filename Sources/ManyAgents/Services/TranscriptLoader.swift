@@ -22,6 +22,10 @@ enum TranscriptLoader {
         // restore we drop the prompt and tag the reply — matching live tagging,
         // so silent "holding" turns stay hidden).
         var pendingBoardWake = false
+        // Same idea for the orchestrator catch-up turn: drop its prompt,
+        // skip its tool results, keep only the digest text — mirroring
+        // the live inline-card treatment.
+        var pendingCatchUp = false
         raw.enumerateLines { line, _ in
             guard let lineData = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
@@ -33,10 +37,15 @@ enum TranscriptLoader {
                     // Our injected board-wake prompt — never user-typed. Drop it
                     // and flag the assistant turn it triggers.
                     pendingBoardWake = true
+                } else if isCatchUpUser(obj) {
+                    pendingCatchUp = true
                 } else if let m = parseUser(obj, askUserQuestionIds: askUserQuestionIds) {
                     // A real typed prompt ends a board-wake turn; tool_result
                     // (.system) lines mid-turn don't.
-                    if m.role == .user { pendingBoardWake = false }
+                    if m.role == .user { pendingBoardWake = false; pendingCatchUp = false }
+                    // Tool results inside the catch-up turn stay behind
+                    // the setup card.
+                    if pendingCatchUp && m.role == .system { return }
                     out.append(m)
                 }
             case "assistant":
@@ -48,7 +57,8 @@ enum TranscriptLoader {
                         if let id = c["id"] as? String { askUserQuestionIds.insert(id) }
                     }
                 }
-                if let m = parseAssistant(obj, boardWake: pendingBoardWake) { out.append(m) }
+                if let m = parseAssistant(obj, boardWake: pendingBoardWake,
+                                          catchUp: pendingCatchUp) { out.append(m) }
             default:
                 break
             }
@@ -190,7 +200,24 @@ enum TranscriptLoader {
         return text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("[Board update")
     }
 
-    private static func parseAssistant(_ obj: [String: Any], boardWake: Bool = false) -> Message? {
+    /// True for our injected orchestrator catch-up brief.
+    private static func isCatchUpUser(_ obj: [String: Any]) -> Bool {
+        guard let msg = obj["message"] as? [String: Any] else { return false }
+        let text: String
+        if let s = msg["content"] as? String {
+            text = s
+        } else if let arr = msg["content"] as? [[String: Any]],
+                  let first = arr.first(where: { ($0["type"] as? String) == "text" }),
+                  let t = first["text"] as? String {
+            text = t
+        } else {
+            return false
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("[Orchestrator catch-up")
+    }
+
+    private static func parseAssistant(_ obj: [String: Any], boardWake: Bool = false,
+                                       catchUp: Bool = false) -> Message? {
         guard let msg = obj["message"] as? [String: Any],
               let content = msg["content"] as? [[String: Any]]
         else { return nil }
@@ -225,7 +252,14 @@ enum TranscriptLoader {
             }
         }
         if blocks.isEmpty { return nil }
-        return Message(role: .assistant, blocks: blocks, fromBoardWake: boardWake)
+        // Catch-up turn: keep only the digest text; the gathering
+        // machinery never re-renders on restore.
+        if catchUp {
+            blocks = blocks.filter { if case .text = $0 { return true }; return false }
+            if blocks.isEmpty { return nil }
+        }
+        return Message(role: .assistant, blocks: blocks, fromBoardWake: boardWake,
+                       fromCatchUp: catchUp)
     }
 
     /// Harness-injected "user" lines the user never typed — e.g. the

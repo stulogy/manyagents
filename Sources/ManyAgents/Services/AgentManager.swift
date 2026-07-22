@@ -311,6 +311,12 @@ final class AgentManager: ObservableObject {
     func designateOrchestrator(_ session: AgentSession) {
         for s in sessions where s.isCoordinator { s.isCoordinator = false }
         session.isCoordinator = true
+        // A fresh tab has no conversation for AutoNamer to work from —
+        // "Orchestrator" beats the "Ready" placeholder.
+        if session.aiTitle?.isEmpty ?? true, session.messages.isEmpty {
+            session.aiTitle = "Orchestrator"
+        }
+        session.isCatchingUp = true
         deliverOrchestratorCatchUp(to: session)
     }
 
@@ -332,7 +338,7 @@ final class AgentManager: ObservableObject {
 
         From here on, watched-tab activity accumulates silently and arrives as an automatic board digest attached to your next message — you are NOT woken for it. Act on digests when they arrive; use read_agent when something needs a closer look.
         """
-        orch.send(prompt, visible: false)
+        orch.send(prompt, visible: false, catchUp: true)
     }
 
     /// Compact board snapshot the orchestrator sees on every wake. Hidden

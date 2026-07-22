@@ -67,7 +67,7 @@ struct MessageView: View {
                         .frame(width: 14, alignment: .center)
                         .padding(.top, 3)
                     VStack(alignment: .leading, spacing: 14) {
-                        ForEach(message.blocks) { block in
+                        ForEach(renderableBlocks) { block in
                             blockView(block)
                         }
                     }
@@ -270,6 +270,16 @@ struct MessageView: View {
     /// composer banner); kept as a pass-through so call sites read local.
     static func mcpAuthNeededServer(in content: String) -> String? {
         MCPConnectors.authNeededServer(in: content)
+    }
+
+    /// Catch-up turns render only their text (the digest) — the gathering
+    /// machinery lives behind the inline setup card.
+    private var renderableBlocks: [ContentBlock] {
+        guard message.fromCatchUp else { return message.blocks }
+        return message.blocks.filter {
+            if case .text = $0 { return true }
+            return false
+        }
     }
 
     /// Grey-marker label for orchestrator housekeeping tools; nil for

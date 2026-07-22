@@ -904,7 +904,36 @@ struct ConversationView: View {
                             .background(userRowReporter(for: msg))
                             .id(msg.id)
                     }
-                    if session.status == .running {
+                    if session.isCatchingUp {
+                        // Inline setup card — sits exactly where the catch-up
+                        // digest will land, so the spinner resolves into the
+                        // result. The gathering machinery renders nothing.
+                        HStack(spacing: 10) {
+                            Image(systemName: "brain.head.profile")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Color.brandOrange)
+                            ProgressView().controlSize(.small)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Setting up orchestrator")
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                Text("Reading your tabs…")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.brandOrange.opacity(0.08))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color.brandOrange.opacity(0.28), lineWidth: 1)
+                        )
+                        .id("thinking")
+                    } else if session.status == .running {
                         ThinkingIndicator(session: session)
                             .id("thinking")
                     }
@@ -1087,6 +1116,16 @@ struct ConversationView: View {
             .onChange(of: stickyScrollTick) { _, _ in
                 withAnimation(.easeInOut(duration: 0.25)) {
                     scrollToLatest(proxy)
+                }
+            }
+            // Compaction (or any wholesale transcript replacement) makes
+            // the sticky-bar anchors stale — they point at dead messages
+            // and flash a bar that can't scroll anywhere. Shrinking
+            // message count = replacement; reset.
+            .onChange(of: session.messages.count) { oldCount, newCount in
+                if newCount < oldCount {
+                    scrolledContextPrompt = ""
+                    scrolledContextAnchorId = nil
                 }
             }
             // Sticky-bar label click: land on the prompt of the turn being
