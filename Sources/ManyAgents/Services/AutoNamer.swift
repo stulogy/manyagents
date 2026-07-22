@@ -11,7 +11,10 @@ final class AutoNamer: ObservableObject {
     private var observation: AnyCancellable?
     private var inflight: Set<UUID> = []
 
-    private static let minimumUserPromptsBeforeNaming = 2
+    // One substantive prompt + an assistant reply is enough to name a
+    // tab. Was 2, which meant orchestrator-spawned tabs (they often get
+    // just one orchestrator message) never qualified and stayed unnamed.
+    private static let minimumUserPromptsBeforeNaming = 1
 
     func attach(manager: AgentManager) {
         self.manager = manager
@@ -69,7 +72,17 @@ final class AutoNamer: ObservableObject {
         let lastAssistant = session.messages.last(where: { $0.role == .assistant })?.flatText
         guard let u = lastUser, !u.isEmpty,
               let a = lastAssistant, !a.isEmpty else { return nil }
-        return (String(u.prefix(800)), String(a.prefix(800)))
+        // Strip our injected wrappers so the title derives from the real
+        // task, not "[Message from orchestrator …]".
+        return (String(Self.stripWrapper(u).prefix(800)), String(a.prefix(800)))
+    }
+
+    /// Remove a leading "[…]" plumbing header (orchestrator message,
+    /// catch-up, compaction seed) so naming sees the actual content.
+    nonisolated private static func stripWrapper(_ text: String) -> String {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.hasPrefix("["), let close = t.range(of: "]") else { return t }
+        return String(t[close.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Title generation via the claude CLI
