@@ -547,6 +547,53 @@ final class AgentSession: ObservableObject, Identifiable {
         Task.detached(priority: .userInitiated) {
             bridgeRef.send(text: prompt.text, imagesPng: prompt.images)
         }
+        armTurnStartWatchdog()
+    }
+
+    // MARK: - Turn-start watchdog
+
+    /// Time of the last bridge event, any kind. Proof-of-life for the
+    /// claude process; the watchdog compares against it.
+    private var lastBridgeEventAt: Date = .distantPast
+    private var turnStartWatchdog: DispatchWorkItem?
+    /// One retry per dispatched prompt — a watchdog respawn that ALSO
+    /// goes silent means something bigger than a dead pipe; surface an
+    /// error instead of looping.
+    private var watchdogRetried = false
+
+    /// A prompt written to a dead or wedged process vanishes silently:
+    /// `try? stdin.write` swallows broken pipes, and if the exit event
+    /// was missed (app relaunch races, kill -9) nothing ever fires. If
+    /// no bridge event lands within the grace window after dispatch,
+    /// kill the process and re-send via `--resume` — the same recovery
+    /// path the network auto-resumer uses.
+    private func armTurnStartWatchdog() {
+        turnStartWatchdog?.cancel()
+        let dispatchedAt = Date()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.status == .running,
+                  self.lastBridgeEventAt < dispatchedAt,
+                  let prompt = self.lastSentPrompt else { return }
+            if self.watchdogRetried {
+                self.status = .error
+                self.lastError = "The agent process isn't responding. Try sending again."
+                return
+            }
+            self.watchdogRetried = true
+            self.bridge.cancel()
+            // Give the kill a beat to settle, then re-dispatch the same
+            // prompt — dispatch() respawns the process with --resume.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard let self else { return }
+                // Drop the duplicate transcript entry dispatch() would add.
+                if prompt.visible, self.messages.last?.role == .user {
+                    self.messages.removeLast()
+                }
+                self.dispatch(prompt)
+            }
+        }
+        turnStartWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
     }
 
     /// Pop the next queued prompt (if any) and send it. Called whenever a
@@ -629,6 +676,11 @@ final class AgentSession: ObservableObject, Identifiable {
     // MARK: - Stream event handling
 
     private func handle(_ event: BridgeEvent) {
+        // Proof-of-life for the turn-start watchdog: ANY event means the
+        // process is alive and the prompt landed. A clean lifecycle also
+        // re-arms the one-retry budget.
+        lastBridgeEventAt = Date()
+        if case .result = event { watchdogRetried = false }
         switch event {
         case .initialized(let sid, let model):
             // claude assigns a new session_id on the first turn; subsequent
