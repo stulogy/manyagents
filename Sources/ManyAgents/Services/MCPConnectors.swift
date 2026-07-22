@@ -45,17 +45,25 @@ final class MCPConnectors: ObservableObject {
     /// can be recovered. Pure string work — callable from any context.
     nonisolated static func authNeededServer(in content: String) -> String? {
         let lower = content.lowercased()
-        // "authenticat…" covers authenticate/authentication; "authoriz…"
-        // covers the CLI's expired-token wording: MCP server "X" requires
-        // re-authorization (token expired).
-        guard lower.contains("authenticat") || lower.contains("authoriz"),
-              lower.contains("mcp"),
-              let open = content.range(of: "\""),
-              let close = content.range(of: "\"", range: open.upperBound..<content.endIndex)
+        // Must be a genuine MCP auth failure, not just prose that happens
+        // to mention mcp + authorization near a quoted string (that false-
+        // matched things like "No number on file").
+        guard lower.contains("mcp"),
+              lower.contains("authenticat") || lower.contains("authoriz")
         else { return nil }
-        let name = String(content[open.upperBound..<close.lowerBound])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty || name.count > 80 ? nil : name
+        // The server name only ever appears in these exact CLI phrasings:
+        //   MCP server "<name>" requires (re-)authorization
+        //   run /mcp and select "<name>" to authenticate
+        // Require the quote to directly follow one of those anchors.
+        for anchor in ["mcp server \"", "select \""] {
+            guard let a = content.range(of: anchor, options: .caseInsensitive),
+                  let close = content.range(of: "\"", range: a.upperBound..<content.endIndex)
+            else { continue }
+            let name = String(content[a.upperBound..<close.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty && name.count <= 80 { return name }
+        }
+        return nil
     }
 
     private init() {}

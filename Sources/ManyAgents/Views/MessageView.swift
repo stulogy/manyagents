@@ -194,6 +194,7 @@ struct MessageView: View {
                 // it leaves an orphan marker dot with nothing beside it.
                 if fileEditOutcomes[id] == false { return true }
                 if housekeepingToolUseIds.contains(id) { return true }
+                if Self.isBackgroundLaunchMetadata(c) { return true }
                 return c.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             case .image:              return false
             }
@@ -270,6 +271,14 @@ struct MessageView: View {
     /// composer banner); kept as a pass-through so call sites read local.
     static func mcpAuthNeededServer(in content: String) -> String? {
         MCPConnectors.authNeededServer(in: content)
+    }
+
+    /// The subagent/background-agent launch acknowledgment — pure internal
+    /// orchestration metadata (agent id, SendMessage instructions) that the
+    /// Task/Agent card already represents. Hidden from the transcript.
+    static func isBackgroundLaunchMetadata(_ content: String) -> Bool {
+        content.contains("Async agent launched successfully")
+            || content.contains("This tool result is internal metadata")
     }
 
     /// Classify an injected user-role message into a banner (label, body).
@@ -446,7 +455,12 @@ struct MessageView: View {
             // A successful file-edit result ("…updated successfully") is
             // redundant with the tool card's ✓ — suppress it. Edit *errors*
             // (isError → outcome true) and all non-edit results still render.
-            if fileEditOutcomes[toolUseId] == false || housekeepingToolUseIds.contains(toolUseId) {
+            if fileEditOutcomes[toolUseId] == false || housekeepingToolUseIds.contains(toolUseId)
+                || Self.isBackgroundLaunchMetadata(content) {
+                // The subagent/background-launch ack is internal plumbing
+                // ("Async agent launched successfully… agentId… SendMessage
+                // …") — the Task/Agent card above already shows the dispatch,
+                // so hide the raw metadata dump.
                 EmptyView()
             } else {
                 VStack(alignment: .leading, spacing: 6) {
