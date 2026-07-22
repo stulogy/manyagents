@@ -348,7 +348,7 @@ final class AgentManager: ObservableObject {
         if others.isEmpty { return "(no other tabs in this project)" }
         return others.map { s in
             let muted = orch.mutedTabIds.contains(s.id) ? " [muted]" : ""
-            return "• \(s.aiTitle ?? s.displayName) [\(s.id)] — \(s.status.boardLabel)\(muted) — \(s.latestSnippet)"
+            return "• \(s.boardTitle) [\(s.id)] — \(s.status.boardLabel)\(muted) — \(s.latestSnippet)"
         }.joined(separator: "\n")
     }
 

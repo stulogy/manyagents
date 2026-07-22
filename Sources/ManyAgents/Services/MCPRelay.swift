@@ -245,7 +245,7 @@ final class MCPRelay {
                     "id": s.id.uuidString,
                     "project": ProjectNaming.name(forCwd: s.cwd),
                     "cwd": s.cwd,
-                    "title": s.aiTitle ?? s.displayName,
+                    "title": s.boardTitle,
                     "status": statusString(s.status),
                     "muted": orch?.mutedTabIds.contains(s.id) ?? false,
                     "latest": s.latestSnippet

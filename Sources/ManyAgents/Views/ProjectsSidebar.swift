@@ -136,6 +136,7 @@ struct ProjectsSidebar: View {
         HStack(spacing: 3) {
             toggleButton(.row, icon: "list.bullet")
             toggleButton(.card, icon: "square.grid.2x2")
+            browserToggle
         }
         .padding(3)
         .background(
@@ -143,6 +144,26 @@ struct ProjectsSidebar: View {
                 .fill(Color.primary.opacity(0.08))
         )
         .help(viewMode == .row ? "Switch to card overview" : "Switch to row view")
+    }
+
+    /// Icon-only Browser toggle, living with the view-mode switcher.
+    private var browserToggle: some View {
+        Button {
+            manager.previewActive.toggle()
+        } label: {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(manager.previewActive ? Color.brandOrange : Color.clear)
+                .frame(width: 32, height: 24)
+                .overlay(
+                    Image(systemName: "globe")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(manager.previewActive ? .white : .secondary)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("Browser — shared session across all agents (⌘⇧P)")
+        .keyboardShortcut("p", modifiers: [.command, .shift])
     }
 
     private func toggleButton(_ mode: WorkspaceMode, icon: String) -> some View {

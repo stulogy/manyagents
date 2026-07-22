@@ -242,6 +242,14 @@ final class AgentSession: ObservableObject, Identifiable {
     /// meant for the orchestrator's turn (and then double-ping).
     var suppressedOrchestratorTurns: Set<Int> = []
 
+    /// Name used on the orchestrator board and in digests. An unnamed
+    /// tab's displayName is the bare project name ("uhp"), which reads
+    /// like the project or the orchestrator itself — disambiguate.
+    var boardTitle: String {
+        if let t = aiTitle, !t.isEmpty { return t }
+        return "Untitled tab (\(displayName))"
+    }
+
     /// One-line snapshot of what this tab last said — used for the
     /// orchestrator board and wake pings. Empty when nothing yet.
     var latestSnippet: String {

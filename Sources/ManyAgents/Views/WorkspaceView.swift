@@ -194,40 +194,9 @@ struct WorkspaceView: View {
                 .help("New tab in this project")
             }
             .padding(.leading, 14)
-            .padding(.trailing, 100) // leave room for the pinned preview button
+            .padding(.trailing, 14)
         }
         .padding(.vertical, 8)
-        .overlay(alignment: .trailing) {
-            HStack(spacing: 6) {
-                Divider().frame(height: 20)
-                Button {
-                    manager.previewActive.toggle()
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "globe")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text("Preview")
-                            .font(.system(size: 12, weight: manager.previewActive ? .semibold : .medium))
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(manager.previewActive ? Color.brandOrange.opacity(0.18) : Color.primary.opacity(0.06))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(manager.previewActive ? Color.brandOrange.opacity(0.5) : Color.clear, lineWidth: 1)
-                    )
-                    .foregroundStyle(manager.previewActive ? Color.brandOrange : .primary)
-                }
-                .buttonStyle(.plain)
-                .help("Preview — shared browser session across all agents (⌘⇧P)")
-                .keyboardShortcut("p", modifiers: [.command, .shift])
-            }
-            .padding(.trailing, 14)
-            .background(.ultraThinMaterial)
-        }
     }
 
     private var emptyState: some View {
