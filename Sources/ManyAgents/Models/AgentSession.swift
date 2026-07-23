@@ -246,6 +246,12 @@ final class AgentSession: ObservableObject, Identifiable {
         return "Untitled tab (\(displayName))"
     }
 
+    /// Set when the orchestrator dispatched work to this tab fire-and-forget
+    /// (or spawned it with a task). When the tab next finishes and goes
+    /// quiet, it auto-notifies the orchestrator ONCE so the loop closes
+    /// without anyone remembering to ask it to report back. Cleared on fire.
+    var pendingOrchestratorReport: Bool = false
+
     /// One-line snapshot of what this tab last said — used for the
     /// orchestrator board and wake pings. Empty when nothing yet.
     var latestSnippet: String {

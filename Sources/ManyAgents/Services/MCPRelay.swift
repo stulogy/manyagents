@@ -420,6 +420,9 @@ final class MCPRelay {
             // Anti-loop: suppress the wake for the specific turn this prompt
             // causes (a reused/new tab is idle, so it's the very next one).
             target.suppressedOrchestratorTurns.insert(target.completedTurns + 1)
+            // Spawned with a task → auto-report back to the orchestrator
+            // when it finishes (new_agent doesn't wait).
+            target.pendingOrchestratorReport = true
             if let orchUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:)),
                let orch = mgr.sessions.first(where: { $0.id == orchUUID }) {
                 target.send("[Message from orchestrator \"\(orch.aiTitle ?? orch.displayName)\"]\n\n\(prompt)")
@@ -486,6 +489,10 @@ final class MCPRelay {
         // the orchestrator back — it captures the reply here directly.
         // Indexed past the in-flight/queued turns so those still ping.
         target.suppressedOrchestratorTurns.insert(target.completedTurns + turnsAhead + 1)
+        // Fire-and-forget dispatch (not waiting for the reply) → have the
+        // tab auto-report to the orchestrator when it finishes. (The
+        // wait_for_result path captures the reply synchronously instead.)
+        if !wait { target.pendingOrchestratorReport = true }
         // Tag provenance so the receiving tab knows it's the orchestrator
         // talking, then send it as a normal user turn.
         if let src = sourceUUID, let s = mgr.sessions.first(where: { $0.id == src }) {

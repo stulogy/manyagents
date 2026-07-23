@@ -274,6 +274,19 @@ final class AgentManager: ObservableObject {
     private func handleTurnCompleted(on source: AgentSession, payload: String) {
         // The orchestrator's own turn finishing must not log itself.
         if source.isCoordinator { return }
+        // Auto-report: a worker the orchestrator dispatched fire-and-forget
+        // (or spawned with a task) has stopped and has no more queued work —
+        // wake the orchestrator ONCE so it can act (is it done? does it need
+        // a decision?). Runs even for suppressed turns, since this IS the
+        // intended ping. Fires only on completion, not every turn, so it
+        // won't reintroduce the noisy timed wakes.
+        if source.pendingOrchestratorReport, source.pendingPrompts.isEmpty,
+           let orch = orchestrator(for: source.cwd), orch.id != source.id {
+            source.pendingOrchestratorReport = false
+            let name = source.aiTitle ?? source.displayName
+            let snippet = String(source.latestSnippet.prefix(240))
+            orch.send("[Tab \"\(name)\" you dispatched has stopped — check whether it finished or needs a decision]\n\n\(snippet)")
+        }
         // A turn the orchestrator itself dispatched doesn't need logging —
         // the orchestrator already got the reply via the dispatch tool.
         if source.suppressedOrchestratorTurns.remove(source.completedTurns) != nil {
