@@ -368,6 +368,30 @@ private final class ServerState {
                 ]
             ],
             [
+                "name": "compact_agent",
+                "description": "Compact a tab's conversation — summarize it and reseed a fresh session so its context window is reset while the work continues. Use on a tab whose context is getting full. Fails if the tab is mid-turn (wait for it to finish).",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "agent_id": ["type": "string", "description": "The UUID from list_agents."]
+                    ],
+                    "required": ["agent_id"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "close_agent",
+                "description": "Close a tab you no longer need (its work is done). The conversation stays on disk and is recoverable via Resume — closing just removes it from the workspace. You cannot close yourself.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "agent_id": ["type": "string", "description": "The UUID from list_agents."]
+                    ],
+                    "required": ["agent_id"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
                 "name": "set_notes",
                 "description": "Record your running understanding — what each tab is for, what you're waiting on, your next intended action. This is your memory across wake-ups and is shown to the user in the orchestrator indicator. Overwrites the previous note; keep it short and current.",
                 "inputSchema": [
@@ -521,6 +545,18 @@ private final class ServerState {
                                                 "agent_id": agentId, "title": title])
                 respondToolResult(id: id,
                                   text: (res["ok"] as? Bool) == true ? "Renamed tab to \"\(title)\"." : "Error: \(res["error"] as? String ?? "rename failed")",
+                                  isError: (res["ok"] as? Bool) != true)
+            case "compact_agent", "close_agent":
+                guard let agentId = arguments["agent_id"] as? String else {
+                    respondToolResult(id: id, text: "Error: missing agent_id.", isError: true)
+                    return
+                }
+                let res = try await awaitRelay(["op": name,
+                                                "source_session_id": args.sourceSessionId as Any,
+                                                "agent_id": agentId])
+                let verb = name == "compact_agent" ? "Compacting" : "Closed"
+                respondToolResult(id: id,
+                                  text: (res["ok"] as? Bool) == true ? "\(verb) tab \(agentId)." : "Error: \(res["error"] as? String ?? "failed")",
                                   isError: (res["ok"] as? Bool) != true)
             case "send_to_agent":
                 guard let agentId = arguments["agent_id"] as? String,

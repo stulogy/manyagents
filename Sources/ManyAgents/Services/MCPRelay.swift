@@ -144,6 +144,10 @@ final class MCPRelay {
             return await notifyOrchestrator(req: req, id: id)
         case "rename_agent":
             return await renameAgent(req: req, id: id)
+        case "compact_agent":
+            return await compactAgent(req: req, id: id)
+        case "close_agent":
+            return await closeAgent(req: req, id: id)
         default:
             return ["id": id, "ok": false, "error": "unknown op: \(op)"]
         }
@@ -163,6 +167,37 @@ final class MCPRelay {
         // The orchestrator itself keeps its fixed role name.
         if target.isCoordinator { return ["id": id, "ok": false, "error": "can't rename the orchestrator tab"] }
         target.aiTitle = String(title.prefix(40))
+        return ["id": id, "ok": true]
+    }
+
+    /// Compact a target tab's conversation (real teardown + reseed, not a
+    /// "/compact" text message — which the CLI doesn't process and just
+    /// makes the agent write a summary). Fails if the tab is mid-turn.
+    @MainActor
+    private func compactAgent(req: [String: Any], id: String) async -> [String: Any] {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        guard let targetUUID = (req["agent_id"] as? String).flatMap(UUID.init(uuidString:)),
+              let target = mgr.sessions.first(where: { $0.id == targetUUID })
+        else { return ["id": id, "ok": false, "error": "unknown agent_id"] }
+        if target.isCompacting { return ["id": id, "ok": true, "note": "already compacting"] }
+        target.compact()
+        // compact() no-ops if the tab is running/busy — report that honestly.
+        guard target.isCompacting else {
+            return ["id": id, "ok": false, "error": "tab is mid-turn — wait for it to finish, then compact"]
+        }
+        return ["id": id, "ok": true]
+    }
+
+    /// Close a target tab. Transcript stays on disk (recoverable via Resume).
+    @MainActor
+    private func closeAgent(req: [String: Any], id: String) async -> [String: Any] {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        guard let targetUUID = (req["agent_id"] as? String).flatMap(UUID.init(uuidString:)),
+              let target = mgr.sessions.first(where: { $0.id == targetUUID })
+        else { return ["id": id, "ok": false, "error": "unknown agent_id"] }
+        let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
+        if target.id == sourceUUID { return ["id": id, "ok": false, "error": "you can't close yourself"] }
+        mgr.close(target)
         return ["id": id, "ok": true]
     }
 
