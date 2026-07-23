@@ -93,6 +93,7 @@ struct MarkdownText: View {
                         .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.tertiary)
                     Spacer(minLength: 0)
+                    CodeCopyButton(code: code)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
@@ -510,5 +511,33 @@ enum MdBlock {
               s[s.index(after: after)] == " "
         else { return nil }
         return String(s[s.index(after, offsetBy: 2)...])
+    }
+}
+
+/// Copy-to-clipboard button for a fenced code block's header.
+private struct CodeCopyButton: View {
+    let code: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(code, forType: .string)
+            withAnimation(.easeOut(duration: 0.12)) { copied = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                withAnimation(.easeOut(duration: 0.12)) { copied = false }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 9, weight: .semibold))
+                Text(copied ? "Copied" : "Copy")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(copied ? .green : .tertiary)
+        }
+        .buttonStyle(.plain)
+        .help("Copy code")
     }
 }
