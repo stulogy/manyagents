@@ -142,9 +142,28 @@ final class MCPRelay {
             return await openPreview(req: req, id: id)
         case "notify_orchestrator":
             return await notifyOrchestrator(req: req, id: id)
+        case "rename_agent":
+            return await renameAgent(req: req, id: id)
         default:
             return ["id": id, "ok": false, "error": "unknown op: \(op)"]
         }
+    }
+
+    /// Rename any tab (the orchestrator naming a spawned tab, or fixing a
+    /// bad auto-name). AutoNamer leaves named tabs alone, so it sticks.
+    @MainActor
+    private func renameAgent(req: [String: Any], id: String) async -> [String: Any] {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        guard let targetUUID = (req["agent_id"] as? String).flatMap(UUID.init(uuidString:)),
+              let target = mgr.sessions.first(where: { $0.id == targetUUID })
+        else { return ["id": id, "ok": false, "error": "unknown agent_id"] }
+        guard let title = (req["title"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty
+        else { return ["id": id, "ok": false, "error": "empty title"] }
+        // The orchestrator itself keeps its fixed role name.
+        if target.isCoordinator { return ["id": id, "ok": false, "error": "can't rename the orchestrator tab"] }
+        target.aiTitle = String(title.prefix(40))
+        return ["id": id, "ok": true]
     }
 
     /// A worker tab pings the orchestrator, waking it to take a turn.
@@ -356,6 +375,12 @@ final class MCPRelay {
             reused = false
         }
 
+        // Orchestrator-chosen title — set it so AutoNamer leaves it alone
+        // and the tab shows the name the orchestrator intended.
+        if let title = (req["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty {
+            target.aiTitle = String(title.prefix(40))
+        }
         if !prompt.isEmpty {
             // Anti-loop: suppress the wake for the specific turn this prompt
             // causes (a reused/new tab is idle, so it's the very next one).

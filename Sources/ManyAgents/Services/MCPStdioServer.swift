@@ -348,9 +348,22 @@ private final class ServerState {
                     "type": "object",
                     "properties": [
                         "cwd": ["type": "string", "description": "Optional. Omit to spawn in your own project (default). Only set to open a tab in a different existing project (an absolute cwd from list_agents)."],
+                        "title": ["type": "string", "description": "Optional short tab title (2-4 words) — set this so the tab shows the name you intend instead of an auto-generated one."],
                         "prompt": ["type": "string", "description": "Optional first task to hand the new tab immediately."]
                     ],
-                    "required": ["cwd"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "rename_agent",
+                "description": "Rename a tab (yours or any tab on your board) to a clear short title. Use this to give a spawned tab the name you intend, or to fix a tab whose auto-generated name is unhelpful.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "agent_id": ["type": "string", "description": "The UUID from list_agents (or the id new_agent returned)."],
+                        "title": ["type": "string", "description": "New tab title — short, 2-4 words."]
+                    ],
+                    "required": ["agent_id", "title"],
                     "additionalProperties": false
                 ]
             ],
@@ -483,22 +496,32 @@ private final class ServerState {
                     respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "read failed")", isError: true)
                 }
             case "new_agent":
-                guard let cwd = arguments["cwd"] as? String else {
-                    respondToolResult(id: id, text: "Error: missing cwd.", isError: true)
-                    return
-                }
+                // cwd is optional — the relay defaults to the caller's project.
                 var payload: [String: Any] = ["op": "new_agent",
-                                              "source_session_id": args.sourceSessionId as Any,
-                                              "cwd": cwd]
+                                              "source_session_id": args.sourceSessionId as Any]
+                if let cwd = arguments["cwd"] as? String { payload["cwd"] = cwd }
                 if let p = arguments["prompt"] as? String { payload["prompt"] = p }
+                if let t = arguments["title"] as? String { payload["title"] = t }
                 let res = try await awaitRelay(payload)
                 if (res["ok"] as? Bool) == true {
                     let aid = res["agent_id"] as? String ?? "?"
                     let reused = (res["reused"] as? Bool) == true
-                    respondToolResult(id: id, text: "\(reused ? "Reused empty tab" : "Created tab") \(aid) in \(cwd).")
+                    respondToolResult(id: id, text: "\(reused ? "Reused empty tab" : "Created tab") \(aid).")
                 } else {
                     respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "new_agent failed")", isError: true)
                 }
+            case "rename_agent":
+                guard let agentId = arguments["agent_id"] as? String,
+                      let title = arguments["title"] as? String else {
+                    respondToolResult(id: id, text: "Error: missing agent_id or title.", isError: true)
+                    return
+                }
+                let res = try await awaitRelay(["op": "rename_agent",
+                                                "source_session_id": args.sourceSessionId as Any,
+                                                "agent_id": agentId, "title": title])
+                respondToolResult(id: id,
+                                  text: (res["ok"] as? Bool) == true ? "Renamed tab to \"\(title)\"." : "Error: \(res["error"] as? String ?? "rename failed")",
+                                  isError: (res["ok"] as? Bool) != true)
             case "send_to_agent":
                 guard let agentId = arguments["agent_id"] as? String,
                       let prompt = arguments["prompt"] as? String
