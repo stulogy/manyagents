@@ -535,7 +535,7 @@ private struct CodeCopyButton: View {
                 Text(copied ? "Copied" : "Copy")
                     .font(.system(size: 10, weight: .semibold))
             }
-            .foregroundStyle(copied ? .green : .tertiary)
+            .foregroundStyle(copied ? Color.green : Color.secondary)
         }
         .buttonStyle(.plain)
         .help("Copy code")
