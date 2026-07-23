@@ -945,11 +945,18 @@ final class AgentSession: ObservableObject, Identifiable {
             // bug. A successful turn already set .waiting via .result, so the
             // `status == .running` check leaves it untouched.
             if status == .running {
-                if intentionalInterrupt || exitCode == 0 {
-                    status = .idle          // clean stop (force-send / normal exit)
+                if intentionalInterrupt {
+                    status = .idle          // deliberate (force-send / compaction)
                 } else {
+                    // No .result landed and this wasn't a deliberate
+                    // interrupt — the turn ended WITHOUT a response. Don't
+                    // go silently idle (the "it just stops, I have to nudge
+                    // again" bug); surface why. Most common cause is a
+                    // usage/rate limit or a transient CLI error.
                     status = .error
-                    lastError = "claude exited (\(exitCode))"
+                    lastError = exitCode == 0
+                        ? "The turn ended without a response — usually a usage/rate limit or a transient hiccup. Send again to retry."
+                        : "claude exited (\(exitCode)) without responding. Send again to retry."
                 }
             }
             intentionalInterrupt = false
