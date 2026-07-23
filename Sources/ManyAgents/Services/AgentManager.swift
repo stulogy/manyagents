@@ -7,7 +7,18 @@ import AppKit
 @MainActor
 final class AgentManager: ObservableObject {
     @Published private(set) var sessions: [AgentSession] = []
-    @Published var activeSessionId: UUID?
+    @Published var activeSessionId: UUID? {
+        didSet {
+            // Remember the last tab viewed in each project so switching back
+            // to a project returns to where you were, not the last tab in
+            // the list.
+            if let id = activeSessionId, let s = sessions.first(where: { $0.id == id }) {
+                lastActiveTabPerProject[s.cwd] = id
+            }
+        }
+    }
+    /// cwd → last-active tab id, for per-project tab memory (runtime only).
+    private var lastActiveTabPerProject: [String: UUID] = [:]
 
     // MARK: - Preview panel
     /// Per-TAB preview URLs keyed by session id. Keyed by tab (not cwd) so
@@ -465,7 +476,12 @@ final class AgentManager: ObservableObject {
     /// currently active for that cwd, fall back to the last one added.
     func activate(project: ProjectEntry) {
         if let active = activeSession, active.cwd == project.cwd { return }
-        if let last = project.sessions.last {
+        // Return to the last tab you were on in this project, if it's still
+        // open; otherwise fall back to the most recent tab.
+        if let remembered = lastActiveTabPerProject[project.cwd],
+           project.sessions.contains(where: { $0.id == remembered }) {
+            activeSessionId = remembered
+        } else if let last = project.sessions.last {
             activeSessionId = last.id
         }
     }
