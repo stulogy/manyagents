@@ -370,6 +370,22 @@ final class MCPRelay {
     }
 
     /// Create a new tab to work in — or REUSE an existing empty tab in the
+    /// A short, human tab title derived from a task prompt: strip any
+    /// `[Message from ...]` wrapper, take the first line, drop trailing
+    /// punctuation, and cap the length. Used when the orchestrator spawns a
+    /// worker without naming it, so the tab reads as the task rather than the
+    /// worker's opening sentence.
+    static func titleFromPrompt(_ prompt: String) -> String {
+        var s = prompt
+        if s.hasPrefix("["), let close = s.range(of: "]") {
+            s = String(s[close.upperBound...])
+        }
+        let firstLine = s.split(whereSeparator: \.isNewline).first.map(String.init) ?? s
+        let trimmed = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clean = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: ".:!?- "))
+        return String(clean.prefix(40))
+    }
+
     /// same project (no messages, nothing queued) so blank tabs don't pile
     /// up. Never reuses a tab that has history. Optionally sends a first
     /// prompt. Doesn't steal the user's focus.
@@ -411,10 +427,16 @@ final class MCPRelay {
         }
 
         // Orchestrator-chosen title — set it so AutoNamer leaves it alone
-        // and the tab shows the name the orchestrator intended.
+        // and the tab shows the name the orchestrator intended. When the
+        // orchestrator omits a title, derive one from the task prompt rather
+        // than letting AutoNamer name the tab from the worker's rambling first
+        // line ("I'm reading the context and will pre..."). A task-derived name
+        // is always more useful, and the orchestrator can rename_agent later.
         if let title = (req["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
            !title.isEmpty {
             target.aiTitle = String(title.prefix(40))
+        } else if !prompt.isEmpty {
+            target.aiTitle = Self.titleFromPrompt(prompt)
         }
         if !prompt.isEmpty {
             // Anti-loop: suppress the wake for the specific turn this prompt

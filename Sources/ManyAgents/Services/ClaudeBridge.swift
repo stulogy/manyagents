@@ -295,10 +295,13 @@ final class ClaudeBridge {
     /// The turn ends when claude emits `.result` (handleResult flips
     /// `turnInFlight` off); stdin stays open for the next message.
     func send(text: String, imagesPng: [Data]) {
-        guard !turnInFlight else {
-            emit(.systemError("Previous turn still in flight."))
-            return
-        }
+        // The caller only sends when the app considers the session idle, so a
+        // set flag here means a prior turn ended without clearing it (missed
+        // .result, kill -9, relaunch race). Treat it as stale and proceed —
+        // silently rejecting would drop the prompt and it would never reach
+        // claude. If the underlying process is genuinely wedged, the turn-start
+        // watchdog respawns it.
+        if turnInFlight { turnInFlight = false }
         ensureProcess()
         guard activeStdin != nil else { return }   // ensureProcess emitted the error
         askUserQuestionIds.removeAll()              // per-turn, not per-process

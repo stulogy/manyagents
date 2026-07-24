@@ -785,10 +785,13 @@ final class AgentSession: ObservableObject, Identifiable {
     // MARK: - Stream event handling
 
     private func handle(_ event: BridgeEvent) {
-        // Proof-of-life for the turn-start watchdog: ANY event means the
-        // process is alive and the prompt landed. A clean lifecycle also
-        // re-arms the one-retry budget.
-        lastBridgeEventAt = Date()
+        // Proof-of-life for the turn-start watchdog: a real turn event means
+        // the process is alive and the prompt landed. A .systemError does NOT
+        // count — a rejected or failed send emits one, and letting it bump the
+        // clock would fool the watchdog into thinking the prompt landed and
+        // leave a dropped prompt stuck forever. A clean lifecycle also re-arms
+        // the one-retry budget.
+        if case .systemError = event {} else { lastBridgeEventAt = Date() }
         if case .result = event { watchdogRetried = false }
         switch event {
         case .initialized(let sid, let model):
