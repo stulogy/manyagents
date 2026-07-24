@@ -315,6 +315,10 @@ struct MessageView: View {
         case "mcp__manyagents__unmute_agent":  return "Orchestrator unmuted a tab"
         case "mcp__manyagents__send_to_agent": return "Orchestrator messaged a tab"
         case "mcp__manyagents__new_agent":     return "Orchestrator started a tab"
+        case "mcp__manyagents__rename_agent":  return "Orchestrator renamed a tab"
+        case "mcp__manyagents__compact_agent": return "Orchestrator compacted a tab"
+        case "mcp__manyagents__close_agent":   return "Orchestrator closed a tab"
+        case "mcp__manyagents__notify_orchestrator": return "Pinged the orchestrator"
         default: return nil
         }
     }

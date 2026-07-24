@@ -246,6 +246,12 @@ final class AgentSession: ObservableObject, Identifiable {
         return "Untitled tab (\(displayName))"
     }
 
+    /// True once the CURRENT turn has produced any assistant output (text,
+    /// thinking, or a tool call). Reset at dispatch. If a turn ends with
+    /// this still false, the model returned nothing — surfaced as an error
+    /// instead of silently going idle (the "it just does nothing" bug).
+    private var turnProducedOutput = false
+
     /// Set when the orchestrator dispatched work to this tab fire-and-forget
     /// (or spawned it with a task). When the tab next finishes and goes
     /// quiet, it auto-notifies the orchestrator ONCE so the loop closes
@@ -600,6 +606,7 @@ final class AgentSession: ObservableObject, Identifiable {
         currentTurnOutputTokens = 0
         inflightTokenEstimate = 0
         currentPhase = "thinking"
+        turnProducedOutput = false
         // Stash for the auto-resumer. Cleared on the next clean .result.
         lastSentPrompt = prompt
         // Wire MCP for all sessions so open_preview is available everywhere.
@@ -795,6 +802,7 @@ final class AgentSession: ObservableObject, Identifiable {
         case .assistantBlocks(let blocks):
             // A fresh assistant turn supersedes any answered-question chip.
             answeredAsk = nil
+            turnProducedOutput = true
             // Either append to an in-progress assistant message or start a
             // new one. The CLI emits each assistant *message* as a single
             // event (not per-delta) when streaming is off.
@@ -882,6 +890,14 @@ final class AgentSession: ObservableObject, Identifiable {
                 if !NetworkMonitor.shared.isOnline {
                     awaitingNetworkResume = true
                 }
+            } else if !turnProducedOutput {
+                // The turn completed but the model produced NOTHING this
+                // turn (no text, no tool call) — a transient glitch. Don't
+                // silently go idle (the "it just does nothing, I re-nudge"
+                // bug); surface it so the user knows to retry. lastSentPrompt
+                // stays set so a resend is one action.
+                status = .error
+                lastError = "The model returned an empty response. Send again to retry."
             } else {
                 // Decide "waiting on you" vs "idle" by looking at the
                 // most recent assistant prose. claude is prompted (via
