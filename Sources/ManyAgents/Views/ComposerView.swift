@@ -28,7 +28,7 @@ struct ComposerView: View {
     var body: some View {
         VStack(spacing: 8) {
             voiceErrorBanner
-            if !session.pendingPrompts.isEmpty {
+            if !visibleQueued.isEmpty {
                 queuedStrip
             }
             if !pendingImages.isEmpty {
@@ -217,6 +217,23 @@ struct ComposerView: View {
     /// insertion line.
     @State private var dropTargetId: UUID?
 
+    /// Automatic inter-agent traffic (board wakes, orchestrator↔tab pings,
+    /// the "a dispatched tab stopped" auto-report) queues like anything else
+    /// but is plumbing the user never sends or manages — keep it out of the
+    /// composer strip entirely. It still drains on its own.
+    private func isSilentPlumbing(_ p: AgentSession.PendingPrompt) -> Bool {
+        if p.isBoardWake ?? false { return true }
+        return p.text.hasPrefix("[Message from orchestrator")
+            || p.text.hasPrefix("[Message from tab")
+            || p.text.hasPrefix("[Tab \"")
+    }
+
+    /// Queued prompts worth showing the user — everything except silent
+    /// inter-agent plumbing.
+    private var visibleQueued: [AgentSession.PendingPrompt] {
+        session.pendingPrompts.filter { !isSilentPlumbing($0) }
+    }
+
     /// Every queued prompt names itself — never a bare "Automatic
     /// message" and never raw bracket meta-text.
     private func queuedDisplay(_ p: AgentSession.PendingPrompt) -> (label: String, isAuto: Bool) {
@@ -238,7 +255,7 @@ struct ComposerView: View {
     /// on any to remove it before it fires.
     private var queuedStrip: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ForEach(session.pendingPrompts) { p in
+            ForEach(visibleQueued) { p in
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "clock.fill")
                         .font(.system(size: 11, weight: .semibold))

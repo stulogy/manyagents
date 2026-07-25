@@ -285,7 +285,7 @@ final class AgentManager: ObservableObject {
             source.pendingOrchestratorReport = false
             let name = source.aiTitle ?? source.displayName
             let snippet = String(source.latestSnippet.prefix(240))
-            orch.send("[Tab \"\(name)\" you dispatched has stopped — check whether it finished or needs a decision]\n\n\(snippet)")
+            orch.send("[Tab \"\(name)\" you dispatched has stopped. Check whether it finished or needs a decision]\n\n\(snippet)")
         }
         // A turn the orchestrator itself dispatched doesn't need logging —
         // the orchestrator already got the reply via the dispatch tool.

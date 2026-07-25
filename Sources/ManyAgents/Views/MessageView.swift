@@ -293,6 +293,11 @@ struct MessageView: View {
             // Worker pinged the orchestrator (notify_orchestrator).
             let name = text.split(separator: "\"").dropFirst().first.map(String.init)
             label = name.map { "Message from \($0)" } ?? "Message from a tab"
+        } else if text.hasPrefix("[Tab \"") {
+            // Auto-report: a dispatched worker tab finished its work and the
+            // manager woke the orchestrator once to check on it.
+            let name = text.split(separator: "\"").dropFirst().first.map(String.init)
+            label = name.map { "\($0) stopped" } ?? "A dispatched tab stopped"
         } else {
             return nil
         }
