@@ -929,7 +929,17 @@ final class AgentSession: ObservableObject, Identifiable {
             // Hand off to the next queued prompt on the next runloop tick so
             // any UI bound to .result has settled before the new turn flips
             // status back to .running.
-            DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
+            //
+            // But NOT while a deliberate interrupt is pending. On a force-send
+            // (or stop / answer / compact) we cancel() the running turn, and
+            // its .processExited is the single authoritative drain point. If
+            // claude's .result for the dying turn races ahead of that exit,
+            // draining here too pops a SECOND queued prompt and interleaves it
+            // — the "force-push also sent the message queued under it, out of
+            // order" bug. Let .processExited do the one drain.
+            if !intentionalInterrupt {
+                DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
+            }
         case .partialBlockKind(let kind):
             // Earliest-possible "what is claude doing right now" signal.
             // Stops the indicator from sitting on a rotating whimsy verb
