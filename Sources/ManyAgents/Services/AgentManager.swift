@@ -217,7 +217,7 @@ final class AgentManager: ObservableObject {
     func close(_ session: AgentSession) {
         session.disconnect()
         sessionSubscriptions.removeValue(forKey: session.id)
-        turnCompletionSubscriptions.removeValue(forKey: session.id)
+        turnEndSubscriptions.removeValue(forKey: session.id)
         notifySubscriptions.removeValue(forKey: session.id)
         // If the orchestrator is closing, any muted/hidden state it held is
         // gone with it; nothing else references this id. Drop it from every
@@ -238,15 +238,18 @@ final class AgentManager: ObservableObject {
 
     // MARK: - Turn completion → orchestrator wake
 
-    /// Per-session subscription to that session's turn-completed signal,
-    /// feeding the orchestrator "watch & nudge" loop.
-    private var turnCompletionSubscriptions: [UUID: AnyCancellable] = [:]
+    /// Per-session subscription to that session's turn-END signal, feeding the
+    /// orchestrator "watch & nudge" loop. Deliberately the end signal and not
+    /// `turnCompleted`: a turn that errors, returns nothing, or dies with its
+    /// process never completes, and hanging the orchestrator's loop off the
+    /// clean-only signal is what left it waiting on tabs forever.
+    private var turnEndSubscriptions: [UUID: AnyCancellable] = [:]
 
     private func wireTurnCompletion(for session: AgentSession) {
-        turnCompletionSubscriptions[session.id] = session.turnCompleted
-            .sink { [weak self, weak session] lastAssistantText in
+        turnEndSubscriptions[session.id] = session.turnEnded
+            .sink { [weak self, weak session] end in
                 guard let self, let session else { return }
-                self.handleTurnCompleted(on: session, payload: lastAssistantText)
+                self.handleTurnEnded(on: session, end: end)
             }
     }
 
@@ -271,25 +274,33 @@ final class AgentManager: ObservableObject {
     /// orchestrator's pending board digest — zero tokens; the digest rides
     /// along with the orchestrator's next prompt. (Replaced the timed
     /// board-wake turns, which burned a full context read per wake.)
-    private func handleTurnCompleted(on source: AgentSession, payload: String) {
+    private func handleTurnEnded(on source: AgentSession, end: AgentSession.TurnEnd) {
         // The orchestrator's own turn finishing must not log itself.
         if source.isCoordinator { return }
+        // A deliberate interrupt isn't the tab stopping — a replacement turn is
+        // already queued behind it. Wait for that one to end instead.
+        if end.interrupted { return }
         // Auto-report: a worker the orchestrator dispatched fire-and-forget
         // (or spawned with a task) has stopped and has no more queued work —
-        // wake the orchestrator ONCE so it can act (is it done? does it need
-        // a decision?). Runs even for suppressed turns, since this IS the
-        // intended ping. Fires only on completion, not every turn, so it
-        // won't reintroduce the noisy timed wakes.
+        // wake the orchestrator ONCE so it can act (is it done? did it break?
+        // does it need a decision?). Runs even for suppressed turns, since
+        // this IS the intended ping. Fires only when the tab goes quiet, not
+        // every turn, so it won't reintroduce the noisy timed wakes.
         if source.pendingOrchestratorReport, source.pendingPrompts.isEmpty,
-           let orch = orchestrator(for: source.cwd), orch.id != source.id {
+           let orch = reportTarget(for: source), orch.id != source.id {
             source.pendingOrchestratorReport = false
+            source.reportToOrchestratorId = nil
             let name = source.aiTitle ?? source.displayName
-            let snippet = String(source.latestSnippet.prefix(240))
-            orch.send("[Tab \"\(name)\" you dispatched has stopped. Check whether it finished or needs a decision]\n\n\(snippet)")
+            let snippet = String(end.text.prefix(240))
+            let headline = end.status == .error
+                ? "[Tab \"\(name)\" you dispatched STOPPED ON AN ERROR — it did not finish. Decide whether to retry it, reassign the work, or route around it]"
+                : "[Tab \"\(name)\" you dispatched has stopped. Check whether it finished or needs a decision]"
+            orch.send("\(headline)\n\n\(snippet)")
         }
         // A turn the orchestrator itself dispatched doesn't need logging —
         // the orchestrator already got the reply via the dispatch tool.
-        if source.suppressedOrchestratorTurns.remove(source.completedTurns) != nil {
+        if let promptId = end.promptId,
+           source.suppressedPromptIds.remove(promptId) != nil {
             return
         }
         guard let orch = orchestrator(for: source.cwd),
@@ -298,9 +309,10 @@ final class AgentManager: ObservableObject {
               !orch.mutedTabIds.contains(source.id)
         else { return }
         let time = Self.digestTimeFormatter.string(from: Date())
-        let snippet = String(source.latestSnippet.prefix(140))
+        let snippet = String(end.text.prefix(140))
+        let verb = end.status == .error ? "errored" : "finished"
         orch.pendingBoardUpdates.append(
-            "• \(time) \(source.aiTitle ?? source.displayName) [\(source.id)] finished — \(snippet)")
+            "• \(time) \(source.aiTitle ?? source.displayName) [\(source.id)] \(verb) — \(snippet)")
         // Cap: keep the newest entries; an old flood isn't actionable.
         if orch.pendingBoardUpdates.count > 30 {
             orch.pendingBoardUpdates.removeFirst(orch.pendingBoardUpdates.count - 30)
@@ -321,6 +333,20 @@ final class AgentManager: ObservableObject {
     /// own project, never a different session's.
     func orchestrator(for cwd: String) -> AgentSession? {
         sessions.first { $0.isCoordinator && $0.cwd == cwd }
+    }
+
+    /// Who a dispatched tab reports back to: the orchestrator that actually
+    /// dispatched it (recorded on the tab at dispatch time), falling back to
+    /// whichever orchestrator owns its project. The recorded id is what makes
+    /// the report land when the worker's cwd differs from the orchestrator's —
+    /// a subdir or a worktree — where the cwd lookup finds nobody and the
+    /// report used to vanish without a trace.
+    private func reportTarget(for source: AgentSession) -> AgentSession? {
+        if let id = source.reportToOrchestratorId,
+           let orch = sessions.first(where: { $0.id == id }) {
+            return orch
+        }
+        return orchestrator(for: source.cwd)
     }
 
     /// Designate / un-designate a tab as the orchestrator. Exclusive: making

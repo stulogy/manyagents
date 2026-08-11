@@ -333,7 +333,7 @@ private final class ServerState {
                         ],
                         "wait_for_result": [
                             "type": "boolean",
-                            "description": "If true (default), blocks until the tab's turn completes and returns its reply. If false, returns immediately.",
+                            "description": "If true (default), blocks until the tab's turn ends and returns its reply — or, if the tab errors, says so. Blocks for at most 10 minutes; past that it returns status 'still_running' and the tab pings you itself when it stops, so treat that as normal, not as failure. If false, returns immediately and the tab pings you when it stops.",
                             "default": true
                         ]
                     ],
@@ -576,9 +576,18 @@ private final class ServerState {
                 if (res["ok"] as? Bool) == true {
                     let reply = res["reply"] as? String ?? "(sent)"
                     let status = res["status"] as? String ?? "unknown"
-                    let body = wait
+                    // A wait that timed out or got interrupted carries a note
+                    // instead of a reply — pass it through verbatim so the
+                    // orchestrator sees "still working, you'll be pinged"
+                    // rather than a blank reply it has to guess at.
+                    let note = res["note"] as? String
+                    var body = wait
                         ? "[Reply from tab \(agentId) · status: \(status)]\n\n\(reply)"
                         : "[Sent to tab \(agentId) · status: \(status)] (not waiting)"
+                    if let note, !note.isEmpty {
+                        body = "[Tab \(agentId) · status: \(status)]\n\n\(note)"
+                            + (reply.isEmpty ? "" : "\n\nLast thing it said:\n\(reply)")
+                    }
                     respondToolResult(id: id, text: body)
                 } else {
                     respondToolResult(id: id,

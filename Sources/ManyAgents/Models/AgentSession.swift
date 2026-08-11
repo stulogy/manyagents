@@ -38,6 +38,7 @@ final class AgentSession: ObservableObject, Identifiable {
             // notifications. didSet never fires on the initial value.
             if oldValue == .running && status != .running {
                 finishedWorking.send(status)
+                emitTurnEnded()
             }
         }
     }
@@ -45,6 +46,49 @@ final class AgentSession: ObservableObject, Identifiable {
     /// Emits the terminal status each time the agent stops working. The
     /// manager subscribes to drive system notifications / sounds.
     let finishedWorking = PassthroughSubject<AgentStatus, Never>()
+
+    /// Fires exactly once per turn END, whatever the outcome — clean result,
+    /// error, empty response, dead process, or a deliberate interrupt.
+    /// `turnCompleted` covers only the clean case, so anything that waits on
+    /// that (the orchestrator's dispatch, the dispatched-tab auto-report) waits
+    /// forever the moment a turn breaks. This is the signal to wait on.
+    let turnEnded = PassthroughSubject<TurnEnd, Never>()
+
+    struct TurnEnd {
+        /// Id of the prompt whose turn just ended. Lets a waiter match the end
+        /// to the exact prompt it sent instead of counting completions — a
+        /// count drifts as soon as any intervening turn errors, because an
+        /// errored turn never emits one.
+        let promptId: UUID?
+        let status: AgentStatus
+        /// The assistant's closing text, or the error when the turn broke.
+        let text: String
+        /// True when the turn was deliberately cancelled (force-send, answered
+        /// question, compaction) rather than ending under its own steam. A
+        /// replacement turn is already on its way.
+        let interrupted: Bool
+    }
+
+    /// The most recent turn end. Kept so a waiter that subscribes a beat after
+    /// sending still sees the end it was waiting for instead of hanging.
+    private(set) var lastTurnEnd: TurnEnd?
+
+    /// Id of the prompt driving the in-flight turn, stamped onto its TurnEnd.
+    private var currentPromptId: UUID?
+
+    private func emitTurnEnded() {
+        let text: String
+        if status == .error {
+            text = lastError ?? "The turn ended with an error."
+        } else {
+            text = messages.last(where: { $0.role == .assistant })?.flatText ?? ""
+        }
+        let end = TurnEnd(promptId: currentPromptId, status: status,
+                          text: text, interrupted: intentionalInterrupt)
+        currentPromptId = nil
+        lastTurnEnd = end
+        turnEnded.send(end)
+    }
     @Published var claudeSessionId: String?
     @Published var lastError: String?
     @Published var totalInputTokens: Int = 0
@@ -224,19 +268,13 @@ final class AgentSession: ObservableObject, Identifiable {
     /// coalesces a burst of completions into a single follow-up "recheck"
     /// ping once the current orchestrator turn lands. Orchestrator only.
     @Published var pendingOrchestratorRecheck: Bool = false
-    /// Count of clean turn completions on this session, monotonic for its
-    /// lifetime. Feeds the orchestrator wake signature (so back-to-back
-    /// completions with the same end status still register as change) and
-    /// indexes the anti-loop suppression below.
-    private(set) var completedTurns: Int = 0
-
-    /// Turn indices (values of `completedTurns` at completion time) whose
-    /// completion must NOT ping the orchestrator — set on a TARGET tab when
-    /// the orchestrator dispatches a prompt into it, since it already gets
-    /// that reply via the dispatch tool. Indexed rather than a single bool
-    /// so a busy tab's own in-flight turn doesn't consume the suppression
-    /// meant for the orchestrator's turn (and then double-ping).
-    var suppressedOrchestratorTurns: Set<Int> = []
+    /// Prompts whose turn must NOT ping the orchestrator through the board
+    /// digest — set on a TARGET tab when the orchestrator dispatches into it,
+    /// since it gets that reply via the dispatch tool (or the auto-report).
+    /// Keyed by prompt id, not by turn index: index arithmetic assumed every
+    /// turn ahead of ours would complete cleanly, and one errored turn shifted
+    /// the whole sequence so a real completion got swallowed.
+    var suppressedPromptIds: Set<UUID> = []
 
     /// Name used on the orchestrator board and in digests. An unnamed
     /// tab's displayName is the bare project name ("uhp"), which reads
@@ -256,7 +294,15 @@ final class AgentSession: ObservableObject, Identifiable {
     /// (or spawned it with a task). When the tab next finishes and goes
     /// quiet, it auto-notifies the orchestrator ONCE so the loop closes
     /// without anyone remembering to ask it to report back. Cleared on fire.
+    /// Fires on ANY turn end, including an errored one — a tab that broke is
+    /// exactly what the orchestrator needs to hear about, and waiting for a
+    /// clean completion that will never come is what left it hanging.
     var pendingOrchestratorReport: Bool = false
+
+    /// Which orchestrator this tab reports back to, recorded at dispatch time.
+    /// Routing by cwd alone silently found nobody whenever the worker sat in a
+    /// different directory (a subdir or a worktree) from the orchestrator.
+    var reportToOrchestratorId: UUID?
 
     /// One-line snapshot of what this tab last said — used for the
     /// orchestrator board and wake pings. Empty when nothing yet.
@@ -313,10 +359,10 @@ final class AgentSession: ObservableObject, Identifiable {
         ))
     }
 
-    /// Fires once whenever a turn resolves cleanly (`.result` without
-    /// error). AgentManager subscribes to this to drive the orchestrator
-    /// "watch & nudge" wake. Carries the assistant text from the turn that
-    /// just ended (whatever the model said last).
+    /// Fires once whenever a turn resolves cleanly (`.result` without error),
+    /// carrying the assistant text from the turn that just ended. Drives
+    /// compaction phase 2, which genuinely only cares about clean turns.
+    /// Anything that must not miss a broken turn watches `turnEnded` instead.
     let turnCompleted = PassthroughSubject<String, Never>()
 
     /// True while AutoNamer is generating this tab's title — the tab row
@@ -565,8 +611,12 @@ final class AgentSession: ObservableObject, Identifiable {
              visible: false)
     }
 
+    /// Returns the id of the prompt, so a caller (the orchestrator relay) can
+    /// wait for the end of the turn THIS prompt causes, whether it runs now or
+    /// drains out of the queue later.
+    @discardableResult
     func send(_ text: String, images: [Data] = [], visible: Bool = true,
-              boardWake: Bool = false) {
+              boardWake: Bool = false) -> UUID {
         // Clear any waiting-for-net state — the user just hit send
         // again, so they're taking control back from the auto-resumer.
         awaitingNetworkResume = false
@@ -577,9 +627,10 @@ final class AgentSession: ObservableObject, Identifiable {
         // session's seed and "resumed" the old turn. Queue until seeded.
         if status == .running || bridge.isBusy || isCompacting {
             pendingPrompts.append(prompt)
-            return
+            return prompt.id
         }
         dispatch(prompt)
+        return prompt.id
     }
 
     /// Actually push a prompt to the bridge. Adds the user message to the
@@ -598,6 +649,13 @@ final class AgentSession: ObservableObject, Identifiable {
         }
         // Tag the assistant output of this turn if it's an automatic board-wake.
         currentTurnIsBoardWake = (prompt.isBoardWake == true)
+        // Stamped onto this turn's TurnEnd so a waiter can match end to prompt.
+        currentPromptId = prompt.id
+        // A fresh turn is never pre-interrupted. Normally `.processExited`
+        // clears this, but if a cancel() finds no live process that event never
+        // lands — and a stuck flag would mark the next real turn end as
+        // "interrupted" and swallow its report.
+        intentionalInterrupt = false
         status = .running
         // Normally a fresh turn starts the timer now; but a force-send carries
         // the interrupted turn's start time so the timer continues unbroken.
@@ -671,11 +729,15 @@ final class AgentSession: ObservableObject, Identifiable {
                   self.lastBridgeEventAt < dispatchedAt,
                   let prompt = self.lastSentPrompt else { return }
             if self.watchdogRetried {
-                self.status = .error
                 self.lastError = "The agent process isn't responding. Try sending again."
+                self.status = .error
                 return
             }
             self.watchdogRetried = true
+            // Deliberate kill: mark it so `.processExited` doesn't score the
+            // respawn as a failed turn and report a phantom error to the
+            // orchestrator seconds before the retry actually runs.
+            self.intentionalInterrupt = true
             self.bridge.cancel()
             // Give the kill a beat to settle, then re-dispatch the same
             // prompt — dispatch() respawns the process with --resume.
@@ -884,8 +946,11 @@ final class AgentSession: ObservableObject, Identifiable {
                             costUsd: cost ?? 0,
                             model: model)
             if isError {
-                status = .error
+                // lastError BEFORE status: setting status fires the turn-end
+                // signal synchronously, and the orchestrator report reads the
+                // error off the session. Same ordering at every error site.
                 lastError = resultText
+                status = .error
                 // If we lost the network, flag for auto-resume rather
                 // than asking the user to retype the prompt. The manager
                 // re-dispatches lastSentPrompt as soon as the path goes
@@ -899,8 +964,8 @@ final class AgentSession: ObservableObject, Identifiable {
                 // silently go idle (the "it just does nothing, I re-nudge"
                 // bug); surface it so the user knows to retry. lastSentPrompt
                 // stays set so a resend is one action.
-                status = .error
                 lastError = "The model returned an empty response. Send again to retry."
+                status = .error
             } else {
                 // Decide "waiting on you" vs "idle" by looking at the
                 // most recent assistant prose. claude is prompted (via
@@ -915,10 +980,6 @@ final class AgentSession: ObservableObject, Identifiable {
                 // resumer has nothing to retry.
                 lastSentPrompt = nil
                 awaitingNetworkResume = false
-                // Tell AgentManager a clean turn just landed so the
-                // orchestrator watch-&-nudge loop can wake. Only fires for
-                // non-error completions so we don't nudge on a broken turn.
-                completedTurns += 1
                 turnCompleted.send(lastAssistantText)
             }
             currentTurnStartedAt = nil
@@ -988,10 +1049,10 @@ final class AgentSession: ObservableObject, Identifiable {
                     // go silently idle (the "it just stops, I have to nudge
                     // again" bug); surface why. Most common cause is a
                     // usage/rate limit or a transient CLI error.
-                    status = .error
                     lastError = exitCode == 0
                         ? "The turn ended without a response — usually a usage/rate limit or a transient hiccup. Send again to retry."
                         : "claude exited (\(exitCode)) without responding. Send again to retry."
+                    status = .error
                 }
             }
             intentionalInterrupt = false
@@ -1006,8 +1067,8 @@ final class AgentSession: ObservableObject, Identifiable {
             // drain the next queued prompt.
             DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
         case .systemError(let message):
-            status = .error
             lastError = message
+            status = .error
         }
     }
 

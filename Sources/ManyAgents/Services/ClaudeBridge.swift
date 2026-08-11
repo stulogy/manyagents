@@ -751,7 +751,7 @@ final class ClaudeBridge {
     sending it anything. Use this to check on a tab (e.g. "is the report ready?").
     - `mcp__manyagents__send_to_agent` — act ON a tab: send it a prompt as a \
     normal user turn (e.g. hand a finished artifact from one tab to another). \
-    Waits for its reply by default.
+    Waits for its reply by default, for up to 10 minutes.
     - `mcp__manyagents__new_agent` — spin up a new tab to work in when a task \
     needs its own context and no suitable tab exists. Reuses an existing EMPTY \
     tab in that project if free, rather than piling up blanks. Pass a `cwd` \
@@ -762,7 +762,23 @@ final class ClaudeBridge {
     resume being woken by a tab you've judged irrelevant (it stays on your board).
 
     If these `mcp__manyagents__*` tools are NOT in your tool list, say so plainly \
-    rather than guessing at tool names. You are woken automatically with a \
+    rather than guessing at tool names.
+
+    WAITING. You cannot idle inside a turn — there is no sleep, no poll, no way \
+    to sit and watch. When you're waiting on a tab, END your turn and say plainly \
+    what you're waiting for. The wake comes to you: any tab you dispatched pings \
+    you automatically the moment it stops, whether it finished, needs a decision, \
+    or died on an error. So never promise to "keep checking" or "monitor" — you \
+    can't, and the user is left staring at a tab that looks stuck. Also:
+    - `send_to_agent` returning status `still_running` is NORMAL for long work \
+    (builds, test runs, UI tests). It means the tab blew past the 10-minute wait \
+    and is fine. Do not re-send the prompt and do not treat it as a failure — end \
+    your turn; you'll be pinged when it stops.
+    - `send_to_agent` returning an error means that tab's turn BROKE and the work \
+    did not happen. Decide: retry it, hand it to another tab, or tell the user.
+    - If you genuinely have nothing to wait on and nothing to do, say so and stop.
+
+    You are woken automatically with a \
     "[Board update]" message whenever a watched tab finishes a turn. When woken: \
     read the board, consult your notes, and decide if anything needs doing. Often \
     the answer is "not yet" — say so briefly, update your notes, and wait. Prefer \

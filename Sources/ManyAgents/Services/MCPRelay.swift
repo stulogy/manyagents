@@ -439,18 +439,20 @@ final class MCPRelay {
             target.aiTitle = Self.titleFromPrompt(prompt)
         }
         if !prompt.isEmpty {
-            // Anti-loop: suppress the wake for the specific turn this prompt
-            // causes (a reused/new tab is idle, so it's the very next one).
-            target.suppressedOrchestratorTurns.insert(target.completedTurns + 1)
             // Spawned with a task → auto-report back to the orchestrator
             // when it finishes (new_agent doesn't wait).
+            let orchUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
             target.pendingOrchestratorReport = true
-            if let orchUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:)),
-               let orch = mgr.sessions.first(where: { $0.id == orchUUID }) {
-                target.send("[Message from orchestrator \"\(orch.aiTitle ?? orch.displayName)\"]\n\n\(prompt)")
+            target.reportToOrchestratorId = orchUUID
+            let promptId: UUID
+            if let orchUUID, let orch = mgr.sessions.first(where: { $0.id == orchUUID }) {
+                promptId = target.send("[Message from orchestrator \"\(orch.aiTitle ?? orch.displayName)\"]\n\n\(prompt)")
             } else {
-                target.send(prompt)
+                promptId = target.send(prompt)
             }
+            // Anti-loop: the turn this prompt causes must not ALSO reach the
+            // orchestrator via the board digest — the auto-report covers it.
+            target.suppressedPromptIds.insert(promptId)
         }
         return ["id": id, "ok": true, "agent_id": target.id.uuidString, "reused": reused, "cwd": cwd]
     }
@@ -496,66 +498,105 @@ final class MCPRelay {
         let sourceIdStr = req["source_session_id"] as? String
         let sourceUUID = sourceIdStr.flatMap(UUID.init(uuidString:))
 
-        // If the target was busy when this dispatch lands, its queue
-        // already has work ahead of ours. We need to wait for those
-        // turn-completions to drain BEFORE the one that belongs to
-        // our prompt. Snapshot before send() so the count's right.
-        let turnsAhead = (target.status == .running ? 1 : 0)
-                       + target.pendingPrompts.count
-
         // Surface this dispatch in the Orchestrator panel.
         let recordId = mgr.recordDispatchStart(coordinatorId: sourceUUID,
                                                target: target, prompt: prompt)
 
-        // Anti-loop: the turn-completion OUR prompt causes must not wake
-        // the orchestrator back — it captures the reply here directly.
-        // Indexed past the in-flight/queued turns so those still ping.
-        target.suppressedOrchestratorTurns.insert(target.completedTurns + turnsAhead + 1)
         // Fire-and-forget dispatch (not waiting for the reply) → have the
         // tab auto-report to the orchestrator when it finishes. (The
         // wait_for_result path captures the reply synchronously instead.)
-        if !wait { target.pendingOrchestratorReport = true }
+        if !wait {
+            target.pendingOrchestratorReport = true
+            target.reportToOrchestratorId = sourceUUID
+        }
         // Tag provenance so the receiving tab knows it's the orchestrator
         // talking, then send it as a normal user turn.
+        let promptId: UUID
         if let src = sourceUUID, let s = mgr.sessions.first(where: { $0.id == src }) {
-            target.send("[Message from orchestrator \"\(s.aiTitle ?? s.displayName)\"]\n\n\(prompt)")
+            promptId = target.send("[Message from orchestrator \"\(s.aiTitle ?? s.displayName)\"]\n\n\(prompt)")
         } else {
-            target.send(prompt)
+            promptId = target.send(prompt)
         }
+        // Anti-loop: the turn OUR prompt causes must not wake the orchestrator
+        // back through the board digest — it's captured here directly (or by
+        // the auto-report). Keyed by prompt id, so turns already in flight or
+        // queued ahead of ours still ping normally.
+        target.suppressedPromptIds.insert(promptId)
 
         if !wait {
             mgr.recordDispatchEnd(recordId, success: true)
             return ["id": id, "ok": true, "agent_id": targetIdStr, "status": "dispatched"]
         }
 
-        // Skip `turnsAhead` completions, then capture the one
-        // belonging to our prompt.
-        let reply = await awaitTurnCompletion(on: target, skip: turnsAhead)
-        mgr.recordDispatchEnd(recordId, success: reply != nil)
+        guard let end = await awaitTurnEnd(on: target, promptId: promptId) else {
+            // Still going after the timeout. Never leave the orchestrator on a
+            // silent dead end: drop the suppression so the eventual end reaches
+            // the board, and arm the auto-report so the tab wakes the
+            // orchestrator itself when it finally stops.
+            target.suppressedPromptIds.remove(promptId)
+            target.pendingOrchestratorReport = true
+            target.reportToOrchestratorId = sourceUUID
+            mgr.recordDispatchEnd(recordId, success: false)
+            return [
+                "id": id, "ok": true, "agent_id": targetIdStr,
+                "status": "still_running", "reply": "",
+                "note": "Waited 10 minutes and the tab is STILL working — this is not a failure. You'll be pinged automatically when it stops, so don't block on it or re-send: go do other work."
+            ]
+        }
+        if end.interrupted {
+            // The user cut in (force-send / answered a question). Our prompt's
+            // turn is gone, but the tab carries on — arm the report so its next
+            // stop still reaches the orchestrator.
+            target.pendingOrchestratorReport = true
+            target.reportToOrchestratorId = sourceUUID
+            mgr.recordDispatchEnd(recordId, success: false)
+            return [
+                "id": id, "ok": true, "agent_id": targetIdStr,
+                "status": "interrupted", "reply": end.text,
+                "note": "The user interrupted that turn. You'll be pinged when the tab next stops."
+            ]
+        }
+        mgr.recordDispatchEnd(recordId, success: end.status != .error)
+        if end.status == .error {
+            return [
+                "id": id, "ok": false, "agent_id": targetIdStr,
+                "status": "error",
+                "error": "that tab's turn ended with an error and it did NOT do the work: \(end.text)"
+            ]
+        }
         return [
             "id": id,
             "ok": true,
             "agent_id": targetIdStr,
-            "reply": reply ?? "",
+            "reply": end.text,
             "status": statusString(target.status)
         ]
     }
 
-    /// Suspends until the (skip+1)-th `.turnCompleted` from `target` —
-    /// i.e. wait through any in-flight + already-queued turns, then
-    /// capture the one our dispatch caused. Times out at 10 minutes
-    /// so a hung agent doesn't pin a coordinator's tool call forever.
+    /// Suspends until the turn driven by `promptId` ends — cleanly, on an
+    /// error, or by interruption. Returns nil if it hasn't ended within 10
+    /// minutes so a long-running tab doesn't pin a coordinator's tool call
+    /// forever; the caller turns that into an auto-report instead.
+    ///
+    /// Matched by prompt id rather than by counting turn completions: turns
+    /// that error emit no completion, so the old count-and-skip arithmetic
+    /// drifted and waited on a signal that never arrived — the orchestrator
+    /// then sat "waiting for tabs" until the timeout, with the real reply
+    /// already discarded.
     @MainActor
-    private func awaitTurnCompletion(on target: AgentSession, skip: Int) async -> String? {
-        await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+    private func awaitTurnEnd(on target: AgentSession, promptId: UUID) async -> AgentSession.TurnEnd? {
+        // The turn can land while this call suspends — check the record first
+        // so a late subscriber doesn't wait for an event already gone by.
+        if let last = target.lastTurnEnd, last.promptId == promptId { return last }
+        return await withCheckedContinuation { (cont: CheckedContinuation<AgentSession.TurnEnd?, Never>) in
             var resumed = false
-            let cancellable = target.turnCompleted
-                .dropFirst(skip)
+            let cancellable = target.turnEnded
+                .filter { $0.promptId == promptId }
                 .prefix(1)
-                .sink { text in
+                .sink { end in
                     if !resumed {
                         resumed = true
-                        cont.resume(returning: text)
+                        cont.resume(returning: end)
                     }
                 }
             // Belt-and-braces timeout. The cancellable is captured by
