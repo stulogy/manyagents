@@ -30,6 +30,10 @@ targets:
       path: Resources/ManyAgents.entitlements
       properties:
         com.apple.security.app-sandbox: false
+        # Required under the hardened runtime for microphone capture —
+        # without it AVCaptureDevice reports denied even when System
+        # Settings grants the app microphone access.
+        com.apple.security.device.audio-input: true
     sources:
       - path: Sources/ManyAgents
       # Including Resources/ in sources is how xcodegen wires the asset
