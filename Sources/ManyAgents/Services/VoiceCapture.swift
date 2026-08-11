@@ -3,9 +3,15 @@ import AVFoundation
 import Speech
 import Combine
 
-/// On-device speech recognition wrapper. Push-to-talk: caller toggles
-/// `start()` and `stop()`, partial transcripts stream via @Published
-/// `liveTranscript`, final result lands in `finalTranscript` once stopped.
+/// Record-then-transcribe voice capture (ChatGPT-style). Clicking the mic
+/// records the whole utterance to a temp audio file — pauses, silences and
+/// all — and nothing is recognized until the user clicks stop. The complete
+/// file is then transcribed in one pass and the result lands in
+/// `finalTranscript`.
+///
+/// This deliberately avoids live streaming recognition: Apple's live
+/// recognizer finalizes the task after a short silence, which made capture
+/// cut off whenever the user paused mid-thought.
 @MainActor
 final class VoiceCapture: ObservableObject {
     enum Authorization {
@@ -16,7 +22,7 @@ final class VoiceCapture: ObservableObject {
     }
 
     @Published private(set) var isRecording = false
-    @Published private(set) var liveTranscript: String = ""
+    @Published private(set) var isTranscribing = false
     @Published private(set) var finalTranscript: String = ""
     @Published private(set) var errorMessage: String?
     @Published private(set) var speechAuthorization: Authorization = .undetermined
@@ -24,8 +30,9 @@ final class VoiceCapture: ObservableObject {
 
     private let engine = AVAudioEngine()
     private var recognizer: SFSpeechRecognizer?
-    private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
+    private var audioFile: AVAudioFile?
+    private var audioFileURL: URL?
 
     init() {
         let r = SFSpeechRecognizer(locale: Locale.current) ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
@@ -38,6 +45,7 @@ final class VoiceCapture: ObservableObject {
     /// Toggle path used by the UI's mic button. Handles all permission
     /// prompts inline so the user never lands in a "nothing happens" state.
     func toggle() {
+        if isTranscribing { return }
         if isRecording {
             stop()
             return
@@ -81,7 +89,6 @@ final class VoiceCapture: ObservableObject {
     private func start() {
         guard !isRecording else { return }
         errorMessage = nil
-        liveTranscript = ""
         finalTranscript = ""
 
         guard let recognizer, recognizer.isAvailable else {
@@ -92,13 +99,6 @@ final class VoiceCapture: ObservableObject {
             errorMessage = "Enable Dictation in System Settings → Keyboard → Dictation, then tap the mic again."
             return
         }
-
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        if recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = true
-        }
-        self.request = request
 
         // Stop the engine first if it was running from a prior session that
         // exited uncleanly. installTap on a running engine throws.
@@ -117,8 +117,22 @@ final class VoiceCapture: ObservableObject {
         } catch {
             // Ignored — voice processing tweaks are nice-to-have.
         }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voice-capture-\(UUID().uuidString).caf")
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(forWriting: url, settings: format.settings)
+        } catch {
+            errorMessage = "Could not create recording file: \(error.localizedDescription)"
+            return
+        }
+        audioFile = file
+        audioFileURL = url
+
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-            request.append(buffer)
+            // Write on the tap's audio thread; AVAudioFile serializes writes.
+            try? file.write(from: buffer)
         }
 
         engine.prepare()
@@ -126,29 +140,8 @@ final class VoiceCapture: ObservableObject {
             try engine.start()
         } catch {
             errorMessage = "Audio engine failed to start: \(error.localizedDescription)"
-            cleanup()
+            teardownRecording()
             return
-        }
-
-        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            Task { @MainActor in
-                guard let self else { return }
-                if let result {
-                    self.liveTranscript = result.bestTranscription.formattedString
-                    if result.isFinal {
-                        self.finalTranscript = result.bestTranscription.formattedString
-                        self.cleanup()
-                    }
-                }
-                if let error {
-                    let ns = error as NSError
-                    let benign: Set<Int> = [203, 1110, 301, 216]
-                    if !benign.contains(ns.code) {
-                        self.errorMessage = error.localizedDescription
-                    }
-                    self.cleanup()
-                }
-            }
         }
 
         isRecording = true
@@ -156,20 +149,73 @@ final class VoiceCapture: ObservableObject {
 
     func stop() {
         guard isRecording else { return }
-        finalTranscript = liveTranscript
-        cleanup()
+        teardownRecording()
+        isRecording = false
+        transcribeCapturedFile()
     }
 
-    private func cleanup() {
+    /// Stops the engine and closes the file without touching transcription
+    /// state.
+    private func teardownRecording() {
         if engine.isRunning {
             engine.stop()
             engine.inputNode.removeTap(onBus: 0)
         }
-        request?.endAudio()
+        // Releasing the AVAudioFile closes it and flushes the header.
+        audioFile = nil
+    }
+
+    private func transcribeCapturedFile() {
+        guard let url = audioFileURL, let recognizer, recognizer.isAvailable else {
+            discardAudioFile()
+            return
+        }
+
+        let request = SFSpeechURLRecognitionRequest(url: url)
+        request.shouldReportPartialResults = false
+        request.taskHint = .dictation
+        // On-device recognition has no duration limit; the server path caps
+        // out around a minute, so prefer local whenever the model exists.
+        if recognizer.supportsOnDeviceRecognition {
+            request.requiresOnDeviceRecognition = true
+        }
+
+        isTranscribing = true
+        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let result, result.isFinal {
+                    self.finalTranscript = result.bestTranscription.formattedString
+                    self.finishTranscription()
+                    return
+                }
+                if let error {
+                    let ns = error as NSError
+                    // 203/1110 = "no speech detected" variants — an empty
+                    // recording, not a failure worth surfacing.
+                    let benign: Set<Int> = [203, 1110, 301, 216]
+                    if !benign.contains(ns.code) {
+                        self.errorMessage = error.localizedDescription
+                    }
+                    self.finishTranscription()
+                }
+            }
+        }
+    }
+
+    private func finishTranscription() {
         task?.cancel()
-        request = nil
         task = nil
-        isRecording = false
+        isTranscribing = false
+        discardAudioFile()
+    }
+
+    private func discardAudioFile() {
+        if let url = audioFileURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        audioFileURL = nil
+        audioFile = nil
     }
 
     // MARK: - Mapping

@@ -68,11 +68,14 @@ struct ComposerView: View {
             y: 0
         )
         .onAppear { focused = true }
-        .onChange(of: voice.liveTranscript) { _, partial in
-            guard voice.isRecording else { return }
+        // The transcript arrives asynchronously after the user clicks stop —
+        // the whole recording is transcribed in one pass (no live partials).
+        .onChange(of: voice.finalTranscript) { _, transcript in
+            guard !transcript.isEmpty else { return }
             session.draftText = preVoiceDraft.isEmpty
-                ? partial
-                : preVoiceDraft + " " + partial
+                ? transcript
+                : preVoiceDraft + " " + transcript
+            focused = true
         }
     }
 
@@ -185,12 +188,19 @@ struct ComposerView: View {
 
     private var micButton: some View {
         Button(action: toggleRecording) {
-            Image(systemName: voice.isRecording ? "stop.circle.fill" : "mic.circle.fill")
-                .font(.system(size: 28))
-                .foregroundStyle(voice.isRecording ? .red : .secondary.opacity(0.75))
+            if voice.isTranscribing {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 28, height: 28)
+            } else {
+                Image(systemName: voice.isRecording ? "stop.circle.fill" : "mic.circle.fill")
+                    .font(.system(size: 28))
+                    .foregroundStyle(voice.isRecording ? .red : .secondary.opacity(0.75))
+            }
         }
         .buttonStyle(.plain)
-        .help(voice.isRecording ? "Stop recording" : "Dictate")
+        .disabled(voice.isTranscribing)
+        .help(voice.isTranscribing ? "Transcribing…" : (voice.isRecording ? "Stop and transcribe" : "Dictate"))
     }
 
     private var sendButton: some View {
@@ -210,7 +220,7 @@ struct ComposerView: View {
         // dispatched FIFO when the current turn lands. But NOT while
         // compacting: the session is being torn down and reseeded, so a
         // prompt now would race the fresh session.
-        return (hasText || !pendingImages.isEmpty) && !voice.isRecording && !session.isCompacting
+        return (hasText || !pendingImages.isEmpty) && !voice.isRecording && !voice.isTranscribing && !session.isCompacting
     }
 
     /// Row currently hovered by a queued-prompt drag — draws the
@@ -335,14 +345,12 @@ struct ComposerView: View {
 
     private func toggleRecording() {
         if voice.isRecording {
+            // Stops recording and kicks off transcription; the transcript
+            // lands via the onChange(of: voice.finalTranscript) observer.
             voice.toggle()
-            if !voice.finalTranscript.isEmpty {
-                session.draftText = preVoiceDraft.isEmpty
-                    ? voice.finalTranscript
-                    : preVoiceDraft + " " + voice.finalTranscript
-            }
-            focused = true
         } else {
+            // Snapshot the draft so a second recording appends to whatever
+            // is already there instead of replacing it.
             preVoiceDraft = session.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
             voice.toggle()
         }
