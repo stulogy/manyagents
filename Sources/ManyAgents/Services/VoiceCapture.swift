@@ -25,6 +25,9 @@ final class VoiceCapture: ObservableObject {
     @Published private(set) var isTranscribing = false
     @Published private(set) var finalTranscript: String = ""
     @Published private(set) var errorMessage: String?
+    /// Deep link into System Settings for the pane that fixes the current
+    /// error — nil when the error isn't a settings problem.
+    @Published private(set) var settingsURL: URL?
     @Published private(set) var speechAuthorization: Authorization = .undetermined
     @Published private(set) var micAuthorization: Authorization = .undetermined
 
@@ -54,6 +57,8 @@ final class VoiceCapture: ObservableObject {
     }
 
     private func ensureAuthorizationAndStart() {
+        errorMessage = nil
+        settingsURL = nil
         // 1. Speech recognition.
         if speechAuthorization == .undetermined {
             SFSpeechRecognizer.requestAuthorization { [weak self] status in
@@ -66,6 +71,7 @@ final class VoiceCapture: ObservableObject {
         }
         guard speechAuthorization == .granted else {
             errorMessage = "Speech recognition not authorized. Enable in System Settings → Privacy & Security → Speech Recognition."
+            settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition")
             return
         }
         // 2. Microphone.
@@ -80,6 +86,7 @@ final class VoiceCapture: ObservableObject {
         }
         guard micAuthorization == .granted else {
             errorMessage = "Microphone access denied. Enable in System Settings → Privacy & Security → Microphone."
+            settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
             return
         }
         // 3. Both granted — actually start recording.
@@ -89,6 +96,7 @@ final class VoiceCapture: ObservableObject {
     private func start() {
         guard !isRecording else { return }
         errorMessage = nil
+        settingsURL = nil
         finalTranscript = ""
 
         guard let recognizer, recognizer.isAvailable else {
@@ -97,6 +105,7 @@ final class VoiceCapture: ObservableObject {
             // SFSpeechRecognizer can't initialize without at least one of
             // them enabled, even with mic + speech permissions granted.
             errorMessage = "Enable Dictation in System Settings → Keyboard → Dictation, then tap the mic again."
+            settingsURL = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension?Dictation")
             return
         }
 

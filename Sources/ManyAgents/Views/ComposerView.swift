@@ -91,14 +91,17 @@ struct ComposerView: View {
                     .foregroundStyle(.primary.opacity(0.85))
                     .lineLimit(2)
                 Spacer(minLength: 0)
-                Button("Open Settings") {
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension?Dictation") {
+                // Each error carries its own System Settings deep link —
+                // mic errors open the Microphone privacy pane, speech
+                // errors the Speech Recognition pane, and so on.
+                if let url = voice.settingsURL {
+                    Button("Open Settings") {
                         NSWorkspace.shared.open(url)
                     }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(Color.brandOrange)
                 }
-                .buttonStyle(.borderless)
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(Color.brandOrange)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)

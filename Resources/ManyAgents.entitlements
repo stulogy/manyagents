@@ -4,5 +4,10 @@
 <dict>
     <key>com.apple.security.app-sandbox</key>
     <false/>
+    <!-- Required under the hardened runtime for microphone capture; without
+         it AVCaptureDevice reports denied even when System Settings grants
+         the app microphone access. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
 </dict>
 </plist>
