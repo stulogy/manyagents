@@ -23,6 +23,8 @@ struct SettingsView: View {
 private struct GeneralSettingsTab: View {
     @AppStorage(ClaudeBridge.Keys.model)
     private var preferredModel = ""
+    @AppStorage(VoiceCapture.Keys.inputDeviceUID)
+    private var inputDeviceUID = ""
 
     var body: some View {
         Form {
@@ -34,6 +36,18 @@ private struct GeneralSettingsTab: View {
                 }
             } footer: {
                 Text("Applies to new sessions. Change it mid-conversation and the session respawns on the new model with history preserved.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Picker("Microphone", selection: $inputDeviceUID) {
+                    Text("System Default").tag("")
+                    ForEach(VoiceCapture.availableInputs()) { device in
+                        Text(device.name).tag(device.id)
+                    }
+                }
+            } footer: {
+                Text("Used for voice input in the composer. System Default follows the input selected in macOS Sound settings — pick a specific microphone if your default input is an audio interface.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }

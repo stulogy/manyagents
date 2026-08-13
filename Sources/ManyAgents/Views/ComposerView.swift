@@ -28,6 +28,7 @@ struct ComposerView: View {
     var body: some View {
         VStack(spacing: 8) {
             voiceErrorBanner
+            voiceStatusStrip
             if !visibleQueued.isEmpty {
                 queuedStrip
             }
@@ -35,7 +36,16 @@ struct ComposerView: View {
                 imageStrip
             }
             HStack(alignment: .bottom, spacing: 8) {
-                editor
+                // While the mic is active, the recording/transcribing state
+                // takes over the editor's slot instead of stacking another
+                // strip above the composer.
+                if voice.isRecording {
+                    inlineRecording
+                } else if voice.isTranscribing {
+                    inlineTranscribing
+                } else {
+                    editor
+                }
                 micButton
                 sendButton
             }
@@ -110,6 +120,99 @@ struct ComposerView: View {
                     .fill(Color.orange.opacity(0.10))
             )
         }
+    }
+
+    /// Pulsing-dot state for the recording indicator.
+    @State private var recordPulse = false
+    /// Saved microphone pick — empty string means "system default".
+    @AppStorage(VoiceCapture.Keys.inputDeviceUID) private var inputDeviceUID = ""
+
+    /// Replaces the text editor while recording: pulsing dot, elapsed
+    /// clock, live level meter, and which microphone is being used.
+    private var inlineRecording: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(.red)
+                .frame(width: 8, height: 8)
+                .opacity(recordPulse ? 0.25 : 1)
+                .onAppear {
+                    withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) {
+                        recordPulse = true
+                    }
+                }
+                .onDisappear { recordPulse = false }
+            Text(timeString(voice.elapsed))
+                .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                .foregroundStyle(.red)
+            levelMeter
+            Spacer(minLength: 0)
+            Text(voice.activeDeviceName)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.horizontal, 4)
+    }
+
+    /// Replaces the text editor while the finished take is transcribed.
+    private var inlineTranscribing: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Transcribing…")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.horizontal, 4)
+    }
+
+    /// Transient outcome notice ("No speech detected") shown above the
+    /// editor after a take that produced nothing.
+    @ViewBuilder
+    private var voiceStatusStrip: some View {
+        if !voice.isRecording, !voice.isTranscribing, let notice = voice.statusMessage {
+            HStack(spacing: 8) {
+                Image(systemName: "waveform.slash")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(notice)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
+            )
+        }
+    }
+
+    /// Bars scale with the live input level, tallest in the middle.
+    private var levelMeter: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<14, id: \.self) { i in
+                Capsule()
+                    .fill(Color.red.opacity(0.85))
+                    .frame(width: 3, height: barHeight(i))
+            }
+        }
+        .frame(height: 20)
+        .animation(.linear(duration: 0.08), value: voice.audioLevel)
+    }
+
+    private func barHeight(_ i: Int) -> CGFloat {
+        let falloff = 1.0 - abs(Double(i) - 6.5) / 9.0
+        return CGFloat(3 + Double(voice.audioLevel) * 16 * falloff)
+    }
+
+    private func timeString(_ t: TimeInterval) -> String {
+        let s = Int(t)
+        return String(format: "%d:%02d", s / 60, s % 60)
     }
 
     private var borderColor: Color {
@@ -191,19 +294,28 @@ struct ComposerView: View {
 
     private var micButton: some View {
         Button(action: toggleRecording) {
-            if voice.isTranscribing {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 28, height: 28)
-            } else {
-                Image(systemName: voice.isRecording ? "stop.circle.fill" : "mic.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundStyle(voice.isRecording ? .red : .secondary.opacity(0.75))
-            }
+            Image(systemName: voice.isRecording ? "stop.circle.fill" : "mic.circle.fill")
+                .font(.system(size: 28))
+                .foregroundStyle(
+                    voice.isRecording
+                        ? .red
+                        : .secondary.opacity(voice.isTranscribing ? 0.35 : 0.75)
+                )
         }
         .buttonStyle(.plain)
         .disabled(voice.isTranscribing)
-        .help(voice.isTranscribing ? "Transcribing…" : (voice.isRecording ? "Stop and transcribe" : "Dictate"))
+        .help(voice.isTranscribing ? "Transcribing…" : (voice.isRecording ? "Stop and transcribe" : "Dictate (right-click to pick microphone)"))
+        // Right-click picks which microphone to record from. Also in
+        // Settings → General.
+        .contextMenu {
+            Picker("Microphone", selection: $inputDeviceUID) {
+                Text("System Default").tag("")
+                ForEach(VoiceCapture.availableInputs()) { device in
+                    Text(device.name).tag(device.id)
+                }
+            }
+            .pickerStyle(.inline)
+        }
     }
 
     private var sendButton: some View {
