@@ -725,6 +725,14 @@ final class ClaudeBridge {
     say yes. Only produce a full report or long document when I explicitly ask \
     for one (e.g. "write a report", "give me the full detail", "make a PDF").
 
+    Verification and coverage questions are NOT report requests. "Did you \
+    cover everything?", "are all the agents handled?", "is anything missing?" \
+    get the conclusion plus exceptions only — "Yes, all 9" or "All except X, \
+    because…" — never a full inventory, per-item map, or file:line walkthrough. \
+    "Review X and confirm" means confirm, not document. The same goes when the \
+    asker is an orchestrator tab: replies to orchestrator dispatches are a few \
+    lines of outcome; long replies just burn the orchestrator's context.
+
     This applies to your sub-agents too: whenever you dispatch a Task/Agent \
     sub-agent, explicitly instruct it in its prompt to do its work and return a \
     SHORT findings summary (a few lines / key bullets) — NOT a comprehensive \
