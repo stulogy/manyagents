@@ -788,6 +788,7 @@ final class ClaudeBridge {
     private static let manyAgentsToolsSystemPrompt = """
     This session runs inside the ManyAgents app. Its MCP tools (mcp__manyagents__open_preview, mcp__manyagents__notify_orchestrator, and — on orchestrator sessions — list_agents / read_agent / send_to_agent / new_agent / rename_agent / compact_agent / close_agent / set_notes / mute_agent) are loaded DIRECTLY into your toolset. To compact or close a tab, call compact_agent / close_agent — do NOT send it a "/compact" text message (the CLI doesn't process slash commands; it just makes the tab write a summary). They into your toolset — they are not deferred, so ToolSearch will not find them. Do not conclude they are unavailable from a ToolSearch miss; call them directly by name.
     If a project orchestrator is coordinating you and you get blocked, need a decision, or finish a long task it was waiting on (tests, a deploy, a build), call mcp__manyagents__notify_orchestrator with a specific message to wake it — it will take a turn to act on it.
+    Messages from the orchestrator (or the user) can be injected into your RUNNING turn — they appear mid-turn, often alongside a tool result. Treat such a message as arriving NOW: if it tells you to stop, stand down, or change course, obey it immediately — drop the current plan, do not first finish the step you were on, and acknowledge briefly. Because you only see injected messages when your current tool call returns, never run a long foreground command that blocks you for many minutes: run long builds, test suites, installs, and servers with the Bash tool's run_in_background option (or a modest timeout) and poll their output — that keeps you reachable mid-task.
     If this conversation was resumed after an app or process restart, any background tasks, watchers, or dev servers you started earlier are DEAD — they died with the previous process. Never trust a prior turn's claim that something is being watched or served; re-check actual state (and re-arm watchers or restart servers) before relying on it.
     """
 
@@ -836,11 +837,19 @@ final class ClaudeBridge {
     title, status, and a one-line snapshot of each. Hidden tabs are excluded.
     - `mcp__manyagents__read_agent` — peek at a tab's recent transcript WITHOUT \
     sending it anything. Use this to check on a tab (e.g. "is the report ready?").
-    - `mcp__manyagents__send_to_agent` — act ON a tab: send it a prompt as a \
-    normal user turn (e.g. hand a finished artifact from one tab to another). \
-    Fire-and-forget: it returns immediately and the tab pings you when its \
-    turn ends. Pass wait_for_result true ONLY for a genuinely quick question \
-    you cannot proceed without — never for real work.
+    - `mcp__manyagents__send_to_agent` — act ON a tab: send it a prompt (e.g. \
+    hand a finished artifact from one tab to another). Delivery is immediate: \
+    an idle tab starts a turn; a BUSY tab gets the message injected into its \
+    running turn and reads it at its next step. Delivered is not acted-on — a \
+    busy tab has not read your message yet when the call returns, and a tab \
+    inside a long build or test command won't reach that step for minutes. So \
+    for a control message the tab MUST obey now — "STAND DOWN", "stop \
+    pushing", "you're duplicating another tab" — pass `interrupt: true`: that \
+    stops its current turn and makes it read you within seconds. Either way, \
+    delivered is not complied-with: confirm via its ping or read_agent before \
+    acting as if it stopped. Fire-and-forget: it returns immediately and the \
+    tab pings you when its turn ends. Pass wait_for_result true ONLY for a \
+    genuinely quick question you cannot proceed without — never for real work.
     - `mcp__manyagents__new_agent` — spin up a new tab to work in when a task \
     needs its own context and no suitable tab exists. Reuses an existing EMPTY \
     tab in that project if free, rather than piling up blanks. Pass a `cwd` \
@@ -866,7 +875,12 @@ final class ClaudeBridge {
     - If you opted into wait_for_result and got status `still_running`, that's \
     NORMAL for long work: the tab blew past the 10-minute wait and is fine. Do \
     not re-send the prompt and do not treat it as a failure — end your turn; \
-    you'll be pinged when it stops.
+    you'll be pinged when it stops. The wait also returns `still_running` \
+    early when a message arrives FOR YOU while you're blocked — that message \
+    is already in your context: read it and act on it this turn.
+    - Tab pings and reports can be injected into your RUNNING turn — they \
+    appear mid-turn, often next to a tool result. Act on them at your next \
+    step; don't finish a long checklist first and don't miss them.
     - A dispatch reporting an error means that tab's turn BROKE and the work \
     did not happen. Decide: retry it, hand it to another tab, or tell the user.
     - If you genuinely have nothing to wait on and nothing to do, say so and stop.

@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import Network
 
 /// In-process server that exposes a "dispatch another agent" API to
@@ -256,8 +257,9 @@ final class MCPRelay {
         // Steered into the orchestrator's RUNNING turn when it's busy (it
         // reads the ping at its next step) — a queued ping used to sit
         // undelivered behind a long orchestrator turn.
-        orch.deliverInterjection("[Message from tab \"\(name)\" — it pinged you and needs a turn]\n\n\(message)")
-        return ["id": id, "ok": true]
+        let delivery = orch.deliverNow("[Message from tab \"\(name)\" — it pinged you and needs a turn]\n\n\(message)")
+        return ["id": id, "ok": true,
+                "delivery": delivery.steered ? "injected_into_running_turn" : "started_a_turn"]
     }
 
     @MainActor
@@ -319,8 +321,10 @@ final class MCPRelay {
     }
 
     /// Suspend until the user resolves this permission request via
-    /// `session.respondToPermission(allow:message:)`. Times out at
-    /// 30 minutes — well beyond a sane wait, but bounds the relay.
+    /// `session.respondToPermission(allow:message:)`. Times out at 24
+    /// minutes — well beyond a sane wait, but bounds the relay, and lands
+    /// inside the MCP client's own wait so claude gets a real deny rather
+    /// than having the tool call aborted under it.
     @MainActor
     private func awaitPermissionDecision(session: AgentSession, requestId: String) async -> (allow: Bool, message: String?) {
         await withCheckedContinuation { (cont: CheckedContinuation<(Bool, String?), Never>) in
@@ -334,7 +338,7 @@ final class MCPRelay {
                         cont.resume(returning: (decision.allow, decision.message))
                     }
                 }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1800) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1440) {
                 if !resumed {
                     resumed = true
                     cancellable.cancel()
@@ -544,30 +548,93 @@ final class MCPRelay {
             target.reportToOrchestratorId = sourceUUID
         }
         // Tag provenance so the receiving tab knows it's the orchestrator
-        // talking, then send it as a normal user turn.
-        let promptId: UUID
-        if let src = sourceUUID, let s = mgr.sessions.first(where: { $0.id == src }) {
-            promptId = target.send("[Message from orchestrator \"\(s.aiTitle ?? s.displayName)\"]\n\n\(prompt)")
+        // talking, then deliver it NOW: steered into the tab's running turn
+        // when it's busy (it reads the message at its next tool boundary)
+        // instead of queuing behind the whole turn — a queued "stop what
+        // you're doing" used to sit unread while the tab kept working and
+        // the orchestrator, seeing the dispatch succeed, assumed it knew.
+        let source = sourceUUID.flatMap { uid in mgr.sessions.first { $0.id == uid } }
+        let outgoing: String
+        if let source {
+            outgoing = "[Message from orchestrator \"\(source.aiTitle ?? source.displayName)\"]\n\n\(prompt)"
         } else {
-            promptId = target.send(prompt)
+            outgoing = prompt
         }
-        // Anti-loop: the turn OUR prompt causes must not wake the orchestrator
-        // back through the board digest — it's captured here directly (or by
-        // the auto-report). Keyed by prompt id, so turns already in flight or
-        // queued ahead of ours still ping normally.
-        target.suppressedPromptIds.insert(promptId)
+        // `interrupt`: a control message ("stand down") can't wait for a long
+        // tool call to return, so kill the turn and deliver it as the next one.
+        let interrupt = req["interrupt"] as? Bool ?? false
+        let delivery: (coveringPromptId: UUID?, steered: Bool)
+        if interrupt, target.status == .running || target.bridge.isBusy {
+            delivery = (target.deliverInterrupting(outgoing), false)
+        } else {
+            delivery = target.deliverNow(outgoing)
+        }
+        // Anti-loop: the turn that carries OUR prompt must not wake the
+        // orchestrator back through the board digest — it's captured here
+        // directly (or by the auto-report). When steered, that's the LIVE
+        // turn; when sent, the fresh prompt's own turn.
+        if let coveringId = delivery.coveringPromptId {
+            target.suppressedPromptIds.insert(coveringId)
+        }
 
         if !wait {
             mgr.recordDispatchEnd(recordId, success: true)
-            return ["id": id, "ok": true, "agent_id": targetIdStr, "status": "dispatched"]
+            var result: [String: Any] = ["id": id, "ok": true, "agent_id": targetIdStr, "status": "dispatched"]
+            if interrupt {
+                result["note"] = "Interrupted that tab's turn and delivered your message as its next turn — it starts reading it now. Its previous work stopped where it stood; expect its reply to reflect that."
+            } else if delivery.steered {
+                result["note"] = "That tab is MID-TURN: your message was injected into its running turn and it will read it at its next step — but it has NOT read or acted on it yet. If it's stuck in a long tool call (a build, a test run) that step can be minutes away, so for anything it must comply with, either re-send with interrupt true or confirm via its ping / read_agent before assuming it stopped."
+            }
+            return result
         }
 
-        guard let end = await awaitTurnEnd(on: target, promptId: promptId) else {
+        // Steered into a live turn: that turn's end is NOT reliably the answer
+        // to our message (the CLI may run it as a fresh turn instead), and the
+        // old behavior — block, then hand back whatever text landed — either
+        // burned the full 10 minutes against a busy tab or returned a stale
+        // reply. Don't pretend to wait: report the delivery and let the tab's
+        // own ping carry the answer.
+        if delivery.steered {
+            if let coveringId = delivery.coveringPromptId {
+                target.suppressedPromptIds.remove(coveringId)
+            }
+            target.pendingOrchestratorReport = true
+            target.reportToOrchestratorId = sourceUUID
+            mgr.recordDispatchEnd(recordId, success: true)
+            return [
+                "id": id, "ok": true, "agent_id": targetIdStr,
+                "status": "delivered_mid_turn", "reply": "",
+                "note": "That tab was already mid-turn, so waiting would have blocked you without getting an answer. Your message is injected into its running turn and it reads it at its next step; it pings you when it stops. End your turn. If it must obey NOW, re-send with interrupt true."
+            ]
+        }
+
+        let outcome = await awaitTurnEnd(on: target,
+                                         promptId: delivery.coveringPromptId,
+                                         bailForInterjectionsOn: source)
+        if case .interjected = outcome {
+            // A message just landed in the WAITER's own context — it can only
+            // read it once this tool call returns, so return now. The tab keeps
+            // working; make sure its eventual stop still reaches the board.
+            if let coveringId = delivery.coveringPromptId {
+                target.suppressedPromptIds.remove(coveringId)
+            }
+            target.pendingOrchestratorReport = true
+            target.reportToOrchestratorId = sourceUUID
+            mgr.recordDispatchEnd(recordId, success: true)
+            return [
+                "id": id, "ok": true, "agent_id": targetIdStr,
+                "status": "still_running", "reply": "",
+                "note": "Stopped waiting because a message arrived FOR YOU while you were blocked — it is in your context now; read and act on it this turn. The tab is still working and pings you when it stops."
+            ]
+        }
+        guard case .ended(let end) = outcome else {
             // Still going after the timeout. Never leave the orchestrator on a
             // silent dead end: drop the suppression so the eventual end reaches
             // the board, and arm the auto-report so the tab wakes the
             // orchestrator itself when it finally stops.
-            target.suppressedPromptIds.remove(promptId)
+            if let coveringId = delivery.coveringPromptId {
+                target.suppressedPromptIds.remove(coveringId)
+            }
             target.pendingOrchestratorReport = true
             target.reportToOrchestratorId = sourceUUID
             mgr.recordDispatchEnd(recordId, success: false)
@@ -607,10 +674,23 @@ final class MCPRelay {
         ]
     }
 
-    /// Suspends until the turn driven by `promptId` ends — cleanly, on an
-    /// error, or by interruption. Returns nil if it hasn't ended within 10
-    /// minutes so a long-running tab doesn't pin a coordinator's tool call
-    /// forever; the caller turns that into an auto-report instead.
+    /// How a blocking wait on a dispatched turn resolved.
+    private enum WaitOutcome {
+        case ended(AgentSession.TurnEnd)
+        case timedOut
+        /// A message was steered into the WAITER's running turn while it sat
+        /// in this tool call. It can only read that message once the call
+        /// returns — so the wait aborts instead of keeping the waiter deaf.
+        case interjected
+    }
+
+    /// Suspends until the turn covering the delivery ends — cleanly, on an
+    /// error, or by interruption. `promptId` nil means the delivery was
+    /// steered into a CLI-initiated turn with no app-side id: the NEXT turn
+    /// end is the one that covers it. Times out at 10 minutes so a
+    /// long-running tab doesn't pin a coordinator's tool call forever; the
+    /// caller turns that into an auto-report instead. If a message lands in
+    /// `waiter`'s own turn meanwhile, resolves `.interjected` immediately.
     ///
     /// Matched by prompt id rather than by counting turn completions: turns
     /// that error emit no completion, so the old count-and-skip arithmetic
@@ -618,29 +698,35 @@ final class MCPRelay {
     /// then sat "waiting for tabs" until the timeout, with the real reply
     /// already discarded.
     @MainActor
-    private func awaitTurnEnd(on target: AgentSession, promptId: UUID) async -> AgentSession.TurnEnd? {
+    private func awaitTurnEnd(on target: AgentSession, promptId: UUID?,
+                              bailForInterjectionsOn waiter: AgentSession?) async -> WaitOutcome {
         // The turn can land while this call suspends — check the record first
         // so a late subscriber doesn't wait for an event already gone by.
-        if let last = target.lastTurnEnd, last.promptId == promptId { return last }
-        return await withCheckedContinuation { (cont: CheckedContinuation<AgentSession.TurnEnd?, Never>) in
+        if let promptId, let last = target.lastTurnEnd, last.promptId == promptId {
+            return .ended(last)
+        }
+        return await withCheckedContinuation { (cont: CheckedContinuation<WaitOutcome, Never>) in
             var resumed = false
-            let cancellable = target.turnEnded
-                .filter { $0.promptId == promptId }
+            var cancellables: [AnyCancellable] = []
+            let finish: (WaitOutcome) -> Void = { outcome in
+                guard !resumed else { return }
+                resumed = true
+                cont.resume(returning: outcome)
+            }
+            target.turnEnded
+                .filter { promptId == nil || $0.promptId == promptId }
                 .prefix(1)
-                .sink { end in
-                    if !resumed {
-                        resumed = true
-                        cont.resume(returning: end)
-                    }
-                }
-            // Belt-and-braces timeout. The cancellable is captured by
-            // the work item so it stays alive until either path fires.
+                .sink { finish(.ended($0)) }
+                .store(in: &cancellables)
+            waiter?.interjectionDelivered
+                .prefix(1)
+                .sink { finish(.interjected) }
+                .store(in: &cancellables)
+            // Belt-and-braces timeout. The cancellables are captured by
+            // the work item so they stay alive until a path fires.
             DispatchQueue.main.asyncAfter(deadline: .now() + 600) {
-                if !resumed {
-                    resumed = true
-                    cancellable.cancel()
-                    cont.resume(returning: nil)
-                }
+                cancellables.forEach { $0.cancel() }
+                finish(.timedOut)
             }
         }
     }

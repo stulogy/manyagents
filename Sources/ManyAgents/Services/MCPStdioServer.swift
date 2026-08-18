@@ -62,7 +62,11 @@ enum MCPStdioServer {
 
 // MARK: - Internals
 
-private final class ServerState {
+/// `@unchecked Sendable`: `pending` is guarded by `lock`, and the connection
+/// plus its read buffer are only ever touched on `netQueue`. The state is
+/// reached from both the stdin loop and network callbacks, so the compiler
+/// needs to be told the locking is deliberate.
+private final class ServerState: @unchecked Sendable {
     let args: MCPStdioServer.Args
     private var relay: NWConnection?
     /// Outstanding relay requests, keyed by request id. Each pending
@@ -101,6 +105,9 @@ private final class ServerState {
         // bound the socket. Retry a handful of times with linear backoff
         // before giving up. The wait per attempt is ~250 ms.
         connectAttempts += 1
+        // A half-line left over from a dropped connection would corrupt the
+        // first reply parsed off the new one.
+        relayBuffer.removeAll()
         let endpoint = NWEndpoint.unix(path: args.socketPath)
         let params = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
         let conn = NWConnection(to: endpoint, using: params)
@@ -139,10 +146,23 @@ private final class ServerState {
     private func sendRelay(_ payload: [String: Any]) {
         guard let conn = relay,
               let data = try? JSONSerialization.data(withJSONObject: payload, options: [])
-        else { return }
+        else {
+            // No live connection — fail this request's waiter instead of
+            // letting it hang. A silently dropped write is what turned a lost
+            // message into a 30-minute stall with no error and no retry.
+            if let id = payload["id"] as? String {
+                failPending(id, reason: "no connection to the ManyAgents app")
+            }
+            return
+        }
         var out = data
         out.append(0x0A)
-        conn.send(content: out, completion: .contentProcessed { _ in })
+        let id = payload["id"] as? String
+        conn.send(content: out, completion: .contentProcessed { [weak self] error in
+            if let error, let id {
+                self?.failPending(id, reason: "write to the ManyAgents app failed: \(error.localizedDescription)")
+            }
+        })
     }
 
     private func receiveRelay() {
@@ -186,10 +206,38 @@ private final class ServerState {
         callbacks.values.forEach { $0(.failure(error)) }
     }
 
+    /// Fail one outstanding request. No-op if its reply already landed.
+    private func failPending(_ id: String, reason: String) {
+        lock.lock()
+        let cb = pending.removeValue(forKey: id)
+        lock.unlock()
+        cb?(.failure(NSError(domain: "MCPStdio", code: -3,
+                             userInfo: [NSLocalizedDescriptionKey: reason])))
+    }
+
+    /// How long to wait for the app's reply, per op. Everything is fast
+    /// (sub-second) except the two ops that deliberately suspend: a
+    /// `wait_for_result` dispatch (relay caps at 600s) and a permission
+    /// prompt (waits on a human). Both stay under Claude Code's own 1800s
+    /// MCP idle abort so the tool returns a real message instead of the
+    /// harness killing it with the payload lost.
+    private func relayTimeout(for op: String, payload: [String: Any]) -> Double {
+        switch op {
+        case "dispatch":
+            return (payload["wait_for_result"] as? Bool ?? false) ? 660 : 20
+        case "permission_prompt":
+            return 1500
+        default:
+            return 20
+        }
+    }
+
     private func awaitRelay(_ payload: [String: Any]) async throws -> [String: Any] {
         let id = (payload["id"] as? String) ?? UUID().uuidString
         var withId = payload
         withId["id"] = id
+        let op = payload["op"] as? String ?? ""
+        let timeout = relayTimeout(for: op, payload: payload)
         return try await withCheckedThrowingContinuation { cont in
             lock.lock()
             pending[id] = { result in
@@ -199,6 +247,18 @@ private final class ServerState {
                 }
             }
             lock.unlock()
+            // Never wait forever on a reply that may never come (the app
+            // quit, restarted onto a new socket, or the write vanished).
+            // Without this the call hung until the harness aborted it half an
+            // hour later — and the message it carried was silently lost.
+            netQueue.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                self?.failPending(id, reason: """
+                    the ManyAgents app did not reply within \(Int(timeout))s. \
+                    Your message was NOT delivered. The app may have restarted \
+                    (which rotates the connection). Tell the user it failed \
+                    rather than assuming it arrived.
+                    """)
+            }
             sendRelay(withId)
         }
     }
@@ -349,7 +409,7 @@ private final class ServerState {
             ],
             [
                 "name": "send_to_agent",
-                "description": "Take action ON a tab: send it a prompt as a normal user turn (e.g. hand a finished report from one tab to another, or ask a tab to do something). Fire-and-forget by default: returns immediately, and the tab pings you when its turn ends — end your own turn and act on that ping. The tab is tagged so it knows the message came from you, the orchestrator.",
+                "description": "Take action ON a tab: send it a prompt (e.g. hand a finished report from one tab to another, or ask a tab to do something). Delivered IMMEDIATELY: an idle tab starts a turn; a busy tab has the message injected into its RUNNING turn and reads it at its next step. Delivered is not acted-on: a mid-turn tab has not read your message yet when this returns, so for anything the tab must comply with (stop, change course), wait for its ping or check read_agent before assuming it has. Fire-and-forget by default: returns immediately, and the tab pings you when its turn ends — end your own turn and act on that ping. The tab is tagged so it knows the message came from you, the orchestrator.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -361,9 +421,14 @@ private final class ServerState {
                             "type": "string",
                             "description": "What to send the tab."
                         ],
+                        "interrupt": [
+                            "type": "boolean",
+                            "description": "Default false. True STOPS the tab's current turn and delivers your message as its next turn, so it reads it within seconds even if it's buried in a long build or test command. Use for control messages the tab must obey now — 'STAND DOWN', 'stop pushing', 'you're duplicating another tab'. Costs the tab its in-flight step (unsaved reasoning is lost, files already written stay written), so don't use it for routine hand-offs or new tasks.",
+                            "default": false
+                        ],
                         "wait_for_result": [
                             "type": "boolean",
-                            "description": "Default false: return immediately; the tab pings you when it stops. Set true ONLY for a genuinely quick question you cannot proceed without — it blocks your turn until the tab's turn ends (at most 10 minutes; past that it returns status 'still_running' and the tab pings you itself when it stops — treat that as normal, not as failure). Never set true for long work like builds, test runs, or multi-step tasks.",
+                            "description": "Default false: return immediately; the tab pings you when it stops. Set true ONLY for a genuinely quick question you cannot proceed without — it blocks your turn until the tab's turn ends (at most 10 minutes; past that it returns status 'still_running' and the tab pings you itself when it stops — treat that as normal, not as failure). It also returns 'still_running' early if a message arrives FOR YOU while you wait, so you can read it — check your context for it. Never set true for long work like builds, test runs, or multi-step tasks.",
                             "default": false
                         ]
                     ],
@@ -610,7 +675,8 @@ private final class ServerState {
                     "source_session_id": args.sourceSessionId as Any,
                     "agent_id": agentId,
                     "prompt": prompt,
-                    "wait_for_result": wait
+                    "wait_for_result": wait,
+                    "interrupt": (arguments["interrupt"] as? Bool) ?? false
                 ])
                 if (res["ok"] as? Bool) == true {
                     let reply = res["reply"] as? String ?? "(sent)"
@@ -674,9 +740,14 @@ private final class ServerState {
                 let res = try await awaitRelay(["op": "notify_orchestrator",
                                                 "source_session_id": args.sourceSessionId as Any,
                                                 "message": message])
+                let ok = (res["ok"] as? Bool) == true
+                let steered = (res["delivery"] as? String) == "injected_into_running_turn"
+                let okText = steered
+                    ? "Delivered — the orchestrator is mid-turn, so your message was injected into its running turn and it reads it at its next step. It has NOT acted on it yet."
+                    : "Orchestrator notified — it is taking a turn on your message now."
                 respondToolResult(id: id,
-                                  text: (res["ok"] as? Bool) == true ? "Orchestrator notified." : "Error: \(res["error"] as? String ?? "failed")",
-                                  isError: (res["ok"] as? Bool) != true)
+                                  text: ok ? okText : "Error: \(res["error"] as? String ?? "failed")",
+                                  isError: !ok)
             default:
                 respondToolResult(id: id, text: "Unknown tool: \(name)", isError: true)
             }

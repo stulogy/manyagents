@@ -295,7 +295,11 @@ final class AgentManager: ObservableObject {
             let headline = end.status == .error
                 ? "[Tab \"\(name)\" you dispatched STOPPED ON AN ERROR — it did not finish. Decide whether to retry it, reassign the work, or route around it]"
                 : "[Tab \"\(name)\" you dispatched has stopped. Check whether it finished or needs a decision]"
-            orch.send("\(headline)\n\n\(snippet)")
+            // Steered into the orchestrator's RUNNING turn when it's busy —
+            // a queued report used to sit unread behind a long orchestrator
+            // turn, which kept "waiting on tabs" for work that had already
+            // stopped. Same delivery as notify_orchestrator pings.
+            orch.deliverInterjection("\(headline)\n\n\(snippet)")
         }
         // A turn the orchestrator itself dispatched doesn't need logging —
         // the orchestrator already got the reply via the dispatch tool.

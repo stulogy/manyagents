@@ -640,18 +640,64 @@ final class AgentSession: ObservableObject, Identifiable {
         return prompt.id
     }
 
+    /// Fires whenever a message is steered into this session's RUNNING turn.
+    /// A relay call blocked on this session's behalf (the orchestrator sitting
+    /// in a wait_for_result dispatch) watches it to bail out early — the model
+    /// only reads the steered message once its current tool call returns, so
+    /// staying blocked would keep it deaf to a message already in its context.
+    let interjectionDelivered = PassthroughSubject<Void, Never>()
+
     /// Deliver a message into this session NOW: if a turn is running, steer
     /// it into the live turn over stdin — the model reads it at its next
     /// step, same mechanism as the user's force-send — otherwise send
     /// normally. Used for worker pings so a busy orchestrator isn't deaf
     /// until its (possibly long) turn ends.
     func deliverInterjection(_ text: String) {
+        _ = deliverNow(text)
+    }
+
+    /// Hard-interrupting delivery, for a control message that cannot wait for
+    /// the current tool call to return ("STAND DOWN", "stop pushing"). Steering
+    /// is not enough here: a tab inside a long build or CI-watch command doesn't
+    /// reach a step boundary for minutes, so the message goes unread while it
+    /// keeps doing the very thing it was told to stop. Kills the in-flight turn
+    /// and delivers the message as the next one, ahead of anything queued —
+    /// same mechanism as the user's force-send. Returns the prompt id whose
+    /// turn will carry it.
+    @discardableResult
+    func deliverInterrupting(_ text: String) -> UUID {
+        // Nothing to interrupt (idle), or a compaction teardown in progress
+        // where a direct dispatch would race the reseed: normal path.
+        guard status == .running || bridge.isBusy, !isCompacting else {
+            return send(text)
+        }
+        let prompt = PendingPrompt(text: text, images: [], visible: true)
+        // Staged at the FRONT so `.processExited` → drainQueueIfReady dispatches
+        // it as the very next turn (which is what appends its transcript row).
+        pendingPrompts.insert(prompt, at: 0)
+        // Deliberate kill: the turn end must not be scored as a failure, and a
+        // replacement turn is already staged.
+        intentionalInterrupt = true
+        // Carry the killed turn's timing so the UI doesn't snap back to zero.
+        carryOverTurnStart = currentTurnStartedAt
+        carriedTurnTokens += currentTurnOutputTokens
+        bridge.cancel()
+        return prompt.id
+    }
+
+    /// Immediate delivery with enough back-channel for a waiter: steers into
+    /// a running turn when there is one, otherwise sends normally. Returns the
+    /// id of the prompt whose TurnEnd covers this delivery — the LIVE turn's
+    /// id when steered (nil if that turn is CLI-initiated and has no app-side
+    /// id), or the fresh prompt's id — plus whether it was steered.
+    func deliverNow(_ text: String) -> (coveringPromptId: UUID?, steered: Bool) {
         if status == .running || bridge.isBusy, !isCompacting,
            bridge.steer(text: text, imagesPng: []) {
             messages.append(Message(role: .user, blocks: [.text(id: UUID(), text: text)]))
-            return
+            interjectionDelivered.send()
+            return (currentPromptId, true)
         }
-        send(text)
+        return (send(text), false)
     }
 
     /// Actually push a prompt to the bridge. Adds the user message to the
