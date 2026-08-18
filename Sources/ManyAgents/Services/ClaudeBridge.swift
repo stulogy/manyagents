@@ -788,6 +788,11 @@ final class ClaudeBridge {
     If a project orchestrator is coordinating you and you get blocked, need a decision, or finish a long task it was waiting on (tests, a deploy, a build), call mcp__manyagents__notify_orchestrator with a specific message to wake it — it will take a turn to act on it.
     Messages from the orchestrator (or the user) can be injected into your RUNNING turn — they appear mid-turn, often alongside a tool result. Treat such a message as arriving NOW: if it tells you to stop, stand down, or change course, obey it immediately — drop the current plan, do not first finish the step you were on, and acknowledge briefly. Because you only see injected messages when your current tool call returns, never run a long foreground command that blocks you for many minutes: run long builds, test suites, installs, and servers with the Bash tool's run_in_background option (or a modest timeout) and poll their output — that keeps you reachable mid-task.
     If this conversation was resumed after an app or process restart, any background tasks, watchers, or dev servers you started earlier are DEAD — they died with the previous process. Never trust a prior turn's claim that something is being watched or served; re-check actual state (and re-arm watchers or restart servers) before relying on it.
+    Your Bash tool runs through ZSH on macOS, not bash, and zsh aborts a command at parse time rather than passing an unmatched pattern through. Three things bite constantly, so write around them from the start:
+    - Quote globs in flags. `grep -rn foo lib/ --include=*.ts` dies with "no matches found: --include=*.ts" before grep ever runs. Write `--include='*.ts'`. Same for `--exclude=`, `--files=`, and any flag whose value contains `*`, `?`, or `[`.
+    - Don't start a word with `=`. A bare `===` or `==` separator triggers zsh's `=` expansion and fails with "== not found"; use `echo "==="` or a different separator.
+    - `timeout` does not exist on macOS. Use the Bash tool's own timeout parameter, or run the thing in the background and poll it.
+    A command that dies this way did NOT run — the exit code is the shell's, not the tool's. Fix the quoting and re-run rather than concluding the search found nothing.
     """
 
     private static let brevitySystemPrompt = """
