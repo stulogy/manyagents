@@ -201,17 +201,6 @@ final class ClaudeBridge {
             // local dev tool driving the user's own sessions; the prompts just
             // got in the way. (Previously a per-tab / global toggle.)
             "--permission-mode", "bypassPermissions",
-            // Append a small instruction so claude consistently signals
-            // "waiting on you" with a recognizable cue.
-            "--append-system-prompt", Self.waitingCueSystemPrompt,
-            // Keep answers concise; offer (don't dump) long reports. Pairs with
-            // the waiting cue so the offer surfaces as a "waiting on you" state.
-            "--append-system-prompt", Self.brevitySystemPrompt,
-            // The manyagents MCP tools are few enough that the CLI loads
-            // them directly instead of deferring — so ToolSearch finds
-            // nothing and models conclude the tools don't exist. Tell
-            // them to call directly.
-            "--append-system-prompt", Self.manyAgentsToolsSystemPrompt,
             // Remove AskUserQuestion entirely. In headless stream-json mode the
             // CLI auto-resolves it (the picker is cosmetic and the agent moves
             // on without the answer — known CLI gap). With the tool gone the
@@ -235,17 +224,6 @@ final class ClaudeBridge {
             // gets it (open_preview / notify_orchestrator); the orchestrator
             // session's config additionally exposes the board tools.
             args.append(contentsOf: ["--mcp-config", cfg])
-            if isCoordinator {
-                // Nudge the model to actually USE the user's open agents.
-                // Left to itself it reaches for internal Task sub-agents and
-                // the other tabs never move — defeating orchestrator mode.
-                args.append(contentsOf: ["--append-system-prompt", Self.coordinatorSystemPrompt])
-            } else {
-                // Workers must know they are NOT the orchestrator — without
-                // this, the coordinator prompt leaking to every tab made
-                // workers claim "I'm the orchestrator here" and poke the board.
-                args.append(contentsOf: ["--append-system-prompt", Self.workerSystemPrompt])
-            }
             // NB: deliberately NO --permission-prompt-tool. We always run
             // --permission-mode bypassPermissions, so there are no permission
             // prompts to route. Passing the prompt-tool alongside bypass is
@@ -253,6 +231,26 @@ final class ClaudeBridge {
             // couldn't see ("mcp__manyagents__permission_prompt not found"),
             // which broke the orchestrator's tool loading.
         }
+        // ONE --append-system-prompt, never several. The CLI keeps only the
+        // LAST occurrence and silently discards the rest (verified on 2.1.234:
+        // two flags, only the second one's instruction is obeyed). We were
+        // passing four, so for every session with MCP wired — i.e. all of
+        // them — only the role prompt survived and the brevity rule, the
+        // waiting cue, and the tool note were dead the whole time. That is
+        // why "never write comprehensive reports" kept producing them.
+        var appended = [Self.waitingCueSystemPrompt,
+                        Self.brevitySystemPrompt]
+        if mcpConfigPath != nil {
+            appended.append(Self.manyAgentsToolsSystemPrompt)
+            // Nudge the orchestrator to use the user's open tabs (left to
+            // itself it reaches for internal Task sub-agents and the board
+            // never moves); tell every other tab plainly that it is NOT the
+            // orchestrator, or workers claim the hat and poke the board.
+            appended.append(isCoordinator ? Self.coordinatorSystemPrompt
+                                          : Self.workerSystemPrompt)
+        }
+        args.append(contentsOf: ["--append-system-prompt",
+                                 appended.joined(separator: "\n\n")])
 
         activeProcessModel = preferredModel
         activeProcessMCPPath = mcpConfigPath
@@ -812,6 +810,13 @@ final class ClaudeBridge {
     "Review X and confirm" means confirm, not document. The same goes when the \
     asker is an orchestrator tab: replies to orchestrator dispatches are a few \
     lines of outcome; long replies just burn the orchestrator's context.
+
+    When a report IS wanted — I asked for one, or a security review / audit \
+    genuinely produces more than fits in a few paragraphs — do not paste the \
+    whole thing into the chat. Lead with the verdict and the findings that \
+    change what I do next, in a handful of lines. Put the full write-up in a \
+    file (a .md next to the code, or a PDF if I asked for one) and tell me the \
+    path in one line. The chat is for the conclusion; the file is for the detail.
 
     This applies to your sub-agents too: whenever you dispatch a Task/Agent \
     sub-agent, explicitly instruct it in its prompt to do its work and return a \

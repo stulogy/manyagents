@@ -362,7 +362,13 @@ struct MessageView: View {
                 // get a tinted monospace treatment so they actually
                 // look like code in flowing text.
                 VStack(alignment: .leading, spacing: 6) {
-                    MarkdownText(raw: text, sessionCwd: sessionCwd, highlight: highlight)
+                    // A wall-of-text report keeps its opening (the summary the
+                    // user actually wants) inline and moves the rest behind a
+                    // pill — the same treatment sub-agent reports get. The
+                    // brevity prompt asks the model not to write these
+                    // unprompted, but prompts are advice; this is the backstop
+                    // that keeps one from burying the conversation.
+                    LongAssistantText(text: text, sessionCwd: sessionCwd, highlight: highlight)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if let url = localhostURL(in: text) {
                         Button {
@@ -731,6 +737,82 @@ struct MessageView: View {
         }
     }
 
+    /// Assistant prose that renders inline until it turns into a report, at
+    /// which point only its opening stays in the transcript and the rest moves
+    /// behind a "Read full report" pill (the same modal sub-agent reports use).
+    private struct LongAssistantText: View {
+        let text: String
+        var sessionCwd: String? = nil
+        var highlight: String = ""
+        @State private var showingReportSheet = false
+
+        /// Deliberately generous: a thorough answer with a couple of code
+        /// blocks must still render inline. This fires for the multi-screen
+        /// audit/review write-ups only.
+        private static let reportCharThreshold = 2600
+        private static let reportLineThreshold = 45
+        /// How much of the opening survives inline. Enough for a headline plus
+        /// the first finding, so the teaser reads as a summary, not a truncation.
+        private static let teaserCharBudget = 900
+
+        private var lineCount: Int { text.components(separatedBy: "\n").count }
+
+        private var isReport: Bool {
+            text.count > Self.reportCharThreshold || lineCount > Self.reportLineThreshold
+        }
+
+        /// The opening, cut at a paragraph break so the teaser ends on a whole
+        /// thought. Reopened code fences are closed, or the rest of the teaser
+        /// renders as one giant code block.
+        private var teaser: String {
+            let budget = min(Self.teaserCharBudget, text.count)
+            let head = String(text.prefix(budget))
+            var cut = head
+            if let lastBreak = head.range(of: "\n\n", options: .backwards),
+               head.distance(from: head.startIndex, to: lastBreak.lowerBound) > 200 {
+                cut = String(head[head.startIndex..<lastBreak.lowerBound])
+            }
+            if cut.components(separatedBy: "```").count % 2 == 0 {
+                cut += "\n```"
+            }
+            return cut
+        }
+
+        /// "· 320 lines" — tells the user how much is hidden before they open it.
+        private var hiddenSummary: String {
+            let remaining = max(0, lineCount - teaser.components(separatedBy: "\n").count)
+            return remaining > 0 ? "\(remaining) more lines" : "\(lineCount) lines"
+        }
+
+        var body: some View {
+            if !isReport {
+                MarkdownText(raw: text, sessionCwd: sessionCwd, highlight: highlight)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    MarkdownText(raw: teaser, sessionCwd: sessionCwd, highlight: highlight)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button { showingReportSheet = true } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "doc.text.magnifyingglass")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("Read full report · \(hiddenSummary)")
+                                .font(.system(size: 10.5, weight: .medium))
+                        }
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.primary.opacity(0.05)))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open the full report in a window")
+                }
+                .sheet(isPresented: $showingReportSheet) {
+                    ReportSheet(markdown: text, sessionCwd: sessionCwd)
+                }
+            }
+        }
+    }
+
     /// Focused modal reading view for a long sub-agent report — keeps the
     /// transcript clean while giving the full markdown a scrollable surface.
     private struct ReportSheet: View {
@@ -760,6 +842,15 @@ struct MessageView: View {
                             .foregroundStyle(copied ? .green : .secondary)
                     }
                     .buttonStyle(.plain)
+                    Button {
+                        savePDF()
+                    } label: {
+                        Label("PDF", systemImage: "arrow.down.doc")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Save this report as a PDF")
                     Button("Done") { dismiss() }
                         .keyboardShortcut(.defaultAction)
                 }
@@ -774,6 +865,61 @@ struct MessageView: View {
                 }
             }
             .frame(width: 720, height: 580)
+        }
+
+        /// Ask where to put it, then lay the markdown out in an off-screen
+        /// text view and print it to that file. NSPrintOperation (rather than
+        /// NSView.dataWithPDF) because a report runs to several pages and only
+        /// the print path paginates.
+        private func savePDF() {
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.pdf]
+            panel.nameFieldStringValue = "report.pdf"
+            panel.canCreateDirectories = true
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+
+            // US Letter minus one-inch margins.
+            let pageWidth: CGFloat = 612, pageHeight: CGFloat = 792
+            let inset: CGFloat = 72
+            let textWidth = pageWidth - inset * 2
+            let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: textWidth, height: pageHeight))
+            textView.textStorage?.setAttributedString(Self.printableAttributed(markdown))
+            textView.isVerticallyResizable = true
+            textView.textContainer?.containerSize = NSSize(width: textWidth,
+                                                           height: .greatestFiniteMagnitude)
+            textView.textContainer?.widthTracksTextView = true
+            textView.sizeToFit()
+
+            let info = NSPrintInfo()
+            info.paperSize = NSSize(width: pageWidth, height: pageHeight)
+            info.topMargin = inset; info.bottomMargin = inset
+            info.leftMargin = inset; info.rightMargin = inset
+            info.jobDisposition = .save
+            info.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = url
+
+            let op = NSPrintOperation(view: textView, printInfo: info)
+            op.showsPrintPanel = false
+            op.showsProgressPanel = false
+            op.run()
+        }
+
+        /// Markdown → attributed text for print. Falls back to the raw string
+        /// if parsing fails, so a malformed fence still yields a readable PDF.
+        private static func printableAttributed(_ raw: String) -> NSAttributedString {
+            let body = NSFont.systemFont(ofSize: 11)
+            if let parsed = try? NSAttributedString(
+                markdown: Data(raw.utf8),
+                options: .init(interpretedSyntax: .full,
+                               failurePolicy: .returnPartiallyParsedIfPossible)) {
+                let m = NSMutableAttributedString(attributedString: parsed)
+                // The markdown parser leaves runs unstyled; give anything
+                // without a font the body face so the PDF isn't 12pt Helvetica.
+                m.enumerateAttribute(.font, in: NSRange(location: 0, length: m.length)) { value, range, _ in
+                    if value == nil { m.addAttribute(.font, value: body, range: range) }
+                }
+                return m
+            }
+            return NSAttributedString(string: raw, attributes: [.font: body])
         }
     }
 
