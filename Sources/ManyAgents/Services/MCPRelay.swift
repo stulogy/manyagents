@@ -121,6 +121,18 @@ final class MCPRelay {
         guard let op = req["op"] as? String else {
             return ["id": id, "ok": false, "error": "missing op"]
         }
+        // Board ops act on other tabs — orchestrator-only. Hard gate here
+        // (not just in the advertised tool list) so a stale MCP subprocess
+        // or a tab that lost the hat mid-conversation can't keep driving
+        // the board.
+        let boardOps: Set<String> = [
+            "list_agents", "read_agent", "new_agent", "dispatch",
+            "set_notes", "mute_agent", "unmute_agent",
+            "rename_agent", "compact_agent", "close_agent"
+        ]
+        if boardOps.contains(op), let denied = await denyUnlessOrchestrator(req: req, id: id) {
+            return denied
+        }
         switch op {
         case "list_agents":
             return await listAgents(req: req, id: id)
@@ -151,6 +163,22 @@ final class MCPRelay {
         default:
             return ["id": id, "ok": false, "error": "unknown op: \(op)"]
         }
+    }
+
+    /// nil when the calling session wears the orchestrator hat; an error
+    /// payload otherwise. Board ops must come from the current orchestrator —
+    /// every other tab is a worker and reaches it via notify_orchestrator.
+    @MainActor
+    private func denyUnlessOrchestrator(req: [String: Any], id: String) async -> [String: Any]? {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        guard let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:)),
+              let source = mgr.sessions.first(where: { $0.id == sourceUUID }),
+              source.isCoordinator
+        else {
+            return ["id": id, "ok": false,
+                    "error": "orchestrator-only tool: this tab is not the project's orchestrator. Use notify_orchestrator to reach it."]
+        }
+        return nil
     }
 
     /// Rename any tab (the orchestrator naming a spawned tab, or fixing a
@@ -225,7 +253,10 @@ final class MCPRelay {
             return ["id": id, "ok": false, "error": "you are the orchestrator"]
         }
         let name = sender.aiTitle ?? sender.displayName
-        orch.send("[Message from tab \"\(name)\" — it pinged you and needs a turn]\n\n\(message)")
+        // Steered into the orchestrator's RUNNING turn when it's busy (it
+        // reads the ping at its next step) — a queued ping used to sit
+        // undelivered behind a long orchestrator turn.
+        orch.deliverInterjection("[Message from tab \"\(name)\" — it pinged you and needs a turn]\n\n\(message)")
         return ["id": id, "ok": true]
     }
 
@@ -494,7 +525,10 @@ final class MCPRelay {
               !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return ["id": id, "ok": false, "error": "empty prompt"] }
 
-        let wait = req["wait_for_result"] as? Bool ?? true
+        // Fire-and-forget by default: the orchestrator must not sit inside a
+        // blocked tool call while a tab works — the tab auto-reports when its
+        // turn ends. Waiting is opt-in for quick questions only.
+        let wait = req["wait_for_result"] as? Bool ?? false
         let sourceIdStr = req["source_session_id"] as? String
         let sourceUUID = sourceIdStr.flatMap(UUID.init(uuidString:))
 

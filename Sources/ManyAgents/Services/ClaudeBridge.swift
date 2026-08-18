@@ -32,6 +32,17 @@ enum BridgeEvent {
     /// (headless `--print` auto-denies the tool and ends the turn, so there's
     /// no open tool_result to fulfil — see `AgentSession.answerQuestion`).
     case askUserQuestion(toolUseId: String, prompt: AskPrompt)
+    /// The CLI began consuming a user message — emitted from the
+    /// `--replay-user-messages` echo, which fires at TURN START (verified
+    /// empirically). This is the only signal that a CLI-initiated turn
+    /// exists: a steered message that misses its window is queued by the
+    /// CLI and run as a NEW turn after the current one ends, with no other
+    /// stdout traffic until the model's first block (which can be a long
+    /// silent stretch). Without this, the session showed idle during such
+    /// turns — new sends dispatched into the CLI's queue instead of
+    /// queueing app-side, and the turn-start watchdog killed the silent
+    /// (but working) process mid-turn.
+    case userTurnBegan
 
     struct AskPrompt: Equatable {
         let header: String?
@@ -110,6 +121,8 @@ final class ClaudeBridge {
     private var activeProcessModel: String = ""
     /// MCP config path the active process was launched with. nil = no MCP.
     private var activeProcessMCPPath: String? = nil
+    /// Whether the active process was launched with the orchestrator prompt.
+    private var activeProcessCoordinator = false
     /// Held open for the duration of a turn: the initial user payload is
     /// written here, and it's closed in handleResult so claude exits cleanly.
     private var activeStdin: FileHandle?
@@ -125,6 +138,11 @@ final class ClaudeBridge {
     /// (always exposed) and the coordinator dispatch tools (when the
     /// session is in coordinator mode). Passed to `claude --mcp-config <path>`.
     var mcpConfigPath: String?
+    /// Set per-turn by the owning AgentSession: whether this session wears
+    /// the orchestrator hat. Gates the coordinator system prompt — a worker
+    /// tab must never be told it's the orchestrator. A change respawns the
+    /// process so the prompt matches the role.
+    var isCoordinator: Bool = false
 
     var events: AnyPublisher<BridgeEvent, Never> { subject.eraseToAnyPublisher() }
     /// True while a turn is in flight (a user message was sent and its
@@ -151,9 +169,11 @@ final class ClaudeBridge {
         if let p = activeProcess, p.isRunning {
             let modelChanged = preferredModel != activeProcessModel
             let mcpChanged   = mcpConfigPath != activeProcessMCPPath
-            guard modelChanged || mcpChanged else { return }
-            // Model or MCP config changed — kill so the next send respawns
-            // with the right flags. --resume preserves conversation history.
+            let roleChanged  = isCoordinator != activeProcessCoordinator
+            guard modelChanged || mcpChanged || roleChanged else { return }
+            // Model, MCP config, or orchestrator role changed — kill so the
+            // next send respawns with the right flags. --resume preserves
+            // conversation history.
             p.terminate()
             activeProcess = nil
         }
@@ -172,6 +192,11 @@ final class ClaudeBridge {
             // smoothly during long single-message generations instead of
             // jumping only at message boundaries.
             "--include-partial-messages",
+            // Echo each user message back on stdout when the CLI consumes
+            // it — i.e. at turn start. This is how we detect CLI-initiated
+            // turns (a queued steered message run as its own turn) so the
+            // session shows running instead of idle. See .userTurnBegan.
+            "--replay-user-messages",
             // Always bypass the sensitive-file permission gate — this is a
             // local dev tool driving the user's own sessions; the prompts just
             // got in the way. (Previously a per-tab / global toggle.)
@@ -206,13 +231,21 @@ final class ClaudeBridge {
             args.append(contentsOf: ["--resume", rid])
         }
         if let cfg = mcpConfigPath {
-            // Hand claude the manyagents-generated mcp.json — it exposes
-            // list_agents + dispatch_agent for coordinator/orchestrator mode.
+            // Hand claude the manyagents-generated mcp.json — every session
+            // gets it (open_preview / notify_orchestrator); the orchestrator
+            // session's config additionally exposes the board tools.
             args.append(contentsOf: ["--mcp-config", cfg])
-            // Nudge the model to actually USE the user's open agents. Left to
-            // itself it reaches for internal Task sub-agents and the other
-            // tabs never move — defeating the point of orchestrator mode.
-            args.append(contentsOf: ["--append-system-prompt", Self.coordinatorSystemPrompt])
+            if isCoordinator {
+                // Nudge the model to actually USE the user's open agents.
+                // Left to itself it reaches for internal Task sub-agents and
+                // the other tabs never move — defeating orchestrator mode.
+                args.append(contentsOf: ["--append-system-prompt", Self.coordinatorSystemPrompt])
+            } else {
+                // Workers must know they are NOT the orchestrator — without
+                // this, the coordinator prompt leaking to every tab made
+                // workers claim "I'm the orchestrator here" and poke the board.
+                args.append(contentsOf: ["--append-system-prompt", Self.workerSystemPrompt])
+            }
             // NB: deliberately NO --permission-prompt-tool. We always run
             // --permission-mode bypassPermissions, so there are no permission
             // prompts to route. Passing the prompt-tool alongside bypass is
@@ -223,6 +256,7 @@ final class ClaudeBridge {
 
         activeProcessModel = preferredModel
         activeProcessMCPPath = mcpConfigPath
+        activeProcessCoordinator = isCoordinator
         let process = Process()
         let stdin = Pipe()
         let stdout = Pipe()
@@ -324,6 +358,35 @@ final class ClaudeBridge {
             "type": "user",
             "message": ["role": "user", "content": content]
         ])
+    }
+
+    /// Inject a user message into the RUNNING turn without cancelling it —
+    /// Claude Code-style steering. The CLI buffers the message and the model
+    /// sees it at its next boundary, deciding itself how much attention to
+    /// give it. Returns false when there is no live in-flight turn to steer
+    /// (caller should fall back to a normal send/dispatch).
+    func steer(text: String, imagesPng: [Data]) -> Bool {
+        guard turnInFlight, activeStdin != nil,
+              let p = activeProcess, p.isRunning else { return false }
+        var content: [[String: Any]] = []
+        if !text.isEmpty {
+            content.append(["type": "text", "text": text])
+        }
+        for png in imagesPng {
+            content.append([
+                "type": "image",
+                "source": [
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": png.base64EncodedString()
+                ]
+            ])
+        }
+        writeUserPayload([
+            "type": "user",
+            "message": ["role": "user", "content": content]
+        ])
+        return true
     }
 
     private func writeUserPayload(_ payload: [String: Any]) {
@@ -515,6 +578,22 @@ final class ClaudeBridge {
         guard let message = obj["message"] as? [String: Any],
               let content = message["content"] as? [[String: Any]]
         else { return }
+        // A text-only user frame is the --replay-user-messages echo: the
+        // CLI just consumed a user message and began its turn. Never
+        // rendered (the transcript bubble was appended at dispatch/steer
+        // time) — it's purely the turn-began signal, and it marks the
+        // bridge busy so steer() can reach CLI-initiated turns too.
+        let hasToolResult = content.contains { ($0["type"] as? String) == "tool_result" }
+        if !hasToolResult {
+            if content.contains(where: {
+                let t = $0["type"] as? String
+                return t == "text" || t == "image"
+            }) {
+                turnInFlight = true
+                emit(.userTurnBegan)
+            }
+            return
+        }
         // Same provenance signal as on the assistant side — when set,
         // this tool_result is feedback to a subagent's tool call, not
         // the top-level conversation.
@@ -759,7 +838,9 @@ final class ClaudeBridge {
     sending it anything. Use this to check on a tab (e.g. "is the report ready?").
     - `mcp__manyagents__send_to_agent` — act ON a tab: send it a prompt as a \
     normal user turn (e.g. hand a finished artifact from one tab to another). \
-    Waits for its reply by default, for up to 10 minutes.
+    Fire-and-forget: it returns immediately and the tab pings you when its \
+    turn ends. Pass wait_for_result true ONLY for a genuinely quick question \
+    you cannot proceed without — never for real work.
     - `mcp__manyagents__new_agent` — spin up a new tab to work in when a task \
     needs its own context and no suitable tab exists. Reuses an existing EMPTY \
     tab in that project if free, rather than piling up blanks. Pass a `cwd` \
@@ -778,11 +859,15 @@ final class ClaudeBridge {
     you automatically the moment it stops, whether it finished, needs a decision, \
     or died on an error. So never promise to "keep checking" or "monitor" — you \
     can't, and the user is left staring at a tab that looks stuck. Also:
-    - `send_to_agent` returning status `still_running` is NORMAL for long work \
-    (builds, test runs, UI tests). It means the tab blew past the 10-minute wait \
-    and is fine. Do not re-send the prompt and do not treat it as a failure — end \
-    your turn; you'll be pinged when it stops.
-    - `send_to_agent` returning an error means that tab's turn BROKE and the work \
+    - After a `send_to_agent` dispatch, do NOT wait around, poll the tab, or \
+    hold your turn open — end it. The tab pings you the moment it stops. \
+    Sitting inside a blocked tool call while a tab works is exactly what you \
+    must not do.
+    - If you opted into wait_for_result and got status `still_running`, that's \
+    NORMAL for long work: the tab blew past the 10-minute wait and is fine. Do \
+    not re-send the prompt and do not treat it as a failure — end your turn; \
+    you'll be pinged when it stops.
+    - A dispatch reporting an error means that tab's turn BROKE and the work \
     did not happen. Decide: retry it, hand it to another tab, or tell the user.
     - If you genuinely have nothing to wait on and nothing to do, say so and stop.
 
@@ -793,6 +878,22 @@ final class ClaudeBridge {
     acting through the real tabs over spawning internal Task sub-agents, since the \
     user wants the work to happen visibly. Keep your notes current — they're how \
     you remember your plan across wake-ups.
+    """
+
+    /// Appended to every NON-orchestrator session that has MCP wired. States
+    /// the role plainly so a worker never claims to be the orchestrator, and
+    /// routes "ask the orchestrator" requests through notify_orchestrator.
+    private static let workerSystemPrompt = """
+    You are NOT the orchestrator. This project may have a separate dedicated \
+    "Orchestrator" tab that coordinates the open tabs; you are one of the tabs \
+    it coordinates. The orchestrator board tools (list_agents, read_agent, \
+    send_to_agent, new_agent, rename_agent, compact_agent, close_agent, \
+    set_notes, mute_agent) are NOT available to you. If the user asks you to \
+    "ask the orchestrator" something, or you need a cross-tab decision, call \
+    mcp__manyagents__notify_orchestrator with a specific message — the \
+    orchestrator wakes, acts, and reaches you back via a tagged \
+    "[Message from orchestrator ...]" turn. If that call errors because no \
+    orchestrator is designated, tell the user instead of improvising.
     """
 
     // MARK: - Binary resolution

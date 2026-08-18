@@ -391,9 +391,21 @@ struct MessageView: View {
                     }
                 }
             case .system:
-                Text(SearchHighlight.attributed(text, query: highlight))
-                    .font(AppFont.mono(11.5))
-                    .foregroundStyle(.secondary)
+                if text.hasPrefix("⚠") {
+                    // Turn-error notice (AgentSession.appendErrorNotice) —
+                    // the red tab dot alone left the user guessing what broke.
+                    Text(SearchHighlight.attributed(text, query: highlight))
+                        .font(AppFont.mono(11.5))
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.red.opacity(0.08)))
+                } else {
+                    Text(SearchHighlight.attributed(text, query: highlight))
+                        .font(AppFont.mono(11.5))
+                        .foregroundStyle(.secondary)
+                }
             }
         case .thinking(_, let text):
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

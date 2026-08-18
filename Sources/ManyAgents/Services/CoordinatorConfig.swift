@@ -27,16 +27,21 @@ enum CoordinatorConfig {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let path = dir.appendingPathComponent("\(session.id.uuidString).json").path
 
+        // The --coordinator flag gates the stdio server's tool list: only
+        // the orchestrator session's MCP subprocess advertises the board
+        // tools. Workers get open_preview / notify_orchestrator only.
+        var mcpArgs = [
+            "--mcp-stdio",
+            "--socket", socketPath,
+            "--token", token,
+            "--source", session.id.uuidString
+        ]
+        if session.isCoordinator { mcpArgs.append("--coordinator") }
         let payload: [String: Any] = [
             "mcpServers": [
                 "manyagents": [
                     "command": binary,
-                    "args": [
-                        "--mcp-stdio",
-                        "--socket", socketPath,
-                        "--token", token,
-                        "--source", session.id.uuidString
-                    ],
+                    "args": mcpArgs,
                     "env": [String: String]()
                 ]
             ]

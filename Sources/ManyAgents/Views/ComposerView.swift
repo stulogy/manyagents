@@ -409,7 +409,7 @@ struct ComposerView: View {
                             .foregroundStyle(Color.brandOrange.opacity(0.9))
                     }
                     .buttonStyle(.plain)
-                    .help("Send now (interrupts current turn)")
+                    .help("Send now — delivered into the running turn; claude reads it at its next step")
                     Button {
                         session.removeQueued(id: p.id)
                     } label: {

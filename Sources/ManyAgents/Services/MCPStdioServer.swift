@@ -21,6 +21,10 @@ enum MCPStdioServer {
         /// relay includes this so chain provenance ("from <agent>")
         /// gets attached and the hop budget can be respected.
         let sourceSessionId: String?
+        /// True only for the orchestrator session's MCP subprocess —
+        /// gates whether the board tools are advertised at all. The
+        /// relay independently rejects board ops from non-coordinators.
+        let isCoordinator: Bool
     }
 
     /// Parse expected args. Returns nil if this isn't an MCP-stdio
@@ -30,18 +34,20 @@ enum MCPStdioServer {
         var socket: String?
         var token: String?
         var source: String?
+        var coordinator = false
         var i = 0
         while i < args.count {
             switch args[i] {
             case "--socket":   if i + 1 < args.count { socket = args[i + 1]; i += 1 }
             case "--token":    if i + 1 < args.count { token = args[i + 1]; i += 1 }
             case "--source":   if i + 1 < args.count { source = args[i + 1]; i += 1 }
+            case "--coordinator": coordinator = true
             default: break
             }
             i += 1
         }
         guard let s = socket, let t = token else { return nil }
-        return Args(socketPath: s, token: t, sourceSessionId: source)
+        return Args(socketPath: s, token: t, sourceSessionId: source, isCoordinator: coordinator)
     }
 
     /// Run the MCP server loop. Blocks until stdin closes (claude
@@ -251,9 +257,15 @@ private final class ServerState {
                 ],
                 "capabilities": ["tools": [String: Any]()],
                 // Injected into the agent's context by the client — the
-                // canonical place to explain the app.
-                "instructions": """
-                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server. If this session is the project's orchestrator, the board tools (list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent) let you coordinate the user's other tabs. Refer to the app as "ManyAgents".
+                // canonical place to explain the app. Role-specific: only
+                // the orchestrator session hears about the board tools;
+                // workers are told plainly they are not the orchestrator.
+                "instructions": args.isCoordinator
+                ? """
+                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server. This session is the project's ORCHESTRATOR: the board tools (list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent) let you coordinate the user's other tabs. Refer to the app as "ManyAgents".
+                """
+                : """
+                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server. This session is NOT the orchestrator — a separate dedicated tab may hold that role. To reach it (you're blocked, need a cross-tab decision, or finished a long task it's waiting on), call notify_orchestrator. Refer to the app as "ManyAgents".
                 """
             ])
         case "initialized", "notifications/initialized":
@@ -279,7 +291,18 @@ private final class ServerState {
         }
     }
 
+    /// Tools every session gets, plus — only when this subprocess was
+    /// launched for the orchestrator session (--coordinator) — the board
+    /// tools. Workers never see the board tools, so they can't wander
+    /// into orchestrating; the relay rejects them anyway as backstop.
     private var toolDescriptors: [[String: Any]] {
+        var tools = baseToolDescriptors
+        if args.isCoordinator { tools += boardToolDescriptors }
+        tools += utilityToolDescriptors
+        return tools
+    }
+
+    private var baseToolDescriptors: [[String: Any]] {
         [
             [
                 "name": "permission_prompt",
@@ -295,7 +318,14 @@ private final class ServerState {
                     ],
                     "required": ["tool_name", "input"]
                 ]
-            ],
+            ]
+        ]
+    }
+
+    /// Orchestrator-only board tools — advertised only when this MCP
+    /// subprocess was launched with --coordinator.
+    private var boardToolDescriptors: [[String: Any]] {
+        [
             [
                 "name": "list_agents",
                 "description": "Your board: list the user's other open tabs — id, project, title, status, whether muted, and a one-line snapshot of what each last said. Tabs the user hid are excluded. Call this to see the current situation across tabs.",
@@ -319,7 +349,7 @@ private final class ServerState {
             ],
             [
                 "name": "send_to_agent",
-                "description": "Take action ON a tab: send it a prompt as a normal user turn (e.g. hand a finished report from one tab to another, or ask a tab to do something). By default waits for its reply. The tab is tagged so it knows the message came from you, the orchestrator.",
+                "description": "Take action ON a tab: send it a prompt as a normal user turn (e.g. hand a finished report from one tab to another, or ask a tab to do something). Fire-and-forget by default: returns immediately, and the tab pings you when its turn ends — end your own turn and act on that ping. The tab is tagged so it knows the message came from you, the orchestrator.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -333,8 +363,8 @@ private final class ServerState {
                         ],
                         "wait_for_result": [
                             "type": "boolean",
-                            "description": "If true (default), blocks until the tab's turn ends and returns its reply — or, if the tab errors, says so. Blocks for at most 10 minutes; past that it returns status 'still_running' and the tab pings you itself when it stops, so treat that as normal, not as failure. If false, returns immediately and the tab pings you when it stops.",
-                            "default": true
+                            "description": "Default false: return immediately; the tab pings you when it stops. Set true ONLY for a genuinely quick question you cannot proceed without — it blocks your turn until the tab's turn ends (at most 10 minutes; past that it returns status 'still_running' and the tab pings you itself when it stops — treat that as normal, not as failure). Never set true for long work like builds, test runs, or multi-step tasks.",
+                            "default": false
                         ]
                     ],
                     "required": ["agent_id", "prompt"],
@@ -426,7 +456,13 @@ private final class ServerState {
                     "required": ["agent_id"],
                     "additionalProperties": false
                 ]
-            ],
+            ]
+        ]
+    }
+
+    /// Tools every session gets regardless of role.
+    private var utilityToolDescriptors: [[String: Any]] {
+        [
             [
                 "name": "open_preview",
                 "description": "Open a URL in ManyAgents' shared browser preview panel. Use this to show the user what you just built (e.g. a localhost dev server page). All preview panels share cookies/sessions so the user only needs to log in once.",
@@ -565,7 +601,10 @@ private final class ServerState {
                     respondToolResult(id: id, text: "Error: missing agent_id or prompt.", isError: true)
                     return
                 }
-                let wait = (arguments["wait_for_result"] as? Bool) ?? true
+                // Fire-and-forget default — must match the relay and the tool
+                // schema. This `?? true` was the missed third copy of the
+                // default that kept orchestrators blocking on dispatches.
+                let wait = (arguments["wait_for_result"] as? Bool) ?? false
                 let res = try await awaitRelay([
                     "op": "dispatch",
                     "source_session_id": args.sourceSessionId as Any,

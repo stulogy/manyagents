@@ -289,6 +289,11 @@ final class AgentSession: ObservableObject, Identifiable {
     /// this still false, the model returned nothing — surfaced as an error
     /// instead of silently going idle (the "it just does nothing" bug).
     private var turnProducedOutput = false
+    /// Pending "empty response" verdict. A .result with no output isn't
+    /// necessarily OUR turn failing — a Monitor/event wake turn's empty
+    /// result can land ahead of the real turn for the prompt just sent.
+    /// The verdict waits a few seconds; assistant output cancels it.
+    private var emptyResultGrace: DispatchWorkItem?
 
     /// Set when the orchestrator dispatched work to this tab fire-and-forget
     /// (or spawned it with a task). When the tab next finishes and goes
@@ -440,6 +445,7 @@ final class AgentSession: ObservableObject, Identifiable {
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.isCompacting else { return }
             self.lastError = "Compaction timed out — kept the conversation. Try again."
+            self.appendErrorNotice("Compaction timed out — kept the conversation. Try again.")
             self.cancelCompact()
         }
         compactWatchdog = work
@@ -504,6 +510,7 @@ final class AgentSession: ObservableObject, Identifiable {
         guard trimmed.count > floor else {
             isCompacting = false
             lastError = "Compaction summary looked too thin (\(trimmed.count) chars) — kept the conversation. Try again."
+            appendErrorNotice("Compaction summary looked too thin (\(trimmed.count) chars) — kept the conversation. Try again.")
             return
         }
 
@@ -633,6 +640,20 @@ final class AgentSession: ObservableObject, Identifiable {
         return prompt.id
     }
 
+    /// Deliver a message into this session NOW: if a turn is running, steer
+    /// it into the live turn over stdin — the model reads it at its next
+    /// step, same mechanism as the user's force-send — otherwise send
+    /// normally. Used for worker pings so a busy orchestrator isn't deaf
+    /// until its (possibly long) turn ends.
+    func deliverInterjection(_ text: String) {
+        if status == .running || bridge.isBusy, !isCompacting,
+           bridge.steer(text: text, imagesPng: []) {
+            messages.append(Message(role: .user, blocks: [.text(id: UUID(), text: text)]))
+            return
+        }
+        send(text)
+    }
+
     /// Actually push a prompt to the bridge. Adds the user message to the
     /// transcript, flips status, kicks off the turn.
     private func dispatch(_ prompt: PendingPrompt) {
@@ -665,11 +686,17 @@ final class AgentSession: ObservableObject, Identifiable {
         inflightTokenEstimate = 0
         currentPhase = "thinking"
         turnProducedOutput = false
+        // A stale empty-response verdict must not fire into this new turn.
+        emptyResultGrace?.cancel()
+        emptyResultGrace = nil
         // Stash for the auto-resumer. Cleared on the next clean .result.
         lastSentPrompt = prompt
         // Wire MCP for all sessions so open_preview is available everywhere.
-        // Coordinator sessions additionally get list_agents / send_to_agent
-        // (those are filtered by MCPRelay based on isCoordinator).
+        // Coordinator sessions additionally get the board tools: the config
+        // carries a --coordinator flag (gates the stdio server's tool list),
+        // MCPRelay hard-rejects board ops from non-coordinators, and the
+        // bridge picks the coordinator vs worker system prompt off the flag.
+        bridge.isCoordinator = isCoordinator
         do {
             _ = try MCPRelay.shared.startIfNeeded()
             bridge.mcpConfigPath = try CoordinatorConfig.write(for: self)
@@ -677,6 +704,7 @@ final class AgentSession: ObservableObject, Identifiable {
             bridge.mcpConfigPath = nil
             if isCoordinator {
                 lastError = "Coordinator setup failed: \(error.localizedDescription)"
+                appendErrorNotice("Coordinator setup failed: \(error.localizedDescription)")
             }
         }
         // Orchestrator: attach the accumulated board digest to whatever
@@ -729,8 +757,7 @@ final class AgentSession: ObservableObject, Identifiable {
                   self.lastBridgeEventAt < dispatchedAt,
                   let prompt = self.lastSentPrompt else { return }
             if self.watchdogRetried {
-                self.lastError = "The agent process isn't responding. Try sending again."
-                self.status = .error
+                self.reportTurnError("The agent process isn't responding. Try sending again.")
                 return
             }
             self.watchdogRetried = true
@@ -744,8 +771,14 @@ final class AgentSession: ObservableObject, Identifiable {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 guard let self else { return }
                 // Drop the duplicate transcript entry dispatch() would add.
-                if prompt.visible, self.messages.last?.role == .user {
-                    self.messages.removeLast()
+                // Walk back to the last USER row (an error notice may sit
+                // after it now) and only remove an actual match — checking
+                // just messages.last left a duplicate bubble behind the
+                // error row.
+                if prompt.visible,
+                   let idx = self.messages.lastIndex(where: { $0.role == .user }),
+                   self.messages[idx].flatText == prompt.text {
+                    self.messages.remove(at: idx)
                 }
                 self.dispatch(prompt)
             }
@@ -826,10 +859,31 @@ final class AgentSession: ObservableObject, Identifiable {
     func forceSend(id: UUID) {
         guard let idx = pendingPrompts.firstIndex(where: { $0.id == id }) else { return }
         let prompt = pendingPrompts.remove(at: idx)
-        pendingPrompts.insert(prompt, at: 0)
         if status == .running || bridge.isBusy {
-            // Terminate the running process; .processExited triggers
-            // drainQueueIfReady which will pop our prompt from the front.
+            // Steer, Claude Code-style: inject the message into the RUNNING
+            // turn over the held-open stdin (supported by the CLI in
+            // stream-json mode — verified on 2.1.234: the model sees it at
+            // its next boundary, same turn, single result). No cancel, no
+            // "tool use was rejected" carnage — claude decides what
+            // attention to give it, exactly like typing mid-turn in the
+            // Claude Code terminal.
+            if bridge.steer(text: prompt.text, imagesPng: prompt.images) {
+                if prompt.visible {
+                    var blocks: [ContentBlock] = []
+                    if !prompt.text.isEmpty {
+                        blocks.append(.text(id: UUID(), text: prompt.text))
+                    }
+                    for img in prompt.images {
+                        blocks.append(.image(id: UUID(), data: img, mediaType: "image/png"))
+                    }
+                    messages.append(Message(role: .user, blocks: blocks))
+                }
+                return
+            }
+            // No live process to steer (stale busy state) — fall back to the
+            // interrupt path: terminate; .processExited triggers
+            // drainQueueIfReady which pops our prompt from the front.
+            pendingPrompts.insert(prompt, at: 0)
             intentionalInterrupt = true
             // Carry the in-flight turn's start time AND token count into the
             // forced turn so the timer and token count continue across the
@@ -839,7 +893,6 @@ final class AgentSession: ObservableObject, Identifiable {
             bridge.cancel()
         } else {
             // Idle path — just dispatch directly.
-            pendingPrompts.removeFirst()
             dispatch(prompt)
         }
     }
@@ -868,6 +921,10 @@ final class AgentSession: ObservableObject, Identifiable {
             // A fresh assistant turn supersedes any answered-question chip.
             answeredAsk = nil
             turnProducedOutput = true
+            // Real output arrived — any pending "empty response" verdict was
+            // a wake-turn result racing ahead of this turn. Stand down.
+            emptyResultGrace?.cancel()
+            emptyResultGrace = nil
             // Either append to an in-progress assistant message or start a
             // new one. The CLI emits each assistant *message* as a single
             // event (not per-delta) when streaming is off.
@@ -946,11 +1003,7 @@ final class AgentSession: ObservableObject, Identifiable {
                             costUsd: cost ?? 0,
                             model: model)
             if isError {
-                // lastError BEFORE status: setting status fires the turn-end
-                // signal synchronously, and the orchestrator report reads the
-                // error off the session. Same ordering at every error site.
-                lastError = resultText
-                status = .error
+                reportTurnError(resultText ?? "The turn ended with an error.")
                 // If we lost the network, flag for auto-resume rather
                 // than asking the user to retype the prompt. The manager
                 // re-dispatches lastSentPrompt as soon as the path goes
@@ -959,13 +1012,32 @@ final class AgentSession: ObservableObject, Identifiable {
                     awaitingNetworkResume = true
                 }
             } else if !turnProducedOutput {
-                // The turn completed but the model produced NOTHING this
-                // turn (no text, no tool call) — a transient glitch. Don't
-                // silently go idle (the "it just does nothing, I re-nudge"
-                // bug); surface it so the user knows to retry. lastSentPrompt
-                // stays set so a resend is one action.
-                lastError = "The model returned an empty response. Send again to retry."
-                status = .error
+                // The turn completed but the model produced NOTHING (no
+                // text, no tool call). Either a transient glitch — or NOT
+                // our turn at all: a Monitor/event wake turn's empty result
+                // landing ahead of the real turn for the prompt just sent
+                // (the false "empty response, then it ran anyway" alarm).
+                // Hold the verdict briefly; assistant output cancels it.
+                // If it fires, surface the error so the user knows to retry
+                // — lastSentPrompt stays set so a resend is one action.
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self, self.emptyResultGrace != nil else { return }
+                    self.emptyResultGrace = nil
+                    guard !self.turnProducedOutput, self.status == .running else { return }
+                    self.reportTurnError("The model returned an empty response. Send again to retry.")
+                    self.currentTurnStartedAt = nil
+                    self.currentTurnIsBoardWake = false
+                    self.carriedTurnTokens = 0
+                    if !self.intentionalInterrupt {
+                        DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
+                    }
+                }
+                emptyResultGrace?.cancel()
+                emptyResultGrace = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+                // Leave the turn formally in flight (status stays .running,
+                // no queue drain) until the verdict lands one way or the other.
+                return
             } else {
                 // Decide "waiting on you" vs "idle" by looking at the
                 // most recent assistant prose. claude is prompted (via
@@ -1049,10 +1121,9 @@ final class AgentSession: ObservableObject, Identifiable {
                     // go silently idle (the "it just stops, I have to nudge
                     // again" bug); surface why. Most common cause is a
                     // usage/rate limit or a transient CLI error.
-                    lastError = exitCode == 0
+                    reportTurnError(exitCode == 0
                         ? "The turn ended without a response — usually a usage/rate limit or a transient hiccup. Send again to retry."
-                        : "claude exited (\(exitCode)) without responding. Send again to retry."
-                    status = .error
+                        : "claude exited (\(exitCode)) without responding. Send again to retry.")
                 }
             }
             intentionalInterrupt = false
@@ -1067,9 +1138,40 @@ final class AgentSession: ObservableObject, Identifiable {
             // drain the next queued prompt.
             DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
         case .systemError(let message):
-            lastError = message
-            status = .error
+            reportTurnError(message)
+        case .userTurnBegan:
+            // The CLI began a turn — possibly one IT initiated (a steered
+            // message that missed its window, queued and run after the
+            // current turn ended). Reflect it so the tab shows running,
+            // new sends queue app-side instead of racing into the CLI's
+            // queue, and the watchdog gets proof of life. Idempotent for
+            // turns we dispatched ourselves.
+            if status != .running {
+                status = .running
+                currentPhase = "thinking"
+                if currentTurnStartedAt == nil {
+                    currentTurnStartedAt = Date()
+                }
+            }
         }
+    }
+
+    /// Surface a turn-level error on the session (red dot, lastError) AND in
+    /// the transcript — a red dot with no visible message left the user
+    /// guessing what broke. lastError is set BEFORE status: setting status
+    /// fires the turn-end signal synchronously, and the orchestrator report
+    /// reads the error off the session.
+    private func reportTurnError(_ message: String) {
+        lastError = message
+        appendErrorNotice(message)
+        status = .error
+    }
+
+    /// Red "⚠" notice row in the transcript. MessageView keys on the prefix
+    /// to style system text as an error.
+    func appendErrorNotice(_ message: String) {
+        messages.append(Message(role: .system,
+                                blocks: [.text(id: UUID(), text: "⚠ \(message)")]))
     }
 
     /// True when the assistant's last turn ended in a way that suggests
