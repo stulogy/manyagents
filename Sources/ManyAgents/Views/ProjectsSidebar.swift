@@ -116,8 +116,15 @@ struct ProjectsSidebar: View {
     private var projectList: some View {
         ScrollView {
             VStack(spacing: 6) {
-                ForEach(manager.projects) { project in
-                    ProjectRow(project: project)
+                ForEach(manager.projectTree) { group in
+                    ProjectRow(project: group.project)
+                    // Worktrees of this project, indented under it — same
+                    // repo, different branch, so they belong to this row
+                    // rather than standing beside it as separate projects.
+                    ForEach(group.worktrees) { wt in
+                        ProjectRow(project: wt, isWorktree: true)
+                            .padding(.leading, 14)
+                    }
                 }
             }
             .padding(.horizontal, 12)
@@ -200,6 +207,9 @@ struct ProjectsSidebar: View {
 
 private struct ProjectRow: View {
     let project: ProjectEntry
+    /// Worktree rows read as a branch of the row above: a leading glyph, the
+    /// branch-ish part of the name, and no repetition of the parent's path.
+    var isWorktree: Bool = false
     @EnvironmentObject var manager: AgentManager
     @State private var isDropTarget = false
 
@@ -207,9 +217,14 @@ private struct ProjectRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(project.displayName)
-                    .font(.system(size: 13.5, weight: .semibold))
+            HStack(spacing: 6) {
+                if isWorktree {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                Text(isWorktree ? project.worktreeLabel : project.displayName)
+                    .font(.system(size: isWorktree ? 12.5 : 13.5, weight: .semibold))
                 Spacer()
                 statusChips
             }

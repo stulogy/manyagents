@@ -25,6 +25,14 @@ enum AgentStatus {
 final class AgentSession: ObservableObject, Identifiable {
     let id: UUID
     let cwd: String
+
+    /// The project this session belongs to for grouping and orchestrator
+    /// routing: its own cwd, or the main repo when the cwd is a git worktree.
+    /// Tabs spread across worktrees are one project — the same board, the
+    /// same orchestrator — even though each lives in its own directory.
+    var projectRoot: String { ProjectNaming.projectRoot(forCwd: cwd) }
+    /// True when this tab sits in a worktree rather than the main repo.
+    var isWorktree: Bool { projectRoot != cwd }
     let createdAt: Date
 
     @Published var displayName: String

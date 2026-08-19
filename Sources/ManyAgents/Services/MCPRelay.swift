@@ -357,17 +357,25 @@ final class MCPRelay {
         // The board: the other open tabs IN THE ORCHESTRATOR'S OWN PROJECT,
         // except hidden ones. Muted tabs stay listed (flagged). Tabs in other
         // projects are never surfaced.
-        let orchCwd = orch?.cwd
+        //
+        // Compared by project ROOT so tabs the orchestrator spawned into git
+        // worktrees stay on its board. Matching raw cwds dropped them: it
+        // created six worktree tabs and then could not see a single one of
+        // them, having to track them by id from memory.
+        let orchRoot = orch?.projectRoot
         let visible = mgr.sessions.filter { s in
             guard s.id != sourceUUID, !s.hiddenFromOrchestrator else { return false }
-            return orchCwd == nil || s.cwd == orchCwd
+            return orchRoot == nil || s.projectRoot == orchRoot
         }
         let agents: [[String: Any]] = visible
             .map { s -> [String: Any] in
                 [
                     "id": s.id.uuidString,
-                    "project": ProjectNaming.name(forCwd: s.cwd),
+                    "project": ProjectNaming.name(forCwd: s.projectRoot),
                     "cwd": s.cwd,
+                    // Names the worktree when the tab is in one, so parallel
+                    // tabs on different branches are distinguishable.
+                    "worktree": s.isWorktree ? ProjectNaming.name(forCwd: s.cwd) : "",
                     "title": s.boardTitle,
                     "status": statusString(s.status),
                     "muted": orch?.mutedTabIds.contains(s.id) ?? false,
@@ -429,9 +437,10 @@ final class MCPRelay {
         guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
         // Default to the ORCHESTRATOR's own cwd so the new tab lands in
         // the same project (a tab in that row), not a fresh top-level
-        // project. A subdir cwd (e.g. a worktree) groups as its own
-        // project because the sidebar keys projects by exact cwd — which
-        // fragmented spawned agents out of the orchestrator's project.
+        // project. An explicit worktree cwd is fine now: worktrees resolve
+        // to the same project root, so such a tab stays on the board and
+        // nests under the project in the sidebar instead of fragmenting
+        // out of it.
         var sourceCwd: String? = nil
         if let sidStr = req["source_session_id"] as? String,
            let sid = UUID(uuidString: sidStr),

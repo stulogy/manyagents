@@ -335,8 +335,14 @@ final class AgentManager: ObservableObject {
     /// per-project — each project can have its own orchestrator, and a
     /// worker's pings/board updates go only to the orchestrator in its
     /// own project, never a different session's.
+    /// Matched on the project ROOT, not the raw cwd: a tab running in a git
+    /// worktree belongs to the same project as the repo it was cut from, and
+    /// keying on cwd meant a worktree tab found no orchestrator at all — its
+    /// pings failed with "no orchestrator in this project" and its turn-ends
+    /// never reached the board.
     func orchestrator(for cwd: String) -> AgentSession? {
-        sessions.first { $0.isCoordinator && $0.cwd == cwd }
+        let root = ProjectNaming.projectRoot(forCwd: cwd)
+        return sessions.first { $0.isCoordinator && $0.projectRoot == root }
     }
 
     /// Who a dispatched tab reports back to: the orchestrator that actually
@@ -380,7 +386,7 @@ final class AgentManager: ObservableObject {
         // Exclusive PER PROJECT: only the previous orchestrator in THIS
         // project loses the hat + name. Other projects keep their own
         // orchestrators (orchestration is per-project, not global).
-        for s in sessions where s.isCoordinator && s.cwd == session.cwd {
+        for s in sessions where s.isCoordinator && s.projectRoot == session.projectRoot {
             undesignateOrchestrator(s)
         }
         session.isCoordinator = true
@@ -414,18 +420,26 @@ final class AgentManager: ObservableObject {
     /// Compact board snapshot the orchestrator sees on every wake. Hidden
     /// tabs are excluded entirely; muted tabs stay listed but flagged.
     func orchestratorBoardText(for orch: AgentSession) -> String {
-        let others = sessions.filter { $0.cwd == orch.cwd && $0.id != orch.id && !$0.hiddenFromOrchestrator }
+        let others = sessions.filter {
+            $0.projectRoot == orch.projectRoot && $0.id != orch.id && !$0.hiddenFromOrchestrator
+        }
         if others.isEmpty { return "(no other tabs in this project)" }
         return others.map { s in
             let muted = orch.mutedTabIds.contains(s.id) ? " [muted]" : ""
-            return "• \(s.boardTitle) [\(s.id)] — \(s.status.boardLabel)\(muted) — \(s.latestSnippet)"
+            // Name the worktree — six tabs on six branches otherwise read as
+            // six identically-placed tabs.
+            let where_ = s.isWorktree ? " (worktree: \(ProjectNaming.name(forCwd: s.cwd)))" : ""
+            return "• \(s.boardTitle) [\(s.id)]\(where_) — \(s.status.boardLabel)\(muted) — \(s.latestSnippet)"
         }.joined(separator: "\n")
     }
 
     // MARK: - Project grouping
 
     /// Unique project list derived from session cwds, preserving the order in
-    /// which projects first appear in `sessions`.
+    /// which projects first appear in `sessions`. Flat — every distinct cwd
+    /// gets an entry, worktrees included. `projectTree` is what the sidebar
+    /// renders; this stays flat because ordering, drag-reorder and activation
+    /// all address a single directory.
     var projects: [ProjectEntry] {
         var seen = Set<String>()
         var ordered: [String] = []
@@ -438,6 +452,28 @@ final class AgentManager: ObservableObject {
         return ordered.map { cwd in
             ProjectEntry(cwd: cwd, sessions: sessions.filter { $0.cwd == cwd })
         }
+    }
+
+    /// The sidebar's shape: top-level projects, each carrying the worktrees
+    /// cut from it. A worktree is a directory of its own but not a project of
+    /// its own — six parallel port tabs should read as six branches of
+    /// `adapther`, not as six unrelated things above it in the list.
+    /// A worktree whose main repo has no tabs open stands on its own rather
+    /// than disappearing.
+    var projectTree: [ProjectGroup] {
+        let all = projects
+        let rootsWithEntries = Set(all.map(\.cwd))
+        var childrenByRoot: [String: [ProjectEntry]] = [:]
+        var tops: [ProjectEntry] = []
+        for entry in all {
+            let root = ProjectNaming.projectRoot(forCwd: entry.cwd)
+            if root != entry.cwd, rootsWithEntries.contains(root) {
+                childrenByRoot[root, default: []].append(entry)
+            } else {
+                tops.append(entry)
+            }
+        }
+        return tops.map { ProjectGroup(project: $0, worktrees: childrenByRoot[$0.cwd] ?? []) }
     }
 
     var activeSession: AgentSession? {
@@ -695,6 +731,14 @@ final class AgentManager: ObservableObject {
     }
 }
 
+/// A top-level project plus the git worktrees cut from it, which the sidebar
+/// renders indented beneath it.
+struct ProjectGroup: Identifiable, Hashable {
+    let project: ProjectEntry
+    let worktrees: [ProjectEntry]
+    var id: String { project.cwd }
+}
+
 /// A project — a unique cwd with one or more agents.
 struct ProjectEntry: Identifiable, Hashable {
     let cwd: String
@@ -702,6 +746,16 @@ struct ProjectEntry: Identifiable, Hashable {
 
     var id: String { cwd }
     var displayName: String { ProjectNaming.name(forCwd: cwd) }
+    /// A worktree row is labelled by what makes it different from its parent
+    /// ("adapther-port-today" under "adapther" reads as "port-today").
+    var worktreeLabel: String {
+        let root = ProjectNaming.projectRoot(forCwd: cwd)
+        let full = displayName
+        guard root != cwd else { return full }
+        let parent = ProjectNaming.name(forCwd: root)
+        if full.hasPrefix(parent + "-") { return String(full.dropFirst(parent.count + 1)) }
+        return full
+    }
     var prettyCwd: String { ProjectNaming.prettyCwd(cwd) }
 
     static func == (lhs: ProjectEntry, rhs: ProjectEntry) -> Bool {

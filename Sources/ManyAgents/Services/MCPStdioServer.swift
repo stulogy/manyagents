@@ -438,7 +438,7 @@ private final class ServerState: @unchecked Sendable {
             ],
             [
                 "name": "new_agent",
-                "description": "Spin up a new TAB in your own project to do work in — for when a task needs its own context and no suitable tab exists. OMIT cwd to open the tab in YOUR project (the normal case — it appears as a tab alongside the others). Only pass cwd for a genuinely different project. Passing a subfolder of your project (e.g. a git worktree path) creates a SEPARATE project row, which is usually not what you want. If an EMPTY tab already exists in the target project, it's reused. Returns the tab's id for read_agent / send_to_agent. Doesn't steal the user's focus.",
+                "description": "Spin up a new TAB in your own project to do work in — for when a task needs its own context and no suitable tab exists. OMIT cwd to open the tab in YOUR project (the normal case — it appears as a tab alongside the others). Pass cwd for a git worktree of your project when you want parallel tabs that don't collide: worktree tabs stay on YOUR board, ping you, and appear nested under the project in the sidebar. Pass cwd for a genuinely different project only when you mean it — you can't coordinate tabs outside your own project. If an EMPTY tab already exists in the target project, it's reused. Returns the tab's id for read_agent / send_to_agent. Doesn't steal the user's focus.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -765,7 +765,10 @@ private final class ServerState: @unchecked Sendable {
             let muted = (a["muted"] as? Bool) == true ? " (muted)" : ""
             let latest = a["latest"] as? String ?? ""
             let snippet = latest.isEmpty ? "" : "  last: \(latest)"
-            return "- id=\(id)  title=\"\(title)\"  status=\(status)\(muted)\(snippet)"
+            // Worktree tabs are the same project on a different branch —
+            // say which one, or parallel tabs are indistinguishable.
+            let wt = (a["worktree"] as? String).flatMap { $0.isEmpty ? nil : "  worktree=\($0)" } ?? ""
+            return "- id=\(id)  title=\"\(title)\"  status=\(status)\(muted)\(wt)\(snippet)"
         }
         return "Your board (other open tabs):\n" + lines.joined(separator: "\n")
     }
