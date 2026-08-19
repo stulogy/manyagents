@@ -315,6 +315,26 @@ final class AgentSession: ObservableObject, Identifiable {
     /// The verdict waits a few seconds; assistant output cancels it.
     private var emptyResultGrace: DispatchWorkItem?
 
+    /// True once a message has been steered into the turn now in flight.
+    /// The CLI may close that turn to go and run the steered message as a
+    /// new one, and the closing `.result` can be empty or flagged as an
+    /// error. That boundary is not the tab failing, so its verdict is held
+    /// rather than flashed as a red error the user has to reason about.
+    /// Cleared when a turn is dispatched or a verdict resolves.
+    private var steeredIntoCurrentTurn = false
+
+    /// Set when the CLI announces a turn we did not dispatch — proof that a
+    /// real turn is starting, which retroactively explains an empty or
+    /// errored result as a turn boundary rather than a failure.
+    private var cliInitiatedTurnPending = false
+
+    /// Bumped every time a turn starts, whether we dispatched it or the CLI
+    /// did. A held verdict captures the value and fires only if no newer
+    /// turn has begun since — so suppression can never outlive the boundary
+    /// that justified it, and a genuine failure is reported a few seconds
+    /// late rather than swallowed.
+    private var turnEpoch: UInt64 = 0
+
     /// Set when the orchestrator dispatched work to this tab fire-and-forget
     /// (or spawned it with a task). When the tab next finishes and goes
     /// quiet, it auto-notifies the orchestrator ONCE so the loop closes
@@ -714,6 +734,7 @@ final class AgentSession: ObservableObject, Identifiable {
         if status == .running || bridge.isBusy, !isCompacting,
            bridge.steer(text: text, imagesPng: []) {
             messages.append(Message(role: .user, blocks: [.text(id: UUID(), text: text)]))
+            steeredIntoCurrentTurn = true
             interjectionDelivered.send()
             return (currentPromptId, true)
         }
@@ -752,9 +773,14 @@ final class AgentSession: ObservableObject, Identifiable {
         inflightTokenEstimate = 0
         currentPhase = "thinking"
         turnProducedOutput = false
-        // A stale empty-response verdict must not fire into this new turn.
+        // A stale empty-response verdict must not fire into this new turn,
+        // and neither flag may leak across a turn boundary — a suppressed
+        // verdict on one turn must not silence a real failure on the next.
         emptyResultGrace?.cancel()
         emptyResultGrace = nil
+        steeredIntoCurrentTurn = false
+        cliInitiatedTurnPending = false
+        turnEpoch &+= 1
         // Stash for the auto-resumer. Cleared on the next clean .result.
         lastSentPrompt = prompt
         // Wire MCP for all sessions so open_preview is available everywhere.
@@ -934,6 +960,7 @@ final class AgentSession: ObservableObject, Identifiable {
             // attention to give it, exactly like typing mid-turn in the
             // Claude Code terminal.
             if bridge.steer(text: prompt.text, imagesPng: prompt.images) {
+                steeredIntoCurrentTurn = true
                 if prompt.visible {
                     var blocks: [ContentBlock] = []
                     if !prompt.text.isEmpty {
@@ -1068,7 +1095,13 @@ final class AgentSession: ObservableObject, Identifiable {
                             outputTokens: usage?.outputTokens ?? 0,
                             costUsd: cost ?? 0,
                             model: model)
-            if isError {
+            // A steered message can make the CLI close the turn it's in and
+            // run the steered text as a fresh one. The closing result comes
+            // back empty, or flagged as an error with no detail, and the tab
+            // then carries on perfectly well — so the red notice was pure
+            // noise arriving on every orchestrator message.
+            let atSteerBoundary = steeredIntoCurrentTurn || cliInitiatedTurnPending
+            if isError, !atSteerBoundary {
                 reportTurnError(resultText ?? "The turn ended with an error.")
                 // If we lost the network, flag for auto-resume rather
                 // than asking the user to retype the prompt. The manager
@@ -1077,7 +1110,7 @@ final class AgentSession: ObservableObject, Identifiable {
                 if !NetworkMonitor.shared.isOnline {
                     awaitingNetworkResume = true
                 }
-            } else if !turnProducedOutput {
+            } else if isError || !turnProducedOutput {
                 // The turn completed but the model produced NOTHING (no
                 // text, no tool call). Either a transient glitch — or NOT
                 // our turn at all: a Monitor/event wake turn's empty result
@@ -1086,11 +1119,19 @@ final class AgentSession: ObservableObject, Identifiable {
                 // Hold the verdict briefly; assistant output cancels it.
                 // If it fires, surface the error so the user knows to retry
                 // — lastSentPrompt stays set so a resend is one action.
+                let verdict = isError
+                    ? (resultText ?? "The turn ended with an error.")
+                    : "The model returned an empty response. Send again to retry."
+                let epoch = turnEpoch
                 let work = DispatchWorkItem { [weak self] in
                     guard let self, self.emptyResultGrace != nil else { return }
                     self.emptyResultGrace = nil
-                    guard !self.turnProducedOutput, self.status == .running else { return }
-                    self.reportTurnError("The model returned an empty response. Send again to retry.")
+                    // A turn that has since begun (or produced anything)
+                    // proves the result was a boundary, not a failure.
+                    guard self.turnEpoch == epoch, !self.turnProducedOutput,
+                          self.status == .running else { return }
+                    self.steeredIntoCurrentTurn = false
+                    self.reportTurnError(verdict)
                     self.currentTurnStartedAt = nil
                     self.currentTurnIsBoardWake = false
                     self.carriedTurnTokens = 0
@@ -1212,7 +1253,20 @@ final class AgentSession: ObservableObject, Identifiable {
             // new sends queue app-side instead of racing into the CLI's
             // queue, and the watchdog gets proof of life. Idempotent for
             // turns we dispatched ourselves.
+            // A turn beginning is proof the process is alive and that any
+            // pending "empty response" verdict belongs to the boundary the
+            // steered message created. Cancel it — the 5s grace was losing
+            // the race against a steered turn that thinks for 6s before its
+            // first output, which is what put a red error above "Thinking…".
+            emptyResultGrace?.cancel()
+            emptyResultGrace = nil
+            cliInitiatedTurnPending = true
+            steeredIntoCurrentTurn = false
+            turnEpoch &+= 1
             if status != .running {
+                // A fresh turn has produced nothing yet — without this reset
+                // the previous turn's output would mask a genuinely empty one.
+                turnProducedOutput = false
                 status = .running
                 currentPhase = "thinking"
                 if currentTurnStartedAt == nil {
