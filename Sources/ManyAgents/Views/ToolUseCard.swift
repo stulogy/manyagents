@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// Inline card rendered when claude emits a tool_use block. Adapts its
-/// presentation per tool — Bash gets the command, Edit gets the file path
-/// and (when present) old/new diff, Read/Grep get a one-line target.
+/// presentation per tool — Bash gets the command, the write tools get the
+/// file path plus a line saying what changed, Read/Grep get a one-line
+/// target.
 struct ToolUseCard: View {
     let toolName: String
     let input: [String: AnyCodable]
@@ -21,6 +22,18 @@ struct ToolUseCard: View {
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.primary.opacity(0.85))
                     .lineLimit(6)
+                    .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
+            }
+            // What this call CHANGED. Six edits to one long file otherwise
+            // render as six identical cards — same tool, same path, nothing
+            // to tell them apart or to show what the agent actually did.
+            if !changeHint.isEmpty {
+                Text(changeHint)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
                     .multilineTextAlignment(.leading)
                     .textSelection(.enabled)
             }
@@ -85,7 +98,9 @@ struct ToolUseCard: View {
         case "Bash":
             return input["command"]?.stringValue ?? ""
         case "Read", "Edit", "MultiEdit", "Write":
-            return input["file_path"]?.stringValue ?? ""
+            // Home-relative: an absolute path repeated down the transcript is
+            // mostly a prefix the reader already knows.
+            return ProjectNaming.prettyCwd(input["file_path"]?.stringValue ?? "")
         case "Grep":
             let pattern = input["pattern"]?.stringValue ?? ""
             let path = input["path"]?.stringValue ?? ""
@@ -113,5 +128,42 @@ struct ToolUseCard: View {
             }
             return input.values.compactMap { $0.stringValue }.first(where: { !$0.isEmpty }) ?? ""
         }
+    }
+
+    /// A short "what changed" line for the write tools — the first line the
+    /// edit puts in, the number of edits in a batch, the size of a Write.
+    /// Empty for every other tool, which says everything in `brief`.
+    private var changeHint: String {
+        switch toolName {
+        case "Edit":
+            let replaceAll = (input["replace_all"]?.value as? Bool) == true
+            let inserted = firstMeaningfulLine(input["new_string"]?.stringValue)
+            let removed = firstMeaningfulLine(input["old_string"]?.stringValue)
+            // A deletion has no new text to show, so name what went instead.
+            let body = inserted.isEmpty ? (removed.isEmpty ? "" : "removed  \(removed)")
+                                        : "→  \(inserted)"
+            if body.isEmpty { return "" }
+            return replaceAll ? "\(body)   (all occurrences)" : body
+        case "MultiEdit":
+            let count = (input["edits"]?.value as? [AnyCodable])?.count ?? 0
+            return count > 0 ? "\(count) edit\(count == 1 ? "" : "s")" : ""
+        case "Write":
+            guard let content = input["content"]?.stringValue else { return "" }
+            let lines = content.isEmpty ? 0 : content.split(separator: "\n", omittingEmptySubsequences: false).count
+            return "\(lines) line\(lines == 1 ? "" : "s")"
+        default:
+            return ""
+        }
+    }
+
+    /// First non-blank line of a snippet, collapsed and clipped — enough to
+    /// recognise the edit, not enough to swamp the card.
+    private func firstMeaningfulLine(_ text: String?) -> String {
+        guard let text else { return "" }
+        guard let line = text.split(separator: "\n").first(where: {
+            !$0.trimmingCharacters(in: .whitespaces).isEmpty
+        }) else { return "" }
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        return trimmed.count > 90 ? String(trimmed.prefix(90)) + "…" : trimmed
     }
 }
