@@ -102,12 +102,19 @@ final class ClaudeBridge {
     }
 
     /// Models the user can select in Settings. Empty string means "use claude's default".
+    /// Verified against the CLI's `--model` flag — every id here answers a
+    /// real prompt. Ids are canonical and complete: never append a date
+    /// suffix (`claude-haiku-4-5`, not `claude-haiku-4-5-20251001`).
+    /// Mythos 5 is deliberately absent — same model as Fable 5, but only
+    /// available to approved organizations, so it would fail for most users.
     static let availableModels: [(label: String, id: String)] = [
         ("Default", ""),
         ("Fable 5", "claude-fable-5"),
+        ("Opus 5", "claude-opus-5"),
         ("Opus 4.8", "claude-opus-4-8"),
+        ("Sonnet 5", "claude-sonnet-5"),
         ("Sonnet 4.6", "claude-sonnet-4-6"),
-        ("Haiku 4.5", "claude-haiku-4-5-20251001"),
+        ("Haiku 4.5", "claude-haiku-4-5"),
     ]
 
     let cwd: String

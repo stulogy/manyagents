@@ -144,12 +144,24 @@ final class AgentSession: ObservableObject, Identifiable {
         // "claude-opus-5-…") even on the 1M variant, so we have to
         // infer from the family — without this the gauge slams to 100%
         // around the 200K mark while /context still reads ~20%.
-        if m.range(of: #"opus-4-[7-9]"#, options: .regularExpression) != nil {
+        // Fable / Mythos 5 are 1M (and 1M is also their default).
+        if m.contains("fable") || m.contains("mythos") { return 1_000_000 }
+        // Opus 4.6 and everything after it defaults to 1M.
+        if m.range(of: #"opus-4-[6-9]"#, options: .regularExpression) != nil {
             return 1_000_000
         }
         if m.range(of: #"opus-[5-9]"#, options: .regularExpression) != nil {
             return 1_000_000
         }
+        // Same for Sonnet from 4.6 on — this was missing, so a Sonnet tab's
+        // gauge read against 200K and hit 100% while barely a fifth full.
+        if m.range(of: #"sonnet-4-[6-9]"#, options: .regularExpression) != nil {
+            return 1_000_000
+        }
+        if m.range(of: #"sonnet-[5-9]"#, options: .regularExpression) != nil {
+            return 1_000_000
+        }
+        // Haiku and anything older stay at 200K.
         return 200_000
     }
     /// When the user pressed send for the current in-flight turn. `nil` once
