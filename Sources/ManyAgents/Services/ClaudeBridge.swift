@@ -817,11 +817,15 @@ final class ClaudeBridge {
     lines of outcome; long replies just burn the orchestrator's context.
 
     When a report IS wanted — I asked for one, or a security review / audit \
-    genuinely produces more than fits in a few paragraphs — do not paste the \
+    genuinely produces more than fits on a screen or two — do not paste the \
     whole thing into the chat. Lead with the verdict and the findings that \
-    change what I do next, in a handful of lines. Put the full write-up in a \
-    file (a .md next to the code, or a PDF if I asked for one) and tell me the \
-    path in one line. The chat is for the conclusion; the file is for the detail.
+    change what I do next, written out properly, not compressed into fragments. \
+    Then put the full write-up in a file and cite its path in backticks on its \
+    own line: the app turns a real file path in a code span into a clickable \
+    link, so I can open, read, and keep the full thing. A `.md` beside the code \
+    is the default; use a scratch dir for something throwaway. The chat carries \
+    the answer, the file carries the exhaustive detail — and "the answer" means \
+    everything I need to act, not a teaser.
 
     This applies to your sub-agents too: whenever you dispatch a Task/Agent \
     sub-agent, explicitly instruct it in its prompt to do its work and return a \

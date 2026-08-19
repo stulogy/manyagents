@@ -746,14 +746,15 @@ struct MessageView: View {
         var highlight: String = ""
         @State private var showingReportSheet = false
 
-        /// Deliberately generous: a thorough answer with a couple of code
-        /// blocks must still render inline. This fires for the multi-screen
-        /// audit/review write-ups only.
-        private static let reportCharThreshold = 2600
-        private static let reportLineThreshold = 45
-        /// How much of the opening survives inline. Enough for a headline plus
-        /// the first finding, so the teaser reads as a summary, not a truncation.
-        private static let teaserCharBudget = 900
+        /// The bar for "this is a wall, not an answer". Set high on purpose:
+        /// the first cut at this hid a 28-line reply behind a pill, which is
+        /// worse than the problem it solved — a detailed answer is meant to be
+        /// read in the transcript. Only the multi-screen dumps collapse.
+        private static let reportCharThreshold = 12_000
+        private static let reportLineThreshold = 200
+        /// Several screens of the opening stay inline, so even a collapsed
+        /// reply reads as a full answer rather than a truncated one.
+        private static let teaserCharBudget = 3_500
 
         private var lineCount: Int { text.components(separatedBy: "\n").count }
 
@@ -769,7 +770,7 @@ struct MessageView: View {
             let head = String(text.prefix(budget))
             var cut = head
             if let lastBreak = head.range(of: "\n\n", options: .backwards),
-               head.distance(from: head.startIndex, to: lastBreak.lowerBound) > 200 {
+               head.distance(from: head.startIndex, to: lastBreak.lowerBound) > 800 {
                 cut = String(head[head.startIndex..<lastBreak.lowerBound])
             }
             if cut.components(separatedBy: "```").count % 2 == 0 {
@@ -851,6 +852,15 @@ struct MessageView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Save this report as a PDF")
+                    Button {
+                        saveMarkdown()
+                    } label: {
+                        Label("Save .md", systemImage: "square.and.arrow.down")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Save the raw markdown to a file")
                     Button("Done") { dismiss() }
                         .keyboardShortcut(.defaultAction)
                 }
@@ -865,6 +875,23 @@ struct MessageView: View {
                 }
             }
             .frame(width: 720, height: 580)
+        }
+
+        /// Write the raw markdown out, so the report leaves the app as a file
+        /// you can hand to someone or keep alongside the code.
+        private func saveMarkdown() {
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.plainText]
+            panel.nameFieldStringValue = "report.md"
+            panel.canCreateDirectories = true
+            // Default to the session's project when there is one, so the file
+            // lands next to the code it describes rather than in the last
+            // directory the user happened to save something to.
+            if let cwd = sessionCwd {
+                panel.directoryURL = URL(fileURLWithPath: cwd)
+            }
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            try? markdown.write(to: url, atomically: true, encoding: .utf8)
         }
 
         /// Ask where to put it, then lay the markdown out in an off-screen
