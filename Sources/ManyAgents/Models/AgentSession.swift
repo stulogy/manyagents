@@ -1122,26 +1122,7 @@ final class AgentSession: ObservableObject, Identifiable {
                 let verdict = isError
                     ? (resultText ?? "The turn ended with an error.")
                     : "The model returned an empty response. Send again to retry."
-                let epoch = turnEpoch
-                let work = DispatchWorkItem { [weak self] in
-                    guard let self, self.emptyResultGrace != nil else { return }
-                    self.emptyResultGrace = nil
-                    // A turn that has since begun (or produced anything)
-                    // proves the result was a boundary, not a failure.
-                    guard self.turnEpoch == epoch, !self.turnProducedOutput,
-                          self.status == .running else { return }
-                    self.steeredIntoCurrentTurn = false
-                    self.reportTurnError(verdict)
-                    self.currentTurnStartedAt = nil
-                    self.currentTurnIsBoardWake = false
-                    self.carriedTurnTokens = 0
-                    if !self.intentionalInterrupt {
-                        DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
-                    }
-                }
-                emptyResultGrace?.cancel()
-                emptyResultGrace = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+                scheduleEmptyVerdict(verdict, epoch: turnEpoch)
                 // Leave the turn formally in flight (status stays .running,
                 // no queue drain) until the verdict lands one way or the other.
                 return
@@ -1274,6 +1255,42 @@ final class AgentSession: ObservableObject, Identifiable {
                 }
             }
         }
+    }
+
+    /// Hold an "empty response" / "turn errored" verdict until the process has
+    /// been SILENT for the grace window, not merely until a timer expires.
+    ///
+    /// A plain timer was wrong twice over: an empty result can arrive while the
+    /// model is still working, and a long thinking phase produces streaming
+    /// events but no assistant block — so the old 5s deadline kept firing
+    /// underneath a turn that then thought for 6, 8 seconds and answered
+    /// perfectly well. Any bridge event proves the process is alive, so re-arm
+    /// instead of accusing it. Genuine silence still reports, a few seconds
+    /// later than before; a turn that produced output, or a newer turn
+    /// (`epoch`), cancels the verdict outright.
+    private func scheduleEmptyVerdict(_ message: String, epoch: UInt64) {
+        let armedAt = Date()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.emptyResultGrace != nil else { return }
+            self.emptyResultGrace = nil
+            guard self.turnEpoch == epoch, !self.turnProducedOutput,
+                  self.status == .running else { return }
+            if self.lastBridgeEventAt > armedAt {
+                self.scheduleEmptyVerdict(message, epoch: epoch)
+                return
+            }
+            self.steeredIntoCurrentTurn = false
+            self.reportTurnError(message)
+            self.currentTurnStartedAt = nil
+            self.currentTurnIsBoardWake = false
+            self.carriedTurnTokens = 0
+            if !self.intentionalInterrupt {
+                DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
+            }
+        }
+        emptyResultGrace?.cancel()
+        emptyResultGrace = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
     }
 
     /// Surface a turn-level error on the session (red dot, lastError) AND in
