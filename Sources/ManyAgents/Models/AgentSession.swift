@@ -344,9 +344,14 @@ final class AgentSession: ObservableObject, Identifiable {
     /// clean completion that will never come is what left it hanging.
     var pendingOrchestratorReport: Bool = false
 
-    /// Which orchestrator this tab reports back to, recorded at dispatch time.
-    /// Routing by cwd alone silently found nobody whenever the worker sat in a
-    /// different directory (a subdir or a worktree) from the orchestrator.
+    /// Which orchestrator this tab answers to, recorded at dispatch time and
+    /// kept for the tab's life. Routing by cwd alone silently found nobody
+    /// whenever the worker sat somewhere other than the orchestrator's own
+    /// directory — a subdir, a worktree, or a different repo entirely. It is
+    /// deliberately NOT cleared once the tab's first auto-report lands: a tab
+    /// dispatched into another repo was then orphaned, and every later
+    /// notify_orchestrator call from it failed with "no orchestrator in this
+    /// project" while the orchestrator sat waiting for a report.
     var reportToOrchestratorId: UUID?
 
     /// One-line snapshot of what this tab last said — used for the

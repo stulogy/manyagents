@@ -438,7 +438,7 @@ private final class ServerState: @unchecked Sendable {
             ],
             [
                 "name": "new_agent",
-                "description": "Spin up a new TAB in your own project to do work in — for when a task needs its own context and no suitable tab exists. OMIT cwd to open the tab in YOUR project (the normal case — it appears as a tab alongside the others). Pass cwd for a git worktree of your project when you want parallel tabs that don't collide: worktree tabs stay on YOUR board, ping you, and appear nested under the project in the sidebar. Pass cwd for a genuinely different project only when you mean it — you can't coordinate tabs outside your own project. If an EMPTY tab already exists in the target project, it's reused. Returns the tab's id for read_agent / send_to_agent. Doesn't steal the user's focus.",
+                "description": "Spin up a new TAB in your own project to do work in — for when a task needs its own context and no suitable tab exists. OMIT cwd to open the tab in YOUR project (the normal case — it appears as a tab alongside the others). Pass cwd for a git worktree of your project, or for a repo nested inside it (e.g. a workspace whose product repos are cloned into a subdirectory), when a task belongs somewhere else in the same project: those tabs stay on YOUR board, ping you, and appear nested under the project in the sidebar. Passing a cwd in a genuinely different repo opens an OUTPOST tab there: it stays on your board and reports to you, but it shows as its own top-level project in the sidebar (a separate repo is a separate project) and the other tabs in that repo are not yours to coordinate. If an EMPTY tab already exists in the target project, it's reused. Returns the tab's id for read_agent / send_to_agent. Doesn't steal the user's focus.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -631,7 +631,14 @@ private final class ServerState: @unchecked Sendable {
                 if (res["ok"] as? Bool) == true {
                     let aid = res["agent_id"] as? String ?? "?"
                     let reused = (res["reused"] as? Bool) == true
-                    respondToolResult(id: id, text: "\(reused ? "Reused empty tab" : "Created tab") \(aid).")
+                    // Name the project when the tab landed outside your own —
+                    // a cwd taken from notes or a file path can quietly point
+                    // at a different repo, and the tab is yours to mind either
+                    // way (it stays on your board and reports to you).
+                    let outside = (res["outside"] as? Bool) == true
+                        ? " in project `\(res["project"] as? String ?? "?")` — a DIFFERENT project from yours. It stays on your board and reports to you, but the other tabs there aren't yours to coordinate."
+                        : ""
+                    respondToolResult(id: id, text: "\(reused ? "Reused empty tab" : "Created tab") \(aid)\(outside).")
                 } else {
                     respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "new_agent failed")", isError: true)
                 }
@@ -765,10 +772,15 @@ private final class ServerState: @unchecked Sendable {
             let muted = (a["muted"] as? Bool) == true ? " (muted)" : ""
             let latest = a["latest"] as? String ?? ""
             let snippet = latest.isEmpty ? "" : "  last: \(latest)"
-            // Worktree tabs are the same project on a different branch —
-            // say which one, or parallel tabs are indistinguishable.
-            let wt = (a["worktree"] as? String).flatMap { $0.isEmpty ? nil : "  worktree=\($0)" } ?? ""
-            return "- id=\(id)  title=\"\(title)\"  status=\(status)\(muted)\(wt)\(snippet)"
+            // A tab in a worktree or a nested repo is the same project in a
+            // different directory — say which, or parallel tabs are
+            // indistinguishable.
+            let wt = (a["at"] as? String).flatMap { $0.isEmpty ? nil : "  at=\($0)" } ?? ""
+            // A tab you dispatched into another repo — say which, so it reads
+            // as the outpost it is rather than as a tab in your own project.
+            let outside = (a["outside"] as? Bool) == true
+                ? "  other-project=\(a["project"] as? String ?? "?")" : ""
+            return "- id=\(id)  title=\"\(title)\"  status=\(status)\(muted)\(wt)\(outside)\(snippet)"
         }
         return "Your board (other open tabs):\n" + lines.joined(separator: "\n")
     }

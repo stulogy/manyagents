@@ -240,14 +240,17 @@ final class MCPRelay {
         guard let message = (req["message"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty
         else { return ["id": id, "ok": false, "error": "empty message"] }
-        // Route ONLY to the orchestrator in the caller's OWN project — a
-        // worker must never wake a different session's orchestrator.
+        // Route to the orchestrator that DISPATCHED this tab, else the one in
+        // its own project — never to some unrelated session's orchestrator.
+        // The dispatch link matters: a tab spawned into another repo has no
+        // orchestrator "in this project", so its report used to die at the
+        // relay with an error while the orchestrator waited for it.
         let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
         guard let sender = sourceUUID.flatMap({ uid in mgr.sessions.first { $0.id == uid } }) else {
             return ["id": id, "ok": false, "error": "unknown source session"]
         }
-        guard let orch = mgr.orchestrator(for: sender.cwd) else {
-            return ["id": id, "ok": false, "error": "no orchestrator in this project"]
+        guard let orch = mgr.reportTarget(for: sender) else {
+            return ["id": id, "ok": false, "error": "no orchestrator to report to — nobody dispatched this tab and no orchestrator is designated in its project"]
         }
         // Don't let the orchestrator ping itself.
         if sender.id == orch.id {
@@ -362,9 +365,14 @@ final class MCPRelay {
         // worktrees stay on its board. Matching raw cwds dropped them: it
         // created six worktree tabs and then could not see a single one of
         // them, having to track them by id from memory.
+        // Plus any tab this orchestrator dispatched itself: new_agent accepts
+        // a cwd in another repo, and such a tab used to vanish from the board
+        // the moment it was created — list_agents answered "No other open
+        // tabs" about a tab the orchestrator had just spawned.
         let orchRoot = orch?.projectRoot
         let visible = mgr.sessions.filter { s in
             guard s.id != sourceUUID, !s.hiddenFromOrchestrator else { return false }
+            if s.reportToOrchestratorId != nil, s.reportToOrchestratorId == sourceUUID { return true }
             return orchRoot == nil || s.projectRoot == orchRoot
         }
         let agents: [[String: Any]] = visible
@@ -373,9 +381,13 @@ final class MCPRelay {
                     "id": s.id.uuidString,
                     "project": ProjectNaming.name(forCwd: s.projectRoot),
                     "cwd": s.cwd,
-                    // Names the worktree when the tab is in one, so parallel
-                    // tabs on different branches are distinguishable.
-                    "worktree": s.isWorktree ? ProjectNaming.name(forCwd: s.cwd) : "",
+                    // Where the tab sits inside the project — a worktree or a
+                    // nested repo — so parallel tabs are distinguishable.
+                    "at": ProjectNaming.subprojectLabel(forCwd: s.cwd),
+                    // Flags a dispatched tab living in a different repo, so
+                    // the orchestrator reads it as an outpost rather than as
+                    // one more tab in its own project.
+                    "outside": orchRoot != nil && s.projectRoot != orchRoot,
                     "title": s.boardTitle,
                     "status": statusString(s.status),
                     "muted": orch?.mutedTabIds.contains(s.id) ?? false,
@@ -482,12 +494,15 @@ final class MCPRelay {
         } else if !prompt.isEmpty {
             target.aiTitle = Self.titleFromPrompt(prompt)
         }
+        // The tab belongs to whoever spawned it, task or no task: that link is
+        // what keeps it on the orchestrator's board and lets it ping back when
+        // it sits outside the orchestrator's own project.
+        let orchUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
+        target.reportToOrchestratorId = orchUUID
         if !prompt.isEmpty {
             // Spawned with a task → auto-report back to the orchestrator
             // when it finishes (new_agent doesn't wait).
-            let orchUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
             target.pendingOrchestratorReport = true
-            target.reportToOrchestratorId = orchUUID
             let promptId: UUID
             if let orchUUID, let orch = mgr.sessions.first(where: { $0.id == orchUUID }) {
                 promptId = target.send("[Message from orchestrator \"\(orch.aiTitle ?? orch.displayName)\"]\n\n\(prompt)")
@@ -498,7 +513,14 @@ final class MCPRelay {
             // orchestrator via the board digest — the auto-report covers it.
             target.suppressedPromptIds.insert(promptId)
         }
-        return ["id": id, "ok": true, "agent_id": target.id.uuidString, "reused": reused, "cwd": cwd]
+        // Tell the caller when the tab landed in a different repo — an
+        // orchestrator that passes a cwd from a note or a file path deserves
+        // to hear that it just opened an outpost, not a tab next door.
+        let sourceRoot = sourceCwd.map { ProjectNaming.projectRoot(forCwd: $0) }
+        let targetRoot = ProjectNaming.projectRoot(forCwd: cwd)
+        return ["id": id, "ok": true, "agent_id": target.id.uuidString, "reused": reused,
+                "cwd": cwd, "project": ProjectNaming.name(forCwd: targetRoot),
+                "outside": sourceRoot != nil && sourceRoot != targetRoot]
     }
 
     /// Write the orchestrator's running "thinking" note.

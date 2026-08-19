@@ -289,7 +289,11 @@ final class AgentManager: ObservableObject {
         if source.pendingOrchestratorReport, source.pendingPrompts.isEmpty,
            let orch = reportTarget(for: source), orch.id != source.id {
             source.pendingOrchestratorReport = false
-            source.reportToOrchestratorId = nil
+            // The report flag is one-shot; the ORCHESTRATOR LINK is not. It
+            // stays so the tab's own notify_orchestrator calls keep landing
+            // for the rest of its life — clearing it here orphaned any tab
+            // dispatched outside the orchestrator's project after its very
+            // first turn.
             let name = source.aiTitle ?? source.displayName
             let snippet = String(end.text.prefix(240))
             let headline = end.status == .error
@@ -349,9 +353,13 @@ final class AgentManager: ObservableObject {
     /// dispatched it (recorded on the tab at dispatch time), falling back to
     /// whichever orchestrator owns its project. The recorded id is what makes
     /// the report land when the worker's cwd differs from the orchestrator's —
-    /// a subdir or a worktree — where the cwd lookup finds nobody and the
-    /// report used to vanish without a trace.
-    private func reportTarget(for source: AgentSession) -> AgentSession? {
+    /// a subdir, a worktree, or another repo entirely — where the cwd lookup
+    /// finds nobody and the report used to vanish without a trace.
+    ///
+    /// Both the automatic turn-end report and the worker's own
+    /// notify_orchestrator ping route through here, so a tab pings whoever
+    /// dispatched it rather than whoever happens to share its directory.
+    func reportTarget(for source: AgentSession) -> AgentSession? {
         if let id = source.reportToOrchestratorId,
            let orch = sessions.first(where: { $0.id == id }) {
             return orch
@@ -417,18 +425,28 @@ final class AgentManager: ObservableObject {
         orch.send(prompt, visible: false)
     }
 
-    /// Compact board snapshot the orchestrator sees on every wake. Hidden
-    /// tabs are excluded entirely; muted tabs stay listed but flagged.
+    /// Compact board snapshot the orchestrator sees on every wake. Its own
+    /// project's tabs plus any tab it dispatched elsewhere. Hidden tabs are
+    /// excluded entirely; muted tabs stay listed but flagged.
     func orchestratorBoardText(for orch: AgentSession) -> String {
         let others = sessions.filter {
-            $0.projectRoot == orch.projectRoot && $0.id != orch.id && !$0.hiddenFromOrchestrator
+            $0.id != orch.id && !$0.hiddenFromOrchestrator
+                && ($0.projectRoot == orch.projectRoot || $0.reportToOrchestratorId == orch.id)
         }
-        if others.isEmpty { return "(no other tabs in this project)" }
+        if others.isEmpty { return "(no other tabs on your board)" }
         return others.map { s in
             let muted = orch.mutedTabIds.contains(s.id) ? " [muted]" : ""
-            // Name the worktree — six tabs on six branches otherwise read as
-            // six identically-placed tabs.
-            let where_ = s.isWorktree ? " (worktree: \(ProjectNaming.name(forCwd: s.cwd)))" : ""
+            // Say where a tab lives when it isn't simply the project root:
+            // a worktree or a nested repo inside this project, or a tab this
+            // orchestrator dispatched into a different project altogether.
+            let where_: String
+            if s.projectRoot != orch.projectRoot {
+                where_ = " (other project: \(ProjectNaming.name(forCwd: s.projectRoot)))"
+            } else if s.isWorktree {
+                where_ = " (in \(ProjectNaming.subprojectLabel(forCwd: s.cwd)))"
+            } else {
+                where_ = ""
+            }
             return "• \(s.boardTitle) [\(s.id)]\(where_) — \(s.status.boardLabel)\(muted) — \(s.latestSnippet)"
         }.joined(separator: "\n")
     }
