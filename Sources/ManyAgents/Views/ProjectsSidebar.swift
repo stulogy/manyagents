@@ -6,6 +6,20 @@ struct ProjectsSidebar: View {
     @Binding var viewMode: WorkspaceMode
     @Binding var sidebarCollapsed: Bool
     @State private var showNewSessionPicker = false
+    /// Projects whose worktrees are folded away, newline-joined so the choice
+    /// survives a relaunch. Default is EXPANDED: a tab that was just spawned
+    /// must never start life hidden behind a chevron.
+    @AppStorage("sidebar.collapsedWorktrees") private var collapsedProjects: String = ""
+
+    private func isExpanded(_ cwd: String) -> Bool {
+        !collapsedProjects.split(separator: "\n").contains(Substring(cwd))
+    }
+
+    private func toggleExpanded(_ cwd: String) {
+        var set = collapsedProjects.split(separator: "\n").map(String.init)
+        if let idx = set.firstIndex(of: cwd) { set.remove(at: idx) } else { set.append(cwd) }
+        collapsedProjects = set.joined(separator: "\n")
+    }
 
     var body: some View {
         ZStack {
@@ -117,16 +131,27 @@ struct ProjectsSidebar: View {
         ScrollView {
             VStack(spacing: 6) {
                 ForEach(manager.projectTree) { group in
-                    ProjectRow(project: group.project)
+                    let expanded = isExpanded(group.project.cwd)
+                    ProjectRow(
+                        project: group.project,
+                        hiddenSessions: expanded ? [] : group.worktrees.flatMap(\.sessions),
+                        foldState: group.worktrees.isEmpty
+                            ? nil
+                            : (expanded: expanded, toggle: { toggleExpanded(group.project.cwd) }),
+                        worktreeCount: group.worktrees.count
+                    )
                     // Worktrees of this project, indented under it — same
                     // repo, different branch, so they belong to this row
                     // rather than standing beside it as separate projects.
-                    ForEach(group.worktrees) { wt in
-                        ProjectRow(project: wt, isWorktree: true)
-                            .padding(.leading, 14)
+                    if expanded {
+                        ForEach(group.worktrees) { wt in
+                            ProjectRow(project: wt, isWorktree: true)
+                                .padding(.leading, 14)
+                        }
                     }
                 }
             }
+            .animation(.easeInOut(duration: 0.16), value: collapsedProjects)
             .padding(.horizontal, 12)
             .padding(.vertical, 12)
         }
@@ -210,10 +235,23 @@ private struct ProjectRow: View {
     /// Worktree rows read as a branch of the row above: a leading glyph, the
     /// branch-ish part of the name, and no repetition of the parent's path.
     var isWorktree: Bool = false
+    /// Worktrees folded away under this row. Empty unless this is a parent
+    /// with a collapsed group — their sessions still count toward its chips.
+    var hiddenSessions: [AgentSession] = []
+    /// Non-nil when this row owns worktrees: drives the fold chevron.
+    var foldState: (expanded: Bool, toggle: () -> Void)? = nil
     @EnvironmentObject var manager: AgentManager
     @State private var isDropTarget = false
 
     var isActive: Bool { manager.activeProject?.cwd == project.cwd }
+
+    /// "6" worktrees under this project — shown beside the fold chevron so a
+    /// collapsed row still says how much is tucked underneath it.
+    private var hiddenCountLabel: String {
+        guard let fold = foldState else { return "" }
+        return fold.expanded ? "" : "\(worktreeCount)"
+    }
+    var worktreeCount: Int = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -225,7 +263,26 @@ private struct ProjectRow: View {
                 }
                 Text(isWorktree ? project.worktreeLabel : project.displayName)
                     .font(.system(size: isWorktree ? 12.5 : 13.5, weight: .semibold))
-                Spacer()
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let fold = foldState {
+                    // Fold the worktrees away — six port branches are worth
+                    // seeing while they work and worth hiding afterwards.
+                    Button(action: fold.toggle) {
+                        HStack(spacing: 2) {
+                            Image(systemName: fold.expanded ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 8, weight: .bold))
+                            Text("\(hiddenCountLabel)")
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .monospacedDigit()
+                        }
+                        .foregroundStyle(.tertiary)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(fold.expanded ? "Hide worktrees" : "Show worktrees")
+                }
+                Spacer(minLength: 6)
                 statusChips
             }
             Text(project.prettyCwd)
@@ -315,10 +372,14 @@ private struct ProjectRow: View {
 
     private var statusChips: some View {
         HStack(spacing: 4) {
-            let waiting = project.sessions.filter { $0.status == .waiting }.count
-            let working = project.sessions.filter { $0.status == .running }.count
-            let idle    = project.sessions.filter { $0.status == .idle    }.count
-            let errored = project.sessions.filter { $0.status == .error   }.count
+            // Counts its OWN tabs, plus the worktrees' when they're folded
+            // away — otherwise collapsing the group would silently hide six
+            // running agents behind a quiet-looking row.
+            let counted = project.sessions + hiddenSessions
+            let waiting = counted.filter { $0.status == .waiting }.count
+            let working = counted.filter { $0.status == .running }.count
+            let idle    = counted.filter { $0.status == .idle    }.count
+            let errored = counted.filter { $0.status == .error   }.count
             if waiting > 0 {
                 Chip(icon: "hand.raised.fill", text: "\(waiting)", tint: .orange, spin: false)
             }
@@ -356,11 +417,19 @@ private struct Chip: View {
                     }
                 }
             Text(text)
-                .font(.system(size: 10, weight: .semibold))
+                // Monospaced digits so a chip doesn't change width as a count
+                // ticks 9 → 10, and never wraps or truncates: the count was
+                // being clipped mid-glyph when the row ran short of width,
+                // which read as a broken icon.
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize()
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(Capsule().fill(tint.opacity(0.18)))
         .foregroundStyle(tint)
+        .fixedSize()
     }
 }

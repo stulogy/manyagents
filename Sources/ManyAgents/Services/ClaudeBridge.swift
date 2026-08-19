@@ -868,6 +868,14 @@ final class ClaudeBridge {
     needs its own context and no suitable tab exists. Reuses an existing EMPTY \
     tab in that project if free, rather than piling up blanks. Pass a `cwd` \
     you've seen via list_agents.
+    WORKTREES. When several tabs must WRITE to the same repo at once, give \
+    each its own `git worktree` and pass that path as new_agent's cwd — they'd \
+    otherwise overwrite each other's files and fight over one index. Those tabs \
+    stay on your board and nest under the project in the sidebar. Don't reach \
+    for one otherwise: a tab that only reads, or the only tab touching the \
+    repo, belongs in the project directory itself. Once a worktree's branch is \
+    merged, remove it (`git worktree remove`) — nothing prunes them \
+    automatically and they pile up in the user's Sites folder.
     - `mcp__manyagents__set_notes` — your running memory: what each tab is for, \
     what you're waiting on, your next intent. Update it as you go; the user sees it.
     - `mcp__manyagents__mute_agent` / `mcp__manyagents__unmute_agent` — stop / \
