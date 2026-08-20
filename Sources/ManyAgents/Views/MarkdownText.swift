@@ -358,15 +358,15 @@ enum MdBlock {
                 continue
             }
 
-            // GFM pipe table — detect a header row followed by a separator
-            // row (e.g. `|---|---|`), then consume contiguous data rows.
-            if i + 1 < lines.count,
-               isTableRow(line),
-               isTableSeparator(lines[i + 1]) {
+            // GFM pipe table — a header row followed by a separator row
+            // (e.g. `|---|---|`), then contiguous data rows. The outer
+            // pipes are optional, as they are on GitHub: a table written
+            // `ID | Request` / `--- | ---` used to render as prose.
+            if Self.startsTable(lines, at: i) {
                 let header = parseTableRow(line)
                 var rowData: [[String]] = []
                 i += 2
-                while i < lines.count, isTableRow(lines[i]) {
+                while i < lines.count, isTableCell(lines[i]) {
                     rowData.append(parseTableRow(lines[i]))
                     i += 1
                 }
@@ -435,7 +435,7 @@ enum MdBlock {
                 continue
             }
 
-            // Paragraph — join consecutive non-empty lines.
+            // Paragraph — gather consecutive non-empty lines.
             if trimmed.isEmpty { i += 1; continue }
             var paraLines: [String] = [trimmed]
             i += 1
@@ -449,10 +449,16 @@ enum MdBlock {
                 if bulletItem(nextTrim) != nil { break }
                 if orderedItem(nextTrim) != nil { break }
                 if Self.isTableRow(lines[i]) { break }
+                if Self.startsTable(lines, at: i) { break }
                 paraLines.append(nextTrim)
                 i += 1
             }
-            blocks.append(.paragraph(paraLines.joined(separator: " ")))
+            // Every line keeps its own line, the way chat clients render
+            // markdown rather than the way the spec does. An agent that
+            // emits a list of rows one per line means them as rows: strict
+            // soft-wrapping collapsed a 30-line triage table into a single
+            // run-on paragraph nobody could read.
+            blocks.append(.paragraph(paraLines.joined(separator: "\n")))
         }
         return blocks
     }
@@ -469,13 +475,34 @@ enum MdBlock {
         return t.hasPrefix("|") && t.contains("|") && t.count >= 3
     }
 
+    /// A line that COULD be a table row without the outer pipes. Far too
+    /// loose on its own — plenty of prose contains a pipe — so it only ever
+    /// counts next to a separator row (see `startsTable`) or once a table is
+    /// already underway.
+    private static func isTableCell(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty, t.contains("|") else { return false }
+        return true
+    }
+
+    /// Is there a table starting at `idx`? A candidate header line with a
+    /// separator directly under it. This is the ONLY thing that promotes a
+    /// pipe-bearing line to a table row, which keeps prose safe.
+    private static func startsTable(_ lines: [String], at idx: Int) -> Bool {
+        guard idx + 1 < lines.count else { return false }
+        return isTableCell(lines[idx]) && isTableSeparator(lines[idx + 1])
+    }
+
     /// `|---|:---:|---:|` style separator — pipes, dashes, optional
     /// colons for alignment, possibly with whitespace.
     private static func isTableSeparator(_ line: String) -> Bool {
-        let t = line.trimmingCharacters(in: .whitespaces)
-        guard t.hasPrefix("|"), t.count >= 3 else { return false }
-        let inner = String(t.dropFirst().dropLast())
-        let cells = inner.split(separator: "|", omittingEmptySubsequences: false)
+        var t = line.trimmingCharacters(in: .whitespaces)
+        // A pipe is what separates this from a `---` divider or a run of
+        // dashes under a heading, so require one either way.
+        guard t.contains("|"), t.count >= 3 else { return false }
+        if t.hasPrefix("|") { t.removeFirst() }
+        if t.hasSuffix("|") { t.removeLast() }
+        let cells = t.split(separator: "|", omittingEmptySubsequences: false)
         guard !cells.isEmpty else { return false }
         for cell in cells {
             let c = cell.trimmingCharacters(in: .whitespaces)
