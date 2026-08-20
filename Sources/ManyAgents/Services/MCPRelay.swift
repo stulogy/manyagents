@@ -129,7 +129,7 @@ final class MCPRelay {
         let boardOps: Set<String> = [
             "list_agents", "read_agent", "new_agent", "dispatch",
             "set_notes", "mute_agent", "unmute_agent",
-            "rename_agent", "compact_agent", "close_agent"
+            "rename_agent", "compact_agent", "close_agent", "remove_worktree"
         ]
         if boardOps.contains(op), let denied = await denyUnlessOrchestrator(req: req, id: id) {
             return denied
@@ -161,6 +161,8 @@ final class MCPRelay {
             return await compactAgent(req: req, id: id)
         case "close_agent":
             return await closeAgent(req: req, id: id)
+        case "remove_worktree":
+            return await removeWorktree(req: req, id: id)
         default:
             return ["id": id, "ok": false, "error": "unknown op: \(op)"]
         }
@@ -524,6 +526,57 @@ final class MCPRelay {
         return ["id": id, "ok": true, "agent_id": target.id.uuidString, "reused": reused,
                 "cwd": cwd, "project": ProjectNaming.name(forCwd: targetRoot),
                 "outside": sourceRoot != nil && sourceRoot != targetRoot]
+    }
+
+    /// Close a worktree tab AND delete the worktree it lived in — the other
+    /// half of `new_agent` with a worktree cwd, which the orchestrator has
+    /// been doing all along with nothing to undo it. One repo reached 86
+    /// worktrees this way.
+    ///
+    /// Two gates, because this deletes a directory on the user's disk:
+    /// the worktree must belong to the orchestrator's OWN project, and it
+    /// must be clean with its commits merged or pushed. Both refusals come
+    /// back as text the orchestrator can act on.
+    @MainActor
+    private func removeWorktree(req: [String: Any], id: String) async -> [String: Any] {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        guard let targetUUID = (req["agent_id"] as? String).flatMap(UUID.init(uuidString:)),
+              let target = mgr.sessions.first(where: { $0.id == targetUUID })
+        else { return ["id": id, "ok": false, "error": "unknown agent_id — call list_agents for current ids"] }
+        let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
+        if target.id == sourceUUID {
+            return ["id": id, "ok": false, "error": "you can't remove the worktree you're running in"]
+        }
+        // Same-project gate: an orchestrator deletes only inside its own
+        // tree, never a directory it merely happens to know the path of.
+        if let src = sourceUUID.flatMap({ uid in mgr.sessions.first { $0.id == uid } }),
+           src.projectRoot != target.projectRoot {
+            return ["id": id, "ok": false,
+                    "error": "that tab is in a different project — you can only remove worktrees of your own"]
+        }
+        let cwd = target.cwd
+        guard GitWorktrees.kind(forCwd: cwd) == .worktree else {
+            return ["id": id, "ok": false,
+                    "error": "that tab isn't in a git worktree (\(cwd)) — close_agent is what you want"]
+        }
+        // git blocks; keep it off the main actor so the UI doesn't hitch.
+        let verdict = await Task.detached { GitWorktrees.safety(ofWorktree: cwd) }.value
+        guard verdict.removable else {
+            return ["id": id, "ok": false,
+                    "error": "refused: \(verdict.reason). Get that work committed and pushed (or merged) first."]
+        }
+        // Close every tab in the worktree first — leaving one pointed at a
+        // deleted directory is the state the sidebar had to start flagging.
+        let doomed = mgr.sessions.filter { $0.cwd == cwd }
+        for s in doomed { mgr.close(s) }
+        let result = await Task.detached { GitWorktrees.remove(worktree: cwd) }.value
+        switch result {
+        case .success(let reason):
+            return ["id": id, "ok": true, "closed": doomed.count, "reason": reason,
+                    "worktree": ProjectNaming.name(forCwd: cwd)]
+        case .failure(let err):
+            return ["id": id, "ok": false, "error": "git refused: \(err.message)"]
+        }
     }
 
     /// Write the orchestrator's running "thinking" note.

@@ -487,6 +487,17 @@ private final class ServerState: @unchecked Sendable {
                 ]
             ],
             [
+                "name": "remove_worktree",
+                "description": "Close a worktree tab AND delete the worktree directory it lived in. This is the other half of spawning a tab in a worktree — without it they accumulate forever (one repo here reached 86, most on long-merged branches). Refused unless the worktree is clean AND its commits are merged into main/dev or pushed to its upstream, so it can never eat unfinished work; the refusal tells you what is in the way. Only for worktrees of YOUR own project. Use close_agent instead when the tab is in the main checkout.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "agent_id": ["type": "string", "description": "The tab living in the worktree — from list_agents. Every tab in that directory is closed, then the directory is removed."]
+                    ],
+                    "required": ["agent_id"]
+                ]
+            ],
+            [
                 "name": "set_notes",
                 "description": "Record your running understanding — what each tab is for, what you're waiting on, your next intended action. This is your memory across wake-ups and is shown to the user in the orchestrator indicator. Overwrites the previous note; keep it short and current.",
                 "inputSchema": [
@@ -739,6 +750,22 @@ private final class ServerState: @unchecked Sendable {
                 respondToolResult(id: id,
                                   text: (res["ok"] as? Bool) == true ? "Preview opened: \(url)" : "Error: \(res["error"] as? String ?? "failed")",
                                   isError: (res["ok"] as? Bool) != true)
+            case "remove_worktree":
+                guard let agentId = arguments["agent_id"] as? String else {
+                    respondToolResult(id: id, text: "Error: missing agent_id.", isError: true)
+                    return
+                }
+                let res = try await awaitRelay(["op": "remove_worktree",
+                                                "source_session_id": args.sourceSessionId as Any,
+                                                "agent_id": agentId])
+                if (res["ok"] as? Bool) == true {
+                    let closed = res["closed"] as? Int ?? 0
+                    let name = res["worktree"] as? String ?? "worktree"
+                    let why = res["reason"] as? String ?? ""
+                    respondToolResult(id: id, text: "Removed worktree \(name) (\(why)); closed \(closed) tab\(closed == 1 ? "" : "s").")
+                } else {
+                    respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "remove_worktree failed")", isError: true)
+                }
             case "notify_orchestrator":
                 guard let message = arguments["message"] as? String else {
                     respondToolResult(id: id, text: "Error: missing message.", isError: true)
