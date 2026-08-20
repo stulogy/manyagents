@@ -33,6 +33,10 @@ final class AgentSession: ObservableObject, Identifiable {
     var projectRoot: String { ProjectNaming.projectRoot(forCwd: cwd) }
     /// True when this tab sits in a worktree rather than the main repo.
     var isWorktree: Bool { projectRoot != cwd }
+    /// True once the tab's directory has been deleted underneath it — a
+    /// worktree cleanup does exactly that, and the tab can no longer run a
+    /// single command from there. Closing it is the only useful action.
+    var cwdMissing: Bool { !ProjectNaming.directoryExists(cwd) }
     let createdAt: Date
 
     @Published var displayName: String

@@ -384,6 +384,9 @@ final class MCPRelay {
                     // Where the tab sits inside the project — a worktree or a
                     // nested repo — so parallel tabs are distinguishable.
                     "at": ProjectNaming.subprojectLabel(forCwd: s.cwd),
+                    // Its directory was deleted underneath it (a worktree
+                    // cleanup) — the tab is dead weight until it's closed.
+                    "gone": s.cwdMissing,
                     // Flags a dispatched tab living in a different repo, so
                     // the orchestrator reads it as an outpost rather than as
                     // one more tab in its own project.

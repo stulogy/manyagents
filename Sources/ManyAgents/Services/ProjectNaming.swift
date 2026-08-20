@@ -63,6 +63,35 @@ enum ProjectNaming {
         return name(forCwd: key)
     }
 
+    /// Does this directory still exist? Worktrees get deleted out from under
+    /// open tabs — the cleanup that removes six port worktrees leaves six
+    /// tabs pointing at nothing, and the sidebar showed them as healthy.
+    ///
+    /// Unlike `projectRoot`, this answer CHANGES under a running app, so it
+    /// carries a short TTL rather than a permanent cache: long enough that a
+    /// sidebar layout pass isn't a burst of stat() calls, short enough that a
+    /// deletion shows up while the user is still looking at it.
+    static func directoryExists(_ path: String) -> Bool {
+        let key = path.hasSuffix("/") ? String(path.dropLast()) : path
+        let now = Date()
+        cacheLock.lock()
+        if let hit = existsCache[key], now.timeIntervalSince(hit.at) < 5 {
+            cacheLock.unlock()
+            return hit.exists
+        }
+        cacheLock.unlock()
+
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: key, isDirectory: &isDir) && isDir.boolValue
+
+        cacheLock.lock()
+        existsCache[key] = (exists, now)
+        cacheLock.unlock()
+        return exists
+    }
+
+    private static var existsCache: [String: (exists: Bool, at: Date)] = [:]
+
     /// Paths don't move under a running app, and this is read on every
     /// sidebar layout pass, so the filesystem probe happens once per cwd.
     private static var rootCache: [String: String] = [:]

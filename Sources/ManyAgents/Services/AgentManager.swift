@@ -447,7 +447,11 @@ final class AgentManager: ObservableObject {
             } else {
                 where_ = ""
             }
-            return "• \(s.boardTitle) [\(s.id)]\(where_) — \(s.status.boardLabel)\(muted) — \(s.latestSnippet)"
+            // A tab whose directory was deleted can't do anything else —
+            // say so plainly so the orchestrator closes it rather than
+            // dispatching work into a hole.
+            let gone = s.cwdMissing ? " [DIRECTORY GONE — close this tab]" : ""
+            return "• \(s.boardTitle) [\(s.id)]\(where_)\(gone) — \(s.status.boardLabel)\(muted) — \(s.latestSnippet)"
         }.joined(separator: "\n")
     }
 

@@ -476,7 +476,7 @@ private final class ServerState: @unchecked Sendable {
             ],
             [
                 "name": "close_agent",
-                "description": "Close a tab you no longer need (its work is done). The conversation stays on disk and is recoverable via Resume — closing just removes it from the workspace. You cannot close yourself.",
+                "description": "Close a tab you no longer need (its work is done, or list_agents shows it DIRECTORY-GONE because its worktree was deleted underneath it). The conversation stays on disk and is recoverable via Resume — closing just removes it from the workspace. You cannot close yourself.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -780,7 +780,8 @@ private final class ServerState: @unchecked Sendable {
             // as the outpost it is rather than as a tab in your own project.
             let outside = (a["outside"] as? Bool) == true
                 ? "  other-project=\(a["project"] as? String ?? "?")" : ""
-            return "- id=\(id)  title=\"\(title)\"  status=\(status)\(muted)\(wt)\(outside)\(snippet)"
+            let gone = (a["gone"] as? Bool) == true ? "  DIRECTORY-GONE" : ""
+            return "- id=\(id)  title=\"\(title)\"  status=\(status)\(muted)\(wt)\(outside)\(gone)\(snippet)"
         }
         return "Your board (other open tabs):\n" + lines.joined(separator: "\n")
     }

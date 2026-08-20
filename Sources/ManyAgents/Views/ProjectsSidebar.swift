@@ -244,6 +244,10 @@ private struct ProjectRow: View {
     @State private var isDropTarget = false
 
     var isActive: Bool { manager.activeProject?.cwd == project.cwd }
+    /// The directory was deleted while its tabs stayed open — a worktree
+    /// cleanup does this six times over. The row looked perfectly healthy,
+    /// so say it plainly instead.
+    private var isMissing: Bool { !ProjectNaming.directoryExists(project.cwd) }
 
     /// "6" worktrees under this project — shown beside the fold chevron so a
     /// collapsed row still says how much is tucked underneath it.
@@ -265,6 +269,13 @@ private struct ProjectRow: View {
                     .font(.system(size: isWorktree ? 12.5 : 13.5, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .foregroundStyle(isMissing ? .secondary : .primary)
+                if isMissing {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .help("This directory no longer exists — the tabs here can't run anything. Close them.")
+                }
                 if let fold = foldState {
                     // Fold the worktrees away — six port branches are worth
                     // seeing while they work and worth hiding afterwards.
@@ -285,9 +296,9 @@ private struct ProjectRow: View {
                 Spacer(minLength: 6)
                 statusChips
             }
-            Text(project.prettyCwd)
+            Text(isMissing ? "\(project.prettyCwd)  (deleted)" : project.prettyCwd)
                 .font(.system(size: 10.5, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isMissing ? .orange.opacity(0.75) : .secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
@@ -362,9 +373,11 @@ private struct ProjectRow: View {
                 // manager.close() mutates the live array is safe.
                 for s in project.sessions { manager.close(s) }
             } label: {
-                Label(project.sessions.count <= 1
-                      ? "Close session"
-                      : "Close project (\(project.sessions.count) sessions)",
+                Label(isMissing
+                      ? "Close \(project.sessions.count) tab\(project.sessions.count == 1 ? "" : "s") (directory deleted)"
+                      : (project.sessions.count <= 1
+                         ? "Close session"
+                         : "Close project (\(project.sessions.count) sessions)"),
                       systemImage: "xmark")
             }
         }
