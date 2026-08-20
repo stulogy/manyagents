@@ -121,8 +121,8 @@ struct PreviewView: View {
             urlText = raw
         }
         guard let url = URL(string: raw) else { return }
-        if let id = manager.activeSessionId {
-            manager.previewURLs[id] = url
+        if let s = manager.activeSession {
+            manager.previewURLs[s.repoRoot] = url
         }
         hasLoaded = true
         navAction = .load(url)

@@ -51,6 +51,43 @@ enum ProjectNaming {
         return resolved
     }
 
+    /// The REPO a directory belongs to: the nearest enclosing git repo, with
+    /// a worktree resolved to the main repo it was cut from.
+    ///
+    /// This is the unit a tab actually works in — `uhp/dev/UHP-OPS-Agent` and
+    /// six worktrees cut from it are one repo, six checkouts. `projectRoot`
+    /// climbs further, to the workspace that owns the board (`uhp`), so the
+    /// two answers differ for a repo cloned inside another.
+    static func repoRoot(forCwd cwd: String) -> String {
+        let key = cwd.hasSuffix("/") ? String(cwd.dropLast()) : cwd
+        repoLock.lock()
+        if let hit = repoCache[key] { repoLock.unlock(); return hit }
+        repoLock.unlock()
+        let resolved = nearestRepo(from: key) ?? key
+        repoLock.lock()
+        repoCache[key] = resolved
+        repoLock.unlock()
+        return resolved
+    }
+
+    private static var repoCache: [String: String] = [:]
+    private static let repoLock = NSLock()
+
+    /// Which CHECKOUT of its repo a tab is in: the worktree's own name, with
+    /// the repo's name trimmed off the front ("UHP-OPS-Agent-mdrender" under
+    /// "UHP-OPS-Agent" reads as "mdrender"). Empty when the tab sits in the
+    /// repo itself. Tabs of one repo are otherwise indistinguishable in the
+    /// tab strip once worktrees stopped getting rows of their own.
+    static func checkoutLabel(forCwd cwd: String) -> String {
+        let key = cwd.hasSuffix("/") ? String(cwd.dropLast()) : cwd
+        let repo = repoRoot(forCwd: key)
+        guard repo != key else { return "" }
+        let own = name(forCwd: key)
+        let repoName = name(forCwd: repo)
+        if own.hasPrefix(repoName + "-") { return String(own.dropFirst(repoName.count + 1)) }
+        return own
+    }
+
     /// How a tab's directory reads against its project root: the path below
     /// the project (`dev/operative-builder`), or the bare directory name when
     /// it sits outside it (a worktree in a sibling directory). Empty when the

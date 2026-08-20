@@ -374,8 +374,8 @@ struct MessageView: View {
                         Button {
                             // User-initiated (they clicked the pill), so
                             // focusing the browser is expected.
-                            if let id = sessionId {
-                                manager.previewURLs[id] = url
+                            if let s = sessionId.flatMap({ id in manager.sessions.first { $0.id == id } }) {
+                                manager.previewURLs[s.repoRoot] = url
                             }
                             manager.previewActive = true
                         } label: {

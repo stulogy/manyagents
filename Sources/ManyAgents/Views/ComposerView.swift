@@ -232,7 +232,7 @@ struct ComposerView: View {
             font: NSFont.systemFont(ofSize: 15, weight: .regular),
             minHeight: 44,
             maxHeight: 280,
-            onSubmit: submit,
+            onSubmit: { force in submit(force: force) },
             onImagePaste: { datas in
                 ingest(images: datas)
             }
@@ -319,14 +319,19 @@ struct ComposerView: View {
     }
 
     private var sendButton: some View {
-        Button(action: submit) {
+        Button { submit() } label: {
             Image(systemName: "arrow.up.circle.fill")
                 .font(.system(size: 28))
                 .foregroundStyle(canSubmit ? Color.brandOrange : Color.secondary.opacity(0.5))
         }
         .buttonStyle(.plain)
         .disabled(!canSubmit)
-        .help("Send (↩)")
+        // ⌘↩ is worth advertising here: while a turn runs, ↩ queues and the
+        // tab reads the message when it finishes, which is not what someone
+        // typing "stop, do it the other way" means.
+        .help(session.status == .running
+              ? "Send (↩ queues it · ⌘↩ sends into the running turn)"
+              : "Send (↩)")
     }
 
     private var canSubmit: Bool {
@@ -448,11 +453,17 @@ struct ComposerView: View {
         }
     }
 
-    private func submit() {
+    /// `force` is ⌘↩: don't join the queue behind a running turn, go into
+    /// that turn now. Same steer the queued row's "send now" button uses —
+    /// the model reads it at its next step rather than after the whole turn.
+    private func submit(force: Bool = false) {
         guard canSubmit else { return }
         let text = session.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
         let images = pendingImages
-        session.send(text, images: images)
+        let id = session.send(text, images: images)
+        // No-op when the session was idle: `send` dispatched it already, so
+        // it isn't in the queue for forceSend to pull forward.
+        if force { session.forceSend(id: id) }
         session.draftText = ""
         pendingImages = []
         pendingImageFingerprints = []

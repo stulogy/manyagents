@@ -616,7 +616,9 @@ private final class ServerState: @unchecked Sendable {
                 let summary = renderAgentsList(agents)
                 respondToolResult(id: id, text: summary)
             case "read_agent":
-                guard let agentId = arguments["agent_id"] as? String else {
+                // `id` and `to` are the names models reach for when they
+                // don't re-read the schema; one wasted turn per slip.
+                guard let agentId = (arguments["agent_id"] ?? arguments["id"] ?? arguments["to"]) as? String else {
                     respondToolResult(id: id, text: "Error: missing agent_id.", isError: true)
                     return
                 }
@@ -666,7 +668,7 @@ private final class ServerState: @unchecked Sendable {
                                   text: (res["ok"] as? Bool) == true ? "Renamed tab to \"\(title)\"." : "Error: \(res["error"] as? String ?? "rename failed")",
                                   isError: (res["ok"] as? Bool) != true)
             case "compact_agent", "close_agent":
-                guard let agentId = arguments["agent_id"] as? String else {
+                guard let agentId = (arguments["agent_id"] ?? arguments["id"]) as? String else {
                     respondToolResult(id: id, text: "Error: missing agent_id.", isError: true)
                     return
                 }
@@ -678,8 +680,13 @@ private final class ServerState: @unchecked Sendable {
                                   text: (res["ok"] as? Bool) == true ? "\(verb) tab \(agentId)." : "Error: \(res["error"] as? String ?? "failed")",
                                   isError: (res["ok"] as? Bool) != true)
             case "send_to_agent":
-                guard let agentId = arguments["agent_id"] as? String,
-                      let prompt = arguments["prompt"] as? String
+                // Accept the obvious synonyms. Orchestrators reach for
+                // {to, message} often enough that the strict read cost a
+                // full turn every time: error, re-read the schema, retry
+                // with identical intent and different key names.
+                let agentIdArg = (arguments["agent_id"] ?? arguments["to"] ?? arguments["id"]) as? String
+                let promptArg = (arguments["prompt"] ?? arguments["message"] ?? arguments["text"]) as? String
+                guard let agentId = agentIdArg, let prompt = promptArg
                 else {
                     respondToolResult(id: id, text: "Error: missing agent_id or prompt.", isError: true)
                     return
@@ -751,7 +758,7 @@ private final class ServerState: @unchecked Sendable {
                                   text: (res["ok"] as? Bool) == true ? "Preview opened: \(url)" : "Error: \(res["error"] as? String ?? "failed")",
                                   isError: (res["ok"] as? Bool) != true)
             case "remove_worktree":
-                guard let agentId = arguments["agent_id"] as? String else {
+                guard let agentId = (arguments["agent_id"] ?? arguments["id"]) as? String else {
                     respondToolResult(id: id, text: "Error: missing agent_id.", isError: true)
                     return
                 }

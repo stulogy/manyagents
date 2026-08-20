@@ -247,6 +247,9 @@ private struct AgentTab: View {
     @State private var showRename = false
     @State private var renameDraft = ""
     @State private var showBoard = false
+    /// Staged worktree removal: the git checks run off the main thread, then
+    /// this presents the verdict for confirmation — or the refusal.
+    @State private var removalPrompt: WorktreeRemovalPrompt?
 
     private var label: String {
         if let t = session.aiTitle, !t.isEmpty { return t }
@@ -257,6 +260,10 @@ private struct AgentTab: View {
         case .error:   return "Error"
         }
     }
+
+    private var checkout: String { ProjectNaming.checkoutLabel(forCwd: session.cwd) }
+
+    private var isWorktreeTab: Bool { GitWorktrees.kind(forCwd: session.cwd) == .worktree }
 
     private var dotColor: Color {
         switch session.status {
@@ -303,6 +310,23 @@ private struct AgentTab: View {
                     .font(.system(size: 12, weight: isActive ? .semibold : .medium))
                     .lineLimit(1)
                     .frame(maxWidth: 220, alignment: .leading)
+            }
+            // Which checkout this tab is in. Worktrees stopped being sidebar
+            // rows, so without this two tabs of one repo on two branches are
+            // indistinguishable in the strip.
+            if !checkout.isEmpty {
+                HStack(spacing: 3) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 8, weight: .semibold))
+                    Text(checkout)
+                        .font(.system(size: 10, weight: .medium))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(Capsule().fill(Color.primary.opacity(0.08)))
+                .help("Working in \(ProjectNaming.prettyCwd(session.cwd))")
             }
             Button(action: onClose) {
                 Image(systemName: "xmark")
@@ -386,7 +410,26 @@ private struct AgentTab: View {
                 .disabled(manager.orchestrator(for: session.cwd) == nil)
             }
             Divider()
+            if isWorktreeTab {
+                // Closing the tab leaves the worktree behind, which is how
+                // one repo here reached 86 of them. Removal is gated: clean
+                // tree, commits merged or pushed, or it refuses and says why.
+                Button("Close Tab and Remove Worktree…") { stageWorktreeRemoval() }
+            }
             Button("Close Tab", role: .destructive, action: onClose)
+        }
+        .alert(removalPrompt?.title ?? "",
+               isPresented: Binding(get: { removalPrompt != nil },
+                                    set: { if !$0 { removalPrompt = nil } }),
+               presenting: removalPrompt) { prompt in
+            if prompt.canRemove {
+                Button("Remove", role: .destructive) { performRemoval(prompt) }
+                Button("Cancel", role: .cancel) { removalPrompt = nil }
+            } else {
+                Button("OK", role: .cancel) { removalPrompt = nil }
+            }
+        } message: { prompt in
+            Text(prompt.message)
         }
         .alert("Rename tab", isPresented: $showRename) {
             TextField("Title", text: $renameDraft)
@@ -399,6 +442,53 @@ private struct AgentTab: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Enter a short label for this agent. It persists across launches.")
+        }
+    }
+
+    /// Check the worktree off the main thread, then present the verdict.
+    /// Refusals are shown rather than swallowed: "3 unpushed commits" is the
+    /// useful answer, and it says what to do before trying again.
+    private func stageWorktreeRemoval() {
+        let cwd = session.cwd
+        let name = ProjectNaming.name(forCwd: cwd)
+        let siblings = manager.sessions.filter { $0.cwd == cwd }.count
+        Task.detached {
+            let verdict = GitWorktrees.safety(ofWorktree: cwd)
+            await MainActor.run {
+                if verdict.removable {
+                    let others = siblings - 1
+                    let note = others > 0
+                        ? " \(others) other tab\(others == 1 ? "" : "s") in it will close too (recoverable via Resume)."
+                        : ""
+                    removalPrompt = WorktreeRemovalPrompt(
+                        title: "Remove worktree “\(name)”?",
+                        message: "The branch is safe — \(verdict.reason) — so the directory can go.\(note)",
+                        canRemove: true, cwd: cwd)
+                } else {
+                    removalPrompt = WorktreeRemovalPrompt(
+                        title: "Can’t remove “\(name)”",
+                        message: "It has \(verdict.reason). Commit and push (or merge) that work first, and this becomes removable.",
+                        canRemove: false, cwd: cwd)
+                }
+            }
+        }
+    }
+
+    private func performRemoval(_ prompt: WorktreeRemovalPrompt) {
+        removalPrompt = nil
+        // Close the tabs BEFORE deleting the directory: a session left
+        // pointing at a hole is the state the sidebar has to flag in orange.
+        for s in manager.sessions where s.cwd == prompt.cwd { manager.close(s) }
+        let cwd = prompt.cwd
+        Task.detached {
+            if case .failure(let err) = GitWorktrees.remove(worktree: cwd) {
+                await MainActor.run {
+                    removalPrompt = WorktreeRemovalPrompt(
+                        title: "Couldn’t remove the worktree",
+                        message: "git refused: \(err.message)",
+                        canRemove: false, cwd: cwd)
+                }
+            }
         }
     }
 }
@@ -423,8 +513,14 @@ private struct OrchestratorIndicatorPopover: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel("SEES")
+                // Match the board the orchestrator actually sees: its whole
+                // workspace, plus any tab it dispatched elsewhere. Matching
+                // raw cwds showed the user a shorter list than the
+                // orchestrator was working from.
                 let others = manager.sessions.filter {
-                    $0.cwd == orchestrator.cwd && $0.id != orchestrator.id && !$0.hiddenFromOrchestrator
+                    $0.id != orchestrator.id && !$0.hiddenFromOrchestrator
+                        && ($0.projectRoot == orchestrator.projectRoot
+                            || $0.reportToOrchestratorId == orchestrator.id)
                 }
                 if others.isEmpty {
                     Text("No other tabs in this project.")
@@ -495,4 +591,14 @@ private struct OrchestratorIndicatorPopover: View {
         case .error:   return .red
         }
     }
+}
+
+/// One staged worktree removal — the confirmation, or the refusal.
+private struct WorktreeRemovalPrompt: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+    /// false when this is a refusal: the alert then only explains itself.
+    let canRemove: Bool
+    let cwd: String
 }

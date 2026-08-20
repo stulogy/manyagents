@@ -21,17 +21,19 @@ final class AgentManager: ObservableObject {
     private var lastActiveTabPerProject: [String: UUID] = [:]
 
     // MARK: - Preview panel
-    /// Per-TAB preview URLs keyed by session id. Keyed by tab (not cwd) so
-    /// multiple agents in the same project don't fight over one slot and
-    /// each tab keeps its own page. Set by the open_preview MCP tool.
-    @Published var previewURLs: [UUID: URL] = [:]
+    /// Preview URLs keyed by REPO root. A repo runs one dev server, and the
+    /// tab that started it is rarely the tab you're reading — keying by tab
+    /// meant the Preview Server tab held :3060 privately while every sibling
+    /// tab in the same repo showed an empty panel. Set by the open_preview
+    /// MCP tool, by the localhost pill in a message, and by the URL bar.
+    @Published var previewURLs: [String: URL] = [:]
     /// Whether the preview panel is currently shown instead of the conversation.
     @Published var previewActive: Bool = false
 
-    /// The preview URL for the currently active tab, if any.
+    /// The preview URL for the active tab's repo, if any.
     var activePreviewURL: URL? {
-        guard let id = activeSessionId else { return nil }
-        return previewURLs[id]
+        guard let s = activeSession else { return nil }
+        return previewURLs[s.repoRoot]
     }
 
     private static let snapshotKey = "manyagents.snapshot.v1"
@@ -457,31 +459,35 @@ final class AgentManager: ObservableObject {
 
     // MARK: - Project grouping
 
-    /// Unique project list derived from session cwds, preserving the order in
-    /// which projects first appear in `sessions`. Flat — every distinct cwd
-    /// gets an entry, worktrees included. `projectTree` is what the sidebar
-    /// renders; this stays flat because ordering, drag-reorder and activation
-    /// all address a single directory.
+    /// Unique project list derived from session REPOS, preserving the order
+    /// in which they first appear in `sessions`. A tab in a worktree (or any
+    /// subdirectory) belongs to the repo it was cut from, so six parallel
+    /// worktree tabs are six tabs of one repo rather than six rows sitting
+    /// beside it — which is how people talk about them ("the Preview Server
+    /// tab", never "the -preview project"). `projectTree` adds the workspace
+    /// nesting on top; this stays flat because ordering, drag-reorder and
+    /// activation all address a single repo.
     var projects: [ProjectEntry] {
         var seen = Set<String>()
         var ordered: [String] = []
         for s in sessions {
-            if !seen.contains(s.cwd) {
-                ordered.append(s.cwd)
-                seen.insert(s.cwd)
+            let key = s.repoRoot
+            if !seen.contains(key) {
+                ordered.append(key)
+                seen.insert(key)
             }
         }
-        return ordered.map { cwd in
-            ProjectEntry(cwd: cwd, sessions: sessions.filter { $0.cwd == cwd })
+        return ordered.map { root in
+            ProjectEntry(cwd: root, sessions: sessions.filter { $0.repoRoot == root })
         }
     }
 
-    /// The sidebar's shape: top-level projects, each carrying the worktrees
-    /// cut from it. A worktree is a directory of its own but not a project of
-    /// its own — six parallel port tabs should read as six branches of
-    /// `adapther`, not as six unrelated things above it in the list.
-    /// A worktree whose main repo has no tabs open stands on its own rather
-    /// than disappearing.
+    /// The sidebar's shape: workspaces on top, each carrying the repos cloned
+    /// inside it. `~/Sites/uhp` holds its product repos in `dev/`, and they
+    /// belong under it rather than scattered across the top level — the uhp
+    /// orchestrator coordinates all of them as one board.
+    /// A nested repo whose workspace has no tabs open stands on its own
+    /// rather than disappearing.
     var projectTree: [ProjectGroup] {
         let all = projects
         let rootsWithEntries = Set(all.map(\.cwd))
@@ -505,7 +511,8 @@ final class AgentManager: ObservableObject {
 
     var activeProject: ProjectEntry? {
         guard let s = activeSession else { return nil }
-        return ProjectEntry(cwd: s.cwd, sessions: sessions.filter { $0.cwd == s.cwd })
+        let root = s.repoRoot
+        return ProjectEntry(cwd: root, sessions: sessions.filter { $0.repoRoot == root })
     }
 
     // MARK: - Reordering
@@ -561,10 +568,10 @@ final class AgentManager: ObservableObject {
     /// so reshuffling sessions of one cwd reshuffles the project rows.
     func reorderProject(movedCwd: String, before targetCwd: String?) {
         guard movedCwd != targetCwd else { return }
-        let movedSessions = sessions.filter { $0.cwd == movedCwd }
+        let movedSessions = sessions.filter { $0.repoRoot == movedCwd }
         guard !movedSessions.isEmpty else { return }
-        let others = sessions.filter { $0.cwd != movedCwd }
-        if let targetCwd, let insertIdx = others.firstIndex(where: { $0.cwd == targetCwd }) {
+        let others = sessions.filter { $0.repoRoot != movedCwd }
+        if let targetCwd, let insertIdx = others.firstIndex(where: { $0.repoRoot == targetCwd }) {
             var result = others
             result.insert(contentsOf: movedSessions, at: insertIdx)
             sessions = result
@@ -576,7 +583,7 @@ final class AgentManager: ObservableObject {
     /// Activate the most-recent session in `project`. If no session is
     /// currently active for that cwd, fall back to the last one added.
     func activate(project: ProjectEntry) {
-        if let active = activeSession, active.cwd == project.cwd { return }
+        if let active = activeSession, active.repoRoot == project.cwd { return }
         // Return to the last tab you were on in this project, if it's still
         // open; otherwise fall back to the most recent tab.
         if let remembered = lastActiveTabPerProject[project.cwd],

@@ -31,6 +31,10 @@ final class AgentSession: ObservableObject, Identifiable {
     /// Tabs spread across worktrees are one project — the same board, the
     /// same orchestrator — even though each lives in its own directory.
     var projectRoot: String { ProjectNaming.projectRoot(forCwd: cwd) }
+    /// The repo this tab works in — a worktree resolves to the repo it was
+    /// cut from. This is what the sidebar groups tabs by: six worktrees of
+    /// one repo are six tabs of that repo, not six things beside it.
+    var repoRoot: String { ProjectNaming.repoRoot(forCwd: cwd) }
     /// True when this tab sits in a worktree rather than the main repo.
     var isWorktree: Bool { projectRoot != cwd }
     /// True once the tab's directory has been deleted underneath it — a

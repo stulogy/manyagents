@@ -242,9 +242,6 @@ private struct ProjectRow: View {
     var foldState: (expanded: Bool, toggle: () -> Void)? = nil
     @EnvironmentObject var manager: AgentManager
     @State private var isDropTarget = false
-    /// Staged worktree removal: the safety check runs off the main thread,
-    /// then this presents its verdict for confirmation (or its refusal).
-    @State private var removalPrompt: WorktreeRemovalPrompt?
 
     var isActive: Bool { manager.activeProject?.cwd == project.cwd }
     /// The directory was deleted while its tabs stayed open — a worktree
@@ -391,16 +388,6 @@ private struct ProjectRow: View {
                 NSPasteboard.general.setString(project.cwd, forType: .string)
             } label: { Label("Copy path", systemImage: "doc.on.doc") }
 
-            if kind == .worktree, !isMissing {
-                Divider()
-                // The lifecycle hole this closes: the orchestrator cuts a
-                // worktree per parallel task and nothing ever removed them.
-                // Safe ones go from here; the rest explain themselves.
-                Button {
-                    stageWorktreeRemoval()
-                } label: { Label("Remove worktree…", systemImage: "trash") }
-            }
-
             Divider()
 
             Button(role: .destructive) {
@@ -414,69 +401,6 @@ private struct ProjectRow: View {
                          ? "Close session"
                          : "Close project (\(project.sessions.count) sessions)"),
                       systemImage: "xmark")
-            }
-        }
-        .alert(removalPrompt?.title ?? "",
-               isPresented: Binding(get: { removalPrompt != nil },
-                                    set: { if !$0 { removalPrompt = nil } }),
-               presenting: removalPrompt) { prompt in
-            if prompt.canRemove {
-                Button("Remove", role: .destructive) { performRemoval(prompt) }
-                Button("Cancel", role: .cancel) { removalPrompt = nil }
-            } else {
-                Button("OK", role: .cancel) { removalPrompt = nil }
-            }
-        } message: { prompt in
-            Text(prompt.message)
-        }
-    }
-
-    /// Check the worktree off the main thread, then present the verdict.
-    /// Refusals are shown, not hidden: "3 unpushed commits" is the useful
-    /// answer, and it tells the user what to do before trying again.
-    private func stageWorktreeRemoval() {
-        let cwd = project.cwd
-        let name = project.worktreeLabel
-        let tabs = project.sessions.count
-        Task.detached {
-            let verdict = GitWorktrees.safety(ofWorktree: cwd)
-            await MainActor.run {
-                if verdict.removable {
-                    let tabNote = tabs == 0
-                        ? ""
-                        : " Its \(tabs) open tab\(tabs == 1 ? "" : "s") will be closed first (recoverable via Resume)."
-                    removalPrompt = WorktreeRemovalPrompt(
-                        title: "Remove worktree “\(name)”?",
-                        message: "The branch is safe — \(verdict.reason) — so the directory can go.\(tabNote)",
-                        canRemove: true,
-                        cwd: cwd)
-                } else {
-                    removalPrompt = WorktreeRemovalPrompt(
-                        title: "Can't remove “\(name)”",
-                        message: "It has \(verdict.reason). Commit and push (or merge) that work first, and this will be removable.",
-                        canRemove: false,
-                        cwd: cwd)
-                }
-            }
-        }
-    }
-
-    private func performRemoval(_ prompt: WorktreeRemovalPrompt) {
-        removalPrompt = nil
-        // Close the tabs BEFORE deleting the directory, so no session is left
-        // pointing at a hole — the state we started flagging in 0.9.2.
-        for s in project.sessions { manager.close(s) }
-        let cwd = prompt.cwd
-        Task.detached {
-            let result = GitWorktrees.remove(worktree: cwd)
-            if case .failure(let err) = result {
-                await MainActor.run {
-                    removalPrompt = WorktreeRemovalPrompt(
-                        title: "Couldn't remove the worktree",
-                        message: "git refused: \(err.message)",
-                        canRemove: false,
-                        cwd: cwd)
-                }
             }
         }
     }
@@ -543,14 +467,4 @@ private struct Chip: View {
         .foregroundStyle(tint)
         .fixedSize()
     }
-}
-
-/// One staged worktree removal — the confirmation or the refusal.
-private struct WorktreeRemovalPrompt: Identifiable {
-    let id = UUID()
-    let title: String
-    let message: String
-    /// false when this is a refusal: the alert then just explains itself.
-    let canRemove: Bool
-    let cwd: String
 }

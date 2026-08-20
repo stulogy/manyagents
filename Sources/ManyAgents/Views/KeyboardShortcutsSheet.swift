@@ -30,7 +30,8 @@ struct KeyboardShortcutsSheet: View {
             Shortcut(keys: ["⌘", "⇧", "L"], description: "Toggle card / list view"),
         ]),
         Section(title: "Composer", shortcuts: [
-            Shortcut(keys: ["↩"], description: "Send"),
+            Shortcut(keys: ["↩"], description: "Send — queues behind a running turn"),
+            Shortcut(keys: ["⌘", "↩"], description: "Send NOW — into the running turn, ahead of the queue"),
             Shortcut(keys: ["⇧", "↩"], description: "New line"),
             Shortcut(keys: ["⌘", "V"], description: "Paste — includes screenshots & images"),
         ]),

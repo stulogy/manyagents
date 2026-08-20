@@ -273,11 +273,13 @@ final class MCPRelay {
               let urlStr = req["url"] as? String,
               let url = URL(string: urlStr)
         else { return ["id": id, "ok": false, "error": "missing or invalid url"] }
-        // Store under the CALLING tab's id (per-tab, no cross-tab fight).
+        // Store against the calling tab's REPO: one repo, one dev server, so
+        // every tab working in it sees the same page — including the ones
+        // that didn't start the server.
         let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
         let targetId = sourceUUID ?? mgr.activeSessionId
-        if let targetId {
-            mgr.previewURLs[targetId] = url
+        if let target = targetId.flatMap({ uid in mgr.sessions.first { $0.id == uid } }) {
+            mgr.previewURLs[target.repoRoot] = url
         }
         // Only steal focus into the browser when the ACTIVE tab is the one
         // that called it — a background agent stores its URL silently and

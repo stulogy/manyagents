@@ -11,7 +11,9 @@ struct PasteAwareTextEditor: NSViewRepresentable {
     var font: NSFont
     var minHeight: CGFloat = 26
     var maxHeight: CGFloat = 200
-    var onSubmit: () -> Void
+    /// `force == true` when the user held ⌘ — send past the queue rather
+    /// than joining it.
+    var onSubmit: (Bool) -> Void
     var onImagePaste: ([Data]) -> Void
 
     func makeNSView(context: Context) -> PasteScrollView {
@@ -50,6 +52,9 @@ struct PasteAwareTextEditor: NSViewRepresentable {
         context.coordinator.maxHeight = maxHeight
         textView.onImagePaste = { [weak coordinator = context.coordinator] data in
             coordinator?.onImagePaste(data)
+        }
+        textView.onForceSubmit = { [weak coordinator = context.coordinator] in
+            coordinator?.onSubmit(true)
         }
 
         scroll.documentView = textView
@@ -103,7 +108,7 @@ struct PasteAwareTextEditor: NSViewRepresentable {
         var heightBinding: Binding<CGFloat> = .constant(26)
         var minHeight: CGFloat = 26
         var maxHeight: CGFloat = 200
-        var onSubmit: () -> Void = {}
+        var onSubmit: (Bool) -> Void = { _ in }
         var onImagePaste: ([Data]) -> Void = { _ in }
 
         /// A per-text-view undo manager owned by this coordinator. Without it
@@ -127,14 +132,17 @@ struct PasteAwareTextEditor: NSViewRepresentable {
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                let shift = NSEvent.modifierFlags.contains(.shift)
-                if shift {
+                let mods = NSEvent.modifierFlags
+                if mods.contains(.shift) {
                     textView.insertText("\n", replacementRange: textView.selectedRange())
                     return true
-                } else {
-                    onSubmit()
-                    return true
                 }
+                // ⌘↩ means "now": the message goes into the running turn
+                // instead of waiting behind it. AppKit routes ⌘↩ to
+                // insertNewline: on some layouts and to keyDown on others,
+                // so both paths call this.
+                onSubmit(mods.contains(.command))
+                return true
             }
             return false
         }
@@ -160,6 +168,8 @@ final class PasteScrollView: NSScrollView {
 /// NSTextView subclass that intercepts paste events for image payloads.
 final class PasteAwareNSTextView: NSTextView {
     var onImagePaste: (([Data]) -> Void)?
+    /// Set by the coordinator; see `keyDown`.
+    var onForceSubmit: (() -> Void)?
     var placeholderAttributedString: NSAttributedString? {
         didSet { needsDisplay = true }
     }
@@ -181,6 +191,18 @@ final class PasteAwareNSTextView: NSTextView {
             }
         }
         return super.validateMenuItem(menuItem)
+    }
+
+    /// ⌘↩ often arrives here rather than as `insertNewline:` — AppKit sends
+    /// a command-modified Return to the key-equivalent path first. Catch it
+    /// so force-send works regardless of which route the event takes.
+    override func keyDown(with event: NSEvent) {
+        let isReturn = event.keyCode == 36 || event.keyCode == 76   // Return, keypad Enter
+        if isReturn, event.modifierFlags.contains(.command) {
+            onForceSubmit?()
+            return
+        }
+        super.keyDown(with: event)
     }
 
     override func paste(_ sender: Any?) {
