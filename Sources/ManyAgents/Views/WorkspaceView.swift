@@ -398,7 +398,12 @@ private struct AgentTab: View {
                 }
             }
             Divider()
-            Button(session.isCoordinator ? "Stop Orchestrating" : "Make Orchestrator") {
+            // Name the hat by its scope: a tab in a nested repo leads that
+            // repo, it doesn't take the workspace board.
+            let hatLabel = session.repoRoot == session.projectRoot
+                ? "Make Orchestrator"
+                : "Make Lead of \(ProjectNaming.name(forCwd: session.repoRoot))"
+            Button(session.isCoordinator ? "Stop Orchestrating" : hatLabel) {
                 // Just do it — the user picked this tab on purpose.
                 manager.toggleOrchestrator(session)
             }

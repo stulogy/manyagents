@@ -322,7 +322,7 @@ private final class ServerState: @unchecked Sendable {
                 // workers are told plainly they are not the orchestrator.
                 "instructions": args.isCoordinator
                 ? """
-                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server. This session is the project's ORCHESTRATOR: the board tools (list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent) let you coordinate the user's other tabs. Refer to the app as "ManyAgents".
+                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server. This session is an ORCHESTRATOR: the board tools (list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent) let you coordinate the user's other tabs. Your board covers your own scope — the whole workspace if you sit at its root, otherwise just your repo. When a repo nested inside your workspace grows its own multi-tab workstream, delegate_orchestrator makes one of its tabs that repo's lead; you keep seeing its tabs, it runs them. Refer to the app as "ManyAgents".
                 """
                 : """
                 You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server. This session is NOT the orchestrator — a separate dedicated tab may hold that role. To reach it (you're blocked, need a cross-tab decision, or finished a long task it's waiting on), call notify_orchestrator. Refer to the app as "ManyAgents".
@@ -493,6 +493,18 @@ private final class ServerState: @unchecked Sendable {
                     "type": "object",
                     "properties": [
                         "agent_id": ["type": "string", "description": "The tab living in the worktree — from list_agents. Every tab in that directory is closed, then the directory is removed."]
+                    ],
+                    "required": ["agent_id"]
+                ]
+            ],
+            [
+                "name": "delegate_orchestrator",
+                "description": "Hand a tab in a NESTED REPO the orchestrator hat for that repo, so it runs that repo's tabs itself instead of every decision routing through you. Your board still spans the whole workspace, so you keep seeing its tabs; it sees only its repo, and can only spawn inside it. Use when one repo grows its own multi-tab workstream — a single tab there does not need a lead, and each lead costs a context of its own. Pass revoke:true to take the hat back when that workstream is done.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "agent_id": ["type": "string", "description": "The tab to make (or unmake) a repo lead — from list_agents. It must be in a repo nested inside your workspace."],
+                        "revoke": ["type": "boolean", "description": "true to take the hat back. Omit to grant it."]
                     ],
                     "required": ["agent_id"]
                 ]
@@ -772,6 +784,25 @@ private final class ServerState: @unchecked Sendable {
                     respondToolResult(id: id, text: "Removed worktree \(name) (\(why)); closed \(closed) tab\(closed == 1 ? "" : "s").")
                 } else {
                     respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "remove_worktree failed")", isError: true)
+                }
+            case "delegate_orchestrator":
+                guard let agentId = (arguments["agent_id"] ?? arguments["id"]) as? String else {
+                    respondToolResult(id: id, text: "Error: missing agent_id.", isError: true)
+                    return
+                }
+                var payload: [String: Any] = ["op": "delegate_orchestrator",
+                                              "source_session_id": args.sourceSessionId as Any,
+                                              "agent_id": agentId]
+                if let revoke = arguments["revoke"] as? Bool { payload["revoke"] = revoke }
+                let res = try await awaitRelay(payload)
+                if (res["ok"] as? Bool) == true {
+                    let repo = res["repo"] as? String ?? "that repo"
+                    let revoked = (res["revoked"] as? Bool) == true
+                    respondToolResult(id: id, text: revoked
+                        ? "Took the hat back — \(repo) has no lead now; its tabs report to you again."
+                        : "\(agentId) now leads \(repo). It coordinates that repo's tabs and spawns only inside it; you still see them all.")
+                } else {
+                    respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "delegate failed")", isError: true)
                 }
             case "notify_orchestrator":
                 guard let message = arguments["message"] as? String else {

@@ -35,6 +35,23 @@ final class AgentSession: ObservableObject, Identifiable {
     /// cut from. This is what the sidebar groups tabs by: six worktrees of
     /// one repo are six tabs of that repo, not six things beside it.
     var repoRoot: String { ProjectNaming.repoRoot(forCwd: cwd) }
+
+    /// What this tab coordinates when it wears the orchestrator hat: the
+    /// whole workspace when it sits at the workspace root, otherwise just its
+    /// own repo. That's what makes a repo LEAD possible — `uhp` keeps the
+    /// board that spans every repo, while a tab in `dev/UHP-OPS-Agent` can
+    /// run that repo's tabs without either one stealing the other's hat.
+    var boardScope: String { repoRoot == projectRoot ? projectRoot : repoRoot }
+
+    /// True for a repo-level orchestrator: coordinates its own repo, not the
+    /// workspace. Bounds what it can see and where it can spawn.
+    var isRepoLead: Bool { isCoordinator && boardScope != projectRoot }
+
+    /// Does this orchestrator's board include `other`?
+    func coordinates(_ other: AgentSession) -> Bool {
+        boardScope == projectRoot ? other.projectRoot == boardScope
+                                  : other.repoRoot == boardScope
+    }
     /// True when this tab sits in a worktree rather than the main repo.
     var isWorktree: Bool { projectRoot != cwd }
     /// True once the tab's directory has been deleted underneath it — a

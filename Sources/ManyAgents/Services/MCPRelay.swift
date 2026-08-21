@@ -129,7 +129,8 @@ final class MCPRelay {
         let boardOps: Set<String> = [
             "list_agents", "read_agent", "new_agent", "dispatch",
             "set_notes", "mute_agent", "unmute_agent",
-            "rename_agent", "compact_agent", "close_agent", "remove_worktree"
+            "rename_agent", "compact_agent", "close_agent", "remove_worktree",
+            "delegate_orchestrator"
         ]
         if boardOps.contains(op), let denied = await denyUnlessOrchestrator(req: req, id: id) {
             return denied
@@ -163,6 +164,8 @@ final class MCPRelay {
             return await closeAgent(req: req, id: id)
         case "remove_worktree":
             return await removeWorktree(req: req, id: id)
+        case "delegate_orchestrator":
+            return await delegateOrchestrator(req: req, id: id)
         default:
             return ["id": id, "ok": false, "error": "unknown op: \(op)"]
         }
@@ -373,11 +376,14 @@ final class MCPRelay {
         // a cwd in another repo, and such a tab used to vanish from the board
         // the moment it was created — list_agents answered "No other open
         // tabs" about a tab the orchestrator had just spawned.
+        // Scope follows the hat: a workspace orchestrator sees every tab in
+        // the workspace, a repo lead sees its own repo's tabs.
         let orchRoot = orch?.projectRoot
         let visible = mgr.sessions.filter { s in
             guard s.id != sourceUUID, !s.hiddenFromOrchestrator else { return false }
             if s.reportToOrchestratorId != nil, s.reportToOrchestratorId == sourceUUID { return true }
-            return orchRoot == nil || s.projectRoot == orchRoot
+            guard let orch else { return true }
+            return orch.coordinates(s)
         }
         let agents: [[String: Any]] = visible
             .map { s -> [String: Any] in
@@ -471,6 +477,16 @@ final class MCPRelay {
         guard let cwd else {
             return ["id": id, "ok": false, "error": "no cwd and no source session to default from"]
         }
+        // A repo lead coordinates ONE repo. Letting it spawn anywhere is how
+        // workers-spawning-workers turns into sprawl nobody is tracking; the
+        // workspace orchestrator is the one that reaches across repos.
+        if let src = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
+            .flatMap({ uid in mgr.sessions.first { $0.id == uid } }),
+           src.isRepoLead,
+           ProjectNaming.repoRoot(forCwd: cwd) != src.repoRoot {
+            return ["id": id, "ok": false,
+                    "error": "you lead \(ProjectNaming.name(forCwd: src.repoRoot)) — spawn inside that repo (or its worktrees). Ask the workspace orchestrator for work elsewhere."]
+        }
         let prompt = (req["prompt"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         // Prefer an existing EMPTY tab in this project.
@@ -528,6 +544,49 @@ final class MCPRelay {
         return ["id": id, "ok": true, "agent_id": target.id.uuidString, "reused": reused,
                 "cwd": cwd, "project": ProjectNaming.name(forCwd: targetRoot),
                 "outside": sourceRoot != nil && sourceRoot != targetRoot]
+    }
+
+    /// Hand a tab in a nested repo the orchestrator hat for THAT repo, so it
+    /// can run its own tabs instead of every decision routing through the
+    /// workspace orchestrator. The workspace board still spans everything, so
+    /// nothing goes dark at the top.
+    ///
+    /// Only the workspace orchestrator delegates: a repo lead making more
+    /// leads is the runaway-hierarchy case, and one board per repo is the
+    /// most this is meant to be.
+    @MainActor
+    private func delegateOrchestrator(req: [String: Any], id: String) async -> [String: Any] {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        guard let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:)),
+              let source = mgr.sessions.first(where: { $0.id == sourceUUID })
+        else { return ["id": id, "ok": false, "error": "unknown source session"] }
+        guard !source.isRepoLead else {
+            return ["id": id, "ok": false,
+                    "error": "you're a repo lead — only the workspace orchestrator hands out the hat"]
+        }
+        guard let targetUUID = (req["agent_id"] as? String).flatMap(UUID.init(uuidString:)),
+              let target = mgr.sessions.first(where: { $0.id == targetUUID })
+        else { return ["id": id, "ok": false, "error": "unknown agent_id — call list_agents for current ids"] }
+        guard target.id != source.id else {
+            return ["id": id, "ok": false, "error": "you already hold the workspace hat"]
+        }
+        guard target.projectRoot == source.projectRoot else {
+            return ["id": id, "ok": false, "error": "that tab is outside your workspace"]
+        }
+        let repo = ProjectNaming.name(forCwd: target.repoRoot)
+        if (req["revoke"] as? Bool) == true {
+            guard target.isCoordinator else {
+                return ["id": id, "ok": false, "error": "that tab isn't a lead"]
+            }
+            mgr.undesignateOrchestrator(target)
+            return ["id": id, "ok": true, "revoked": true, "repo": repo]
+        }
+        guard target.boardScope != source.boardScope else {
+            return ["id": id, "ok": false,
+                    "error": "that tab shares your board scope — delegating to it would just take your hat. Leads are for tabs in a nested repo."]
+        }
+        mgr.designateOrchestrator(target)
+        return ["id": id, "ok": true, "revoked": false, "repo": repo]
     }
 
     /// Close a worktree tab AND delete the worktree it lived in — the other

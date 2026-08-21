@@ -337,18 +337,22 @@ final class AgentManager: ObservableObject {
 
     // MARK: - Orchestrator (v2)
 
-    /// The orchestrator for a given PROJECT (cwd). Orchestration is
-    /// per-project — each project can have its own orchestrator, and a
-    /// worker's pings/board updates go only to the orchestrator in its
-    /// own project, never a different session's.
-    /// Matched on the project ROOT, not the raw cwd: a tab running in a git
-    /// worktree belongs to the same project as the repo it was cut from, and
-    /// keying on cwd meant a worktree tab found no orchestrator at all — its
-    /// pings failed with "no orchestrator in this project" and its turn-ends
-    /// never reached the board.
+    /// The orchestrator a tab at `cwd` answers to — the NEAREST one. A repo
+    /// lead (an orchestrator inside a nested repo) takes precedence over the
+    /// workspace orchestrator for tabs in its repo; everything else falls
+    /// through to the workspace.
+    ///
+    /// Matched on roots, not the raw cwd: a tab running in a git worktree
+    /// belongs to the repo it was cut from, and keying on cwd meant a
+    /// worktree tab found no orchestrator at all — its pings failed with "no
+    /// orchestrator in this project" and its turn-ends never reached a board.
     func orchestrator(for cwd: String) -> AgentSession? {
-        let root = ProjectNaming.projectRoot(forCwd: cwd)
-        return sessions.first { $0.isCoordinator && $0.projectRoot == root }
+        let repo = ProjectNaming.repoRoot(forCwd: cwd)
+        if let lead = sessions.first(where: { $0.isCoordinator && $0.boardScope == repo }) {
+            return lead
+        }
+        let workspace = ProjectNaming.projectRoot(forCwd: cwd)
+        return sessions.first { $0.isCoordinator && $0.boardScope == workspace }
     }
 
     /// Who a dispatched tab reports back to: the orchestrator that actually
@@ -383,9 +387,11 @@ final class AgentManager: ObservableObject {
     /// the tab doesn't linger as a mis-named, icon-less ghost orchestrator
     /// (which then still behaves like one). AutoNamer regenerates a real
     /// title from its conversation.
-    private func undesignateOrchestrator(_ session: AgentSession) {
+    func undesignateOrchestrator(_ session: AgentSession) {
         session.isCoordinator = false
-        if session.aiTitle == "Orchestrator" { session.aiTitle = nil }
+        if session.aiTitle == "Orchestrator" || session.aiTitle == "Repo Lead" {
+            session.aiTitle = nil
+        }
     }
 
     /// Put the hat on `session` and immediately deliver the catch-up brief.
@@ -393,16 +399,19 @@ final class AgentManager: ObservableObject {
     /// next watched-tab completion — potentially forever if every tab was
     /// idle or mid-task — and was never even told it had the job.
     func designateOrchestrator(_ session: AgentSession) {
-        // Exclusive PER PROJECT: only the previous orchestrator in THIS
-        // project loses the hat + name. Other projects keep their own
-        // orchestrators (orchestration is per-project, not global).
-        for s in sessions where s.isCoordinator && s.projectRoot == session.projectRoot {
+        // Exclusive PER SCOPE, not per workspace. Making a tab in
+        // `uhp/dev/UHP-OPS-Agent` an orchestrator used to strip the hat off
+        // the `uhp` orchestrator, because both share a project root — so a
+        // workspace could never have a repo lead under it. Now the workspace
+        // board and each repo's board coexist, and only a same-scope
+        // orchestrator is displaced.
+        for s in sessions where s.isCoordinator && s.boardScope == session.boardScope {
             undesignateOrchestrator(s)
         }
         session.isCoordinator = true
-        // The orchestrator tab is always called "Orchestrator" — a fixed
-        // role name. AutoNamer skips coordinator tabs so it stays put.
-        session.aiTitle = "Orchestrator"
+        // Fixed role names, so the strip says which hat this is. AutoNamer
+        // skips coordinator tabs, so they stay put.
+        session.aiTitle = session.boardScope == session.projectRoot ? "Orchestrator" : "Repo Lead"
         deliverOrchestratorCatchUp(to: session)
     }
 
@@ -433,7 +442,7 @@ final class AgentManager: ObservableObject {
     func orchestratorBoardText(for orch: AgentSession) -> String {
         let others = sessions.filter {
             $0.id != orch.id && !$0.hiddenFromOrchestrator
-                && ($0.projectRoot == orch.projectRoot || $0.reportToOrchestratorId == orch.id)
+                && (orch.coordinates($0) || $0.reportToOrchestratorId == orch.id)
         }
         if others.isEmpty { return "(no other tabs on your board)" }
         return others.map { s in
@@ -444,8 +453,14 @@ final class AgentManager: ObservableObject {
             let where_: String
             if s.projectRoot != orch.projectRoot {
                 where_ = " (other project: \(ProjectNaming.name(forCwd: s.projectRoot)))"
+            } else if s.repoRoot != orch.repoRoot {
+                // A workspace orchestrator spans repos, so name the repo AND
+                // the checkout: "UHP-OPS-Agent/mdrender".
+                let checkout = ProjectNaming.checkoutLabel(forCwd: s.cwd)
+                let repo = ProjectNaming.name(forCwd: s.repoRoot)
+                where_ = " (repo: \(repo)\(checkout.isEmpty ? "" : "/\(checkout)"))"
             } else if s.isWorktree {
-                where_ = " (in \(ProjectNaming.subprojectLabel(forCwd: s.cwd)))"
+                where_ = " (checkout: \(ProjectNaming.checkoutLabel(forCwd: s.cwd)))"
             } else {
                 where_ = ""
             }
