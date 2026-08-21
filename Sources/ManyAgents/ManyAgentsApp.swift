@@ -49,7 +49,33 @@ struct ManyAgentsApp: App {
         if let args = MCPStdioServer.parseArgs(CommandLine.arguments) {
             MCPStdioServer.run(args)
         }
+        Self.enforceSingleInstance()
         Self.registerBundledFont()
+    }
+
+    /// Only one GUI instance may run at a time. Nothing here guarded against
+    /// a second one: Sparkle's auto-update relaunch is precisely the moment
+    /// a duplicate-launch race can surface (the old process hasn't fully
+    /// exited when the new one starts), and it doesn't take a race to repeat
+    /// it — six updates shipped in one session is six chances. Caught two
+    /// live copies at once, ~30GB and ~6GB: both had restored the SAME
+    /// persisted snapshot and spawned their OWN live `claude` process per
+    /// tab, so every open tab's footprint was simply doubled.
+    ///
+    /// Checked here, before AgentManager ever loads the snapshot or spawns
+    /// anything — the MCP-subprocess mode above is a separate code path
+    /// (it exits before reaching this point) and this doesn't touch it.
+    private static func enforceSingleInstance() {
+        let bundleId = Bundle.main.bundleIdentifier ?? "app.manyagents"
+        let mine = ProcessInfo.processInfo.processIdentifier
+        let others = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleId)
+            .filter { $0.processIdentifier != mine }
+        guard let existing = others.first else { return }
+        // Bring the real instance forward, then exit immediately — before
+        // this one restores a single session or spawns a single process.
+        existing.activate(options: [.activateAllWindows])
+        exit(0)
     }
 
     var body: some Scene {
