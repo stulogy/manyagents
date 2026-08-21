@@ -372,6 +372,21 @@ struct ConversationView: View {
                 .padding(.horizontal, 18)
                 .padding(.bottom, 6)
             }
+            // Rolling auto-compact (Optimize Mode) — same two-phase idea as
+            // the banner above, but background housekeeping rather than
+            // something the user asked for: quieter styling, no Cancel
+            // (cancelRollingCompact() exists if that ever needs adding),
+            // and it never blocks the composer the way isCompacting does.
+            if session.isRollingCompacting {
+                HStack {
+                    Spacer(minLength: 0)
+                    rollingCompactingBanner
+                        .frame(maxWidth: 760)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 6)
+            }
             // Auto-resume notice — shown when the last turn errored
             // while the network was down. The manager re-fires the
             // prompt the instant NWPathMonitor reports the path is
@@ -564,6 +579,45 @@ struct ConversationView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(Color.brandOrange.opacity(0.30), lineWidth: 1)
+        )
+    }
+
+    /// Quiet counterpart to `compactingBanner` for Optimize Mode's rolling
+    /// auto-compact: same phase readout, but framed as ongoing housekeeping
+    /// rather than something blocking the user's next action.
+    private var rollingCompactingBanner: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 16, height: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Freeing up context…")
+                    .font(.system(size: 12, weight: .semibold))
+                if session.status == .running,
+                   let start = session.currentTurnStartedAt {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let s = max(0, Int(context.date.timeIntervalSince(start)))
+                        Text("Rolling context into a fresh brief — \(s)s")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("Restarting the session with the brief…")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
         )
     }
 

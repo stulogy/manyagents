@@ -150,6 +150,12 @@ final class ClaudeBridge {
     /// tab must never be told it's the orchestrator. A change respawns the
     /// process so the prompt matches the role.
     var isCoordinator: Bool = false
+    /// Set per-turn by the owning AgentSession: the model THIS session
+    /// should run, already resolved (Optimize Mode's subagent downgrade
+    /// applied or not — the bridge just runs whatever it's told). Empty
+    /// means claude's own default. A change respawns the process, same as
+    /// the general/coordinator settings above.
+    var modelOverride: String = ""
 
     var events: AnyPublisher<BridgeEvent, Never> { subject.eraseToAnyPublisher() }
     /// True while a turn is in flight (a user message was sent and its
@@ -172,7 +178,7 @@ final class ClaudeBridge {
     /// every turn. `--resume <currentSessionId>` is applied only on (re)spawn
     /// to restore the conversation; the warm process holds it in memory after.
     private func ensureProcess() {
-        let preferredModel = UserDefaults.standard.string(forKey: Keys.model) ?? ""
+        let preferredModel = modelOverride
         if let p = activeProcess, p.isRunning {
             let modelChanged = preferredModel != activeProcessModel
             let mcpChanged   = mcpConfigPath != activeProcessMCPPath

@@ -14,6 +14,8 @@ struct SettingsView: View {
                 .tabItem { Label("Notifications", systemImage: "bell.badge") }
             UpdateSettingsTab()
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
+            OptimizeSettingsTab()
+                .tabItem { Label("Optimize", systemImage: "bolt.badge.clock") }
         }
         .frame(width: 460)
         .fixedSize(horizontal: false, vertical: true)
@@ -227,6 +229,57 @@ private struct UpdateSettingsTab: View {
                     .disabled(!updater.canCheckForUpdates)
             } footer: {
                 Text("ManyAgents updates itself in place when a new version is available. You can also check any time from the ManyAgents menu.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct OptimizeSettingsTab: View {
+    @AppStorage(OptimizeMode.Keys.enabled)
+    private var enabled = false
+    @AppStorage(OptimizeMode.Keys.subagentModel)
+    private var subagentModel = OptimizeMode.Defaults.subagentModel
+    @AppStorage(OptimizeMode.Keys.autoCompactThreshold)
+    private var autoCompactThreshold = OptimizeMode.Defaults.autoCompactThreshold
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Optimize Mode", isOn: $enabled)
+            } footer: {
+                Text("For running several orchestrators across projects and worktrees at once, where every dispatched tab and subagent piling up its own context adds up in tokens. Off by default — nothing here changes how ManyAgents behaves until you turn it on.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Picker("Subagent model", selection: $subagentModel) {
+                    ForEach(ClaudeBridge.availableModels, id: \.id) { m in
+                        Text(m.label).tag(m.id)
+                    }
+                }
+                .disabled(!enabled)
+            } footer: {
+                Text("Applies only to a tab an orchestrator spawns or dispatches — never to the orchestrator (or a repo lead) itself, and never to a tab you opened and drive by hand. \"Default\" leaves those tabs on your main Model, i.e. no downgrade.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Auto-compact threshold")
+                        Spacer()
+                        Text("\(Int(autoCompactThreshold * 100))%")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: $autoCompactThreshold, in: 0.10...0.75, step: 0.05)
+                        .disabled(!enabled)
+                }
+            } footer: {
+                Text("Every tab — orchestrators included — rolls its context into a fresh working brief once it crosses this fraction of the model's window, well before claude's own ceiling-triggered compaction. Different from the Compact button: the visible conversation is never cleared, only the model's live memory resets, so scrollback and search keep working across it. A \"Context auto-compacted\" line marks where it happened.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
