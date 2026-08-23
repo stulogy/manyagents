@@ -260,6 +260,11 @@ final class AgentSession: ObservableObject, Identifiable {
         /// key off this instead of appending it like any other turn.
         /// Optional for the same snapshot-decode reason as `isBoardWake`.
         var isRollingCompactSummary: Bool? = nil
+        /// True ONLY for the turn that reseeds a fresh session with the
+        /// brief. Its reply is suppressed too: the model has to say
+        /// *something* to close the turn, but "caught up, ready when you
+        /// are" arriving unprompted reads as the tab talking to itself.
+        var isRollingCompactSeed: Bool? = nil
     }
 
     /// Set while a board-wake turn is dispatching, so the assistant messages it
@@ -269,6 +274,15 @@ final class AgentSession: ObservableObject, Identifiable {
     /// `startRollingCompact()`. Keeps `.assistantBlocks` from appending its
     /// reply to the visible transcript.
     private var currentTurnIsRollingCompactSummary = false
+    /// True only for the reseed turn — see `flushPendingRollingCompactSeed()`.
+    /// Its reply is dropped on the floor rather than appended.
+    private var currentTurnIsRollingCompactSeed = false
+    /// True while this tab is running an internal turn nobody asked for —
+    /// a rolling compact's summarize or reseed. The transcript hides its
+    /// working indicator for these: showing a tab as busy on housekeeping
+    /// reads as a stall, and the whole point of the rolling pass is that it
+    /// happens out of the way.
+    @Published private(set) var isBackgroundTurn = false
 
     /// claude called AskUserQuestion mid-turn and is now waiting for our
     /// selection. The UI renders an inline picker bound to this; clicking
@@ -728,9 +742,27 @@ final class AgentSession: ObservableObject, Identifiable {
     /// THIS tab specifically — an unanswered question, a permission prompt,
     /// a pending MCP auth, a network-resume wait — since tearing down the
     /// context those refer to would erase what they're about.
+    /// Pending "is this tab quiet enough to compact yet?" check.
+    private var rollingCompactDelay: DispatchWorkItem?
+
+    /// Wait for the tab to actually go quiet before compacting it.
+    ///
+    /// This used to fire the instant a turn ended, which is the moment the
+    /// user is most likely to be typing their next message — so background
+    /// housekeeping kept landing in the foreground. A few seconds of real
+    /// idle first, and anything the user does meanwhile cancels it.
+    private func scheduleRollingCompactCheck() {
+        rollingCompactDelay?.cancel()
+        guard OptimizeMode.enabled else { return }
+        let work = DispatchWorkItem { [weak self] in self?.rollingCompactIfNeeded() }
+        rollingCompactDelay = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+    }
+
     @discardableResult
     private func rollingCompactIfNeeded() -> Bool {
         guard OptimizeMode.enabled,
+              pendingPrompts.isEmpty,
               !isCompacting, !isRollingCompacting,
               pendingAskUserQuestion == nil, pendingPermission == nil,
               pendingMCPAuthServer == nil, !awaitingNetworkResume,
@@ -752,8 +784,7 @@ final class AgentSession: ObservableObject, Identifiable {
             // Silent give-up — this is background housekeeping the user
             // never asked for, so it just leaves the tab on its current
             // (larger) context rather than surfacing an error.
-            self.isRollingCompacting = false
-            self.rollingCompactCancellable = nil
+            self.cancelRollingCompact()
         }
         rollingCompactWatchdog = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 120, execute: work)
@@ -798,7 +829,17 @@ final class AgentSession: ObservableObject, Identifiable {
         rollingCompactCancellable = nil
         pendingRollingCompactSeed = nil
         isRollingCompacting = false
-        if status == .running { bridge.cancel() }
+        // The summarize turn is about to be killed. Mark it deliberate, or
+        // `.processExited` scores it as a turn that ended without a response
+        // and writes a red error row — for a background pass the user never
+        // asked for and does not need to hear about.
+        currentTurnIsRollingCompactSummary = false
+        currentTurnIsRollingCompactSeed = false
+        isBackgroundTurn = false
+        if status == .running {
+            intentionalInterrupt = true
+            bridge.cancel()
+        }
         DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
     }
 
@@ -831,8 +872,7 @@ final class AgentSession: ObservableObject, Identifiable {
         // UNLIKE manual compact: `messages` is untouched. Every prior line
         // stays exactly where it is — scrollable, searchable — and this
         // marker just records that the model's working context reset here.
-        let charCount = trimmed.count
-        let marker = "Context auto-compacted — \(charCount.formatted())-char working brief carried forward. Scrollback above is unaffected."
+        let marker = "Context compacted in the background — scrollback above is unaffected."
         messages.append(Message(role: .system, blocks: [.text(id: UUID(), text: marker)]))
 
         isRollingCompacting = false
@@ -843,8 +883,9 @@ final class AgentSession: ObservableObject, Identifiable {
         let seed = """
         [Context auto-compacted — internal, not from the user.] The brief below is your ONLY memory \
         of everything before this point — it already covers what matters, so don't re-derive or \
-        re-explain it. Reply with a single short line confirming you're caught up, then stop and wait \
-        for the next instruction.
+        re-explain it. This is housekeeping, not a message from anyone: reply with the single word \
+        "ok" and nothing else, then stop and wait. Do not greet, summarize, restate the brief, or \
+        announce that you are caught up.
 
         \(trimmed)
         """
@@ -859,7 +900,8 @@ final class AgentSession: ObservableObject, Identifiable {
     private func flushPendingRollingCompactSeed() {
         guard let seed = pendingRollingCompactSeed else { return }
         pendingRollingCompactSeed = nil
-        dispatch(PendingPrompt(text: seed, images: [], visible: false, isBoardWake: false))
+        dispatch(PendingPrompt(text: seed, images: [], visible: false, isBoardWake: false,
+                              isRollingCompactSeed: true))
     }
 
     /// Send a user prompt. Spawns a fresh `claude -p` process per turn,
@@ -886,6 +928,13 @@ final class AgentSession: ObservableObject, Identifiable {
         // Clear any waiting-for-net state — the user just hit send
         // again, so they're taking control back from the auto-resumer.
         awaitingNetworkResume = false
+        // A message always beats background housekeeping. A rolling compact
+        // is work nobody asked for, so abandon it rather than parking the
+        // message behind it — the threshold simply triggers another one after
+        // some later turn. (`deliverInterrupting` and `deliverNow` both fall
+        // through to here while compacting, so this covers those too.)
+        rollingCompactDelay?.cancel()
+        if isRollingCompacting { cancelRollingCompact() }
         let prompt = PendingPrompt(text: text, images: images, visible: visible,
                                    isBoardWake: boardWake)
         // isCompacting: a prompt sent mid-compaction must NOT dispatch —
@@ -980,6 +1029,8 @@ final class AgentSession: ObservableObject, Identifiable {
         // Tag the assistant output of this turn if it's an automatic board-wake.
         currentTurnIsBoardWake = (prompt.isBoardWake == true)
         currentTurnIsRollingCompactSummary = (prompt.isRollingCompactSummary == true)
+        currentTurnIsRollingCompactSeed = (prompt.isRollingCompactSeed == true)
+        isBackgroundTurn = currentTurnIsRollingCompactSummary || currentTurnIsRollingCompactSeed
         // Stamped onto this turn's TurnEnd so a waiter can match end to prompt.
         currentPromptId = prompt.id
         // A fresh turn is never pre-interrupted. Normally `.processExited`
@@ -1176,11 +1227,12 @@ final class AgentSession: ObservableObject, Identifiable {
         guard let idx = pendingPrompts.firstIndex(where: { $0.id == id }) else { return }
         let prompt = pendingPrompts.remove(at: idx)
         // Whatever turn is running right now (if any) is the internal
-        // rolling-compact summarize turn — steering the user's real message
-        // into it, or killing it, would corrupt that whole exchange. Put
-        // the prompt back at the front instead: it fires the instant the
-        // compact finishes, same position it already held in the queue.
-        guard !isRollingCompacting else {
+        // rolling-compact summarize turn. Steering a real message into it
+        // would corrupt that exchange, and waiting for it defeats the point
+        // of a force-send, so drop the compact and let the prompt go as soon
+        // as the process is down.
+        if isRollingCompacting {
+            cancelRollingCompact()
             pendingPrompts.insert(prompt, at: 0)
             return
         }
@@ -1259,6 +1311,11 @@ final class AgentSession: ObservableObject, Identifiable {
                 for block in blocks {
                     if case .text(_, let t) = block { rollingCompactSummaryBuffer += t }
                 }
+            }
+            else if currentTurnIsRollingCompactSeed {
+                // The reseed turn's acknowledgement. Dropped entirely — the
+                // grey marker row already said the compaction happened, and
+                // that is all the user needs to see of it.
             }
             // Either append to an in-progress assistant message or start a
             // new one. The CLI emits each assistant *message* as a single
@@ -1378,6 +1435,14 @@ final class AgentSession: ObservableObject, Identifiable {
                 lastSentPrompt = nil
                 awaitingNetworkResume = false
                 turnCompleted.send(rollingCompactSummaryBuffer)
+            } else if currentTurnIsRollingCompactSeed {
+                // Reseed done. Idle, silently — deliberately NOT published on
+                // `turnCompleted`: subscribers there (the orchestrator report
+                // path) would read an internal acknowledgement as the tab
+                // having finished real work.
+                status = .idle
+                lastSentPrompt = nil
+                awaitingNetworkResume = false
             } else {
                 // Decide "waiting on you" vs "idle" by looking at the
                 // most recent assistant prose. claude is prompted (via
@@ -1396,6 +1461,8 @@ final class AgentSession: ObservableObject, Identifiable {
             }
             currentTurnStartedAt = nil
             currentTurnIsBoardWake = false
+            currentTurnIsRollingCompactSeed = false
+            isBackgroundTurn = false
             // The logical turn finished — clear any carried token base so the
             // next fresh turn starts its count from 0.
             carriedTurnTokens = 0
@@ -1413,9 +1480,8 @@ final class AgentSession: ObservableObject, Identifiable {
             if !intentionalInterrupt {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    if !self.rollingCompactIfNeeded() {
-                        self.drainQueueIfReady()
-                    }
+                    self.drainQueueIfReady()
+                    self.scheduleRollingCompactCheck()
                 }
             }
         case .partialBlockKind(let kind):
@@ -1472,6 +1538,7 @@ final class AgentSession: ObservableObject, Identifiable {
                 }
             }
             intentionalInterrupt = false
+            isBackgroundTurn = false
             // Mid-compaction reseed: the old process just died, so the bridge
             // will respawn clean. Deliver the seed as the new session's FIRST
             // message before draining anything the user queued meanwhile.
