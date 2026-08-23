@@ -134,6 +134,10 @@ final class ClaudeBridge {
     /// written here, and it's closed in handleResult so claude exits cleanly.
     private var activeStdin: FileHandle?
     private var stdoutBuffer = Data()
+    /// Processes deliberately replaced mid-flight (model / MCP / role change).
+    /// Their termination handlers still fire; see the handler for why that
+    /// mattered.
+    private var supersededProcesses = Set<ObjectIdentifier>()
     /// tool_use ids of AskUserQuestion calls seen this turn. In headless
     /// `--print` mode the CLI auto-denies AskUserQuestion and emits an
     /// is_error "Answer questions?" tool_result for it — pure noise, since the
@@ -186,7 +190,10 @@ final class ClaudeBridge {
             guard modelChanged || mcpChanged || roleChanged else { return }
             // Model, MCP config, or orchestrator role changed — kill so the
             // next send respawns with the right flags. --resume preserves
-            // conversation history.
+            // conversation history. Flagged first: its termination handler
+            // fires later, once the replacement is live, and must not be
+            // mistaken for the new process dying.
+            supersededProcesses.insert(ObjectIdentifier(p))
             p.terminate()
             activeProcess = nil
         }
@@ -297,12 +304,21 @@ final class ClaudeBridge {
         process.terminationHandler = { [weak self] proc in
             let code = proc.terminationStatus
             DispatchQueue.main.async {
+                guard let self else { return }
+                // A process WE replaced on purpose still fires this handler,
+                // asynchronously, after the replacement is already running and
+                // mid-turn. Reporting that exit surfaced a red "claude exited
+                // (143) without responding" — 143 being the SIGTERM we sent —
+                // against the healthy turn that had just started, and nilling
+                // activeStdin out from under it would have broken the next
+                // send outright. The exit is ours; it isn't news.
+                if self.supersededProcesses.remove(ObjectIdentifier(proc)) != nil { return }
                 // The persistent process is gone (cancel / teardown / crash).
                 // Clear state so isBusy frees up and the next send() respawns.
-                self?.activeProcess = nil
-                self?.activeStdin = nil
-                self?.turnInFlight = false
-                self?.subject.send(.processExited(exitCode: code))
+                self.activeProcess = nil
+                self.activeStdin = nil
+                self.turnInFlight = false
+                self.subject.send(.processExited(exitCode: code))
             }
         }
 
