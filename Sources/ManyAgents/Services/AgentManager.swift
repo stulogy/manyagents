@@ -708,6 +708,12 @@ final class AgentManager: ObservableObject {
         return try? JSONDecoder().decode(Snapshot.self, from: data)
     }
 
+    /// Transcript parsing for a restore, one file at a time. Serial on
+    /// purpose: 25 concurrent parses of multi-megabyte tails would put the
+    /// peak right back where it was.
+    private static let restoreQueue = DispatchQueue(label: "app.manyagents.transcript-restore",
+                                                    qos: .userInitiated)
+
     /// Spawn every agent in `pendingRestore`. Called by the restore sheet
     /// when the user clicks Reopen.
     func acceptPendingSnapshot() {
@@ -735,27 +741,44 @@ final class AgentManager: ObservableObject {
             // they drain normally on the next turn. Never lose staged work.
             session.pendingPrompts = a.pendingPrompts ?? []
             if let sid = a.claudeSessionId, !sid.isEmpty {
-                let prior = TranscriptLoader.load(cwd: a.cwd, sessionId: sid)
-                if !prior.isEmpty {
-                    session.messages = prior
-                    session.status = .waiting
-                }
-                // Seed the context gauge from the transcript's last usage
-                // so restored tabs don't sit empty until their next turn.
-                // Off-main: big JSONLs take a moment to scan.
-                Task.detached { [weak session] in
-                    let ctx = TranscriptLoader.lastContextTokens(cwd: a.cwd, sessionId: sid)
-                    await MainActor.run {
-                        guard let session, let ctx,
-                              session.lastTurnContextTokens == 0 else { return }
-                        session.lastTurnContextTokens = ctx
+                // Off the main thread, and one file at a time.
+                //
+                // This used to parse every tab's transcript inline, here, in
+                // one main-thread pass. With 25 tabs and JSONLs up to 100 MB
+                // that peaked at tens of GB — the parse allocations of tab 1
+                // were still alive while tab 25 was reading, because nothing
+                // drains until the run-loop pass ends. A serial queue bounds
+                // the peak to a single tail, and the UI stays live while it
+                // works through them.
+                let cwd = a.cwd
+                let wasRunning = a.wasRunning == true
+                Self.restoreQueue.async { [weak session] in
+                    let restored = TranscriptLoader.restore(cwd: cwd, sessionId: sid)
+                    DispatchQueue.main.async {
+                        guard let session else { return }
+                        if !restored.messages.isEmpty {
+                            var msgs = restored.messages
+                            if restored.truncated {
+                                // Say so rather than silently showing a
+                                // conversation that appears to begin mid-thought.
+                                msgs.insert(Message(role: .system, blocks: [
+                                    .text(id: UUID(),
+                                          text: "Earlier history kept on disk — showing the most recent part of this conversation.")
+                                ]), at: 0)
+                            }
+                            session.messages = msgs
+                            session.status = .waiting
+                        }
+                        // Seed the context gauge from the transcript's last
+                        // usage so restored tabs don't sit empty until their
+                        // next turn. Same pass, so the file is read once.
+                        if let ctx = restored.contextTokens, session.lastTurnContextTokens == 0 {
+                            session.lastTurnContextTokens = ctx
+                        }
+                        // Auto-continue turns the app restart interrupted, so
+                        // the user never has to type "continue" per tab.
+                        if wasRunning { session.continueAfterRestart() }
                     }
-                }
-                // Auto-continue turns the app restart interrupted, so the
-                // user never has to type "continue"/"try again" per tab.
-                // Next runloop so all restore state has settled first.
-                if a.wasRunning == true {
-                    DispatchQueue.main.async { session.continueAfterRestart() }
                 }
             }
         }

@@ -501,8 +501,10 @@ struct MessageView: View {
                     }
                 }
             }
-        case .image(_, let data, _):
-            if let img = NSImage(data: data) {
+        case .image(let blockId, let data, _):
+            // Downsampled and cached — see ImageThumbnails. Decoding here
+            // directly re-decoded the full-resolution image on every render.
+            if let img = ImageThumbnails.thumbnail(id: blockId, data: data) {
                 Image(nsImage: img)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -1338,6 +1340,10 @@ private struct ImageZoomView: View {
     @State private var offset: CGSize = .zero
     @State private var steadyOffset: CGSize = .zero
     @State private var copied = false
+    /// Decoded once on appear. `NSImage(data:)` sat directly in `imageArea`,
+    /// which SwiftUI re-evaluates on every frame of a pinch or drag — so
+    /// zooming a big screenshot re-decoded it dozens of times a second.
+    @State private var decoded: NSImage?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1371,11 +1377,12 @@ private struct ImageZoomView: View {
             imageArea
         }
         .frame(width: 920, height: 720)
+        .task { if decoded == nil { decoded = NSImage(data: data) } }
     }
 
     @ViewBuilder
     private var imageArea: some View {
-        if let img = NSImage(data: data) {
+        if let img = decoded {
             Image(nsImage: img)
                 .resizable()
                 .aspectRatio(contentMode: .fit)

@@ -6,12 +6,40 @@ import Foundation
 /// tool_result blocks. Streaming deltas, queue-operations, and other
 /// internal event types are skipped.
 enum TranscriptLoader {
-    static func load(cwd: String, sessionId: String) -> [Message] {
+    /// How much of a transcript's tail we parse on restore.
+    ///
+    /// These JSONLs reach 100 MB here, and parsing one whole file
+    /// materializes a JSON object graph several times its size. Restore did
+    /// that for every tab in a single main-thread loop with no autorelease
+    /// pool anywhere, so nothing drained until all 25 were done — which is
+    /// how the app reached tens of GB and took the machine down with it.
+    ///
+    /// The transcript view windows to its last few hundred messages anyway,
+    /// so read the tail and stop. Older history stays on disk, and `claude`
+    /// still resumes with its own full context regardless of what we show.
+    static let maxTailBytes = 8 * 1024 * 1024
+
+    /// Hard cap on restored messages, independent of the byte cap — a tail
+    /// of tiny lines shouldn't restore 20,000 rows either.
+    static let maxMessages = 600
+
+    /// What a restore pass recovered. One pass over the tail produces both,
+    /// so the file is never read twice.
+    struct Restored {
+        var messages: [Message]
+        var contextTokens: Int?
+        /// True when history was cut — the caller shows a marker row.
+        var truncated: Bool
+    }
+
+    /// Rebuild a session's visible history from disk. Call OFF the main
+    /// thread: it does file IO and JSON parsing proportional to the tail.
+    static func restore(cwd: String, sessionId: String) -> Restored {
         let path = jsonlPath(cwd: cwd, sessionId: sessionId)
-        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else {
-            return []
-        }
         var out: [Message] = []
+        var context: Int? = nil
+        var dropped = false
+
         // Track AskUserQuestion tool_use ids so the CLI's auto-deny
         // "Answer questions?" error tool_result (headless `--print` behaviour)
         // can be dropped when it lands on the following user line — matching
@@ -22,12 +50,9 @@ enum TranscriptLoader {
         // restore we drop the prompt and tag the reply — matching live tagging,
         // so silent "holding" turns stay hidden).
         var pendingBoardWake = false
-        // Same idea for the orchestrator catch-up turn: drop its prompt,
-        // skip its tool results, keep only the digest text — mirroring
-        // the live inline-card treatment.
-        raw.enumerateLines { line, _ in
-            guard let lineData = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+
+        let cut = enumerateTailLines(path: path, maxBytes: maxTailBytes) { lineData in
+            guard let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
                   let type = obj["type"] as? String
             else { return }
             switch type {
@@ -48,20 +73,49 @@ enum TranscriptLoader {
                     out.append(m)
                 }
             case "assistant":
-                if let msg = obj["message"] as? [String: Any],
-                   let content = msg["content"] as? [[String: Any]] {
-                    for c in content
-                    where (c["type"] as? String) == "tool_use"
-                        && (c["name"] as? String) == "AskUserQuestion" {
-                        if let id = c["id"] as? String { askUserQuestionIds.insert(id) }
+                if let msg = obj["message"] as? [String: Any] {
+                    if let content = msg["content"] as? [[String: Any]] {
+                        for c in content
+                        where (c["type"] as? String) == "tool_use"
+                            && (c["name"] as? String) == "AskUserQuestion" {
+                            if let id = c["id"] as? String { askUserQuestionIds.insert(id) }
+                        }
+                    }
+                    // Context gauge: every assistant call carries the model's
+                    // context for that call (input + both cache figures). The
+                    // last one wins, so this lands on the real final value.
+                    if let usage = msg["usage"] as? [String: Any],
+                       let inT = usage["input_tokens"] as? Int {
+                        let cr = usage["cache_read_input_tokens"] as? Int ?? 0
+                        let cc = usage["cache_creation_input_tokens"] as? Int ?? 0
+                        let total = inT + cr + cc
+                        if total > 0 { context = total }
                     }
                 }
                 if let m = parseAssistant(obj, boardWake: pendingBoardWake) { out.append(m) }
             default:
                 break
             }
+            // Trim in batches rather than per-append: removing one element
+            // from the front of an Array is O(n), and doing it on every line
+            // of a long transcript is the kind of quiet O(n²) that shows up
+            // as a hang, not a crash.
+            if out.count > maxMessages * 2 {
+                out.removeFirst(out.count - maxMessages)
+                dropped = true
+            }
         }
-        return out
+
+        if out.count > maxMessages {
+            out.removeFirst(out.count - maxMessages)
+            dropped = true
+        }
+        return Restored(messages: out, contextTokens: context, truncated: cut || dropped)
+    }
+
+    /// Kept for callers that only want the history.
+    static func load(cwd: String, sessionId: String) -> [Message] {
+        restore(cwd: cwd, sessionId: sessionId).messages
     }
 
     /// Last known context size for a session, read from its transcript's
@@ -70,23 +124,52 @@ enum TranscriptLoader {
     /// that call). Lets restored tabs show a real gauge immediately
     /// instead of sitting empty until their first live turn.
     static func lastContextTokens(cwd: String, sessionId: String) -> Int? {
-        let path = jsonlPath(cwd: cwd, sessionId: sessionId)
-        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
-        var context: Int? = nil
-        raw.enumerateLines { line, _ in
-            guard line.contains("\"usage\""),
-                  let data = line.data(using: .utf8),
-                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  obj["type"] as? String == "assistant",
-                  let usage = (obj["message"] as? [String: Any])?["usage"] as? [String: Any],
-                  let inT = usage["input_tokens"] as? Int
-            else { return }
-            let cr = usage["cache_read_input_tokens"] as? Int ?? 0
-            let cc = usage["cache_creation_input_tokens"] as? Int ?? 0
-            let total = inT + cr + cc
-            if total > 0 { context = total }
+        restore(cwd: cwd, sessionId: sessionId).contextTokens
+    }
+
+    /// Walk the last `maxBytes` of a file line by line, newest-relevant part
+    /// only, holding one chunk at a time. Returns true when the head of the
+    /// file was skipped.
+    ///
+    /// Every line is handled inside its own autorelease pool. That is the
+    /// whole point: `JSONSerialization` hands back autoreleased Foundation
+    /// objects, and without a pool per line they all stay alive until the
+    /// enclosing run-loop pass ends — which, during a 25-tab restore, was
+    /// never, until the memory was gone.
+    private static func enumerateTailLines(path: String,
+                                           maxBytes: Int,
+                                           _ body: (Data) -> Void) -> Bool {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return false }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        var truncated = false
+        var start: UInt64 = 0
+        if size > UInt64(maxBytes) {
+            start = size - UInt64(maxBytes)
+            truncated = true
         }
-        return context
+        guard (try? handle.seek(toOffset: start)) != nil else { return false }
+
+        // Starting mid-file lands in the middle of a record; drop through to
+        // the next newline before parsing anything.
+        var skipPartial = truncated
+        var buffer = Data()
+        while true {
+            let chunk = (try? handle.read(upToCount: 1 << 20)) ?? Data()
+            if chunk.isEmpty { break }
+            buffer.append(chunk)
+            while let nl = buffer.firstIndex(of: 0x0A) {
+                let line = Data(buffer[buffer.startIndex..<nl])
+                buffer.removeSubrange(buffer.startIndex...nl)
+                if skipPartial { skipPartial = false; continue }
+                if line.isEmpty { continue }
+                autoreleasepool { body(line) }
+            }
+        }
+        if !skipPartial, !buffer.isEmpty {
+            autoreleasepool { body(buffer) }
+        }
+        return truncated
     }
 
     /// Claude Code stores transcripts at
