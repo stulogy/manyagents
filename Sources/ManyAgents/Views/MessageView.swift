@@ -298,15 +298,30 @@ struct MessageView: View {
             // manager woke the orchestrator once to check on it.
             let name = text.split(separator: "\"").dropFirst().first.map(String.init)
             label = name.map { "\($0) stopped" } ?? "A dispatched tab stopped"
+        } else if text.hasPrefix(Self.cliContinuationPrefix) {
+            // claude's OWN auto-compaction, not ours: when the CLI hits its
+            // context ceiling it starts the next session with a "here is
+            // everything that came before" message in the user role. It is
+            // machine plumbing the user never typed, and it is enormous —
+            // rendering it as an amber prompt bubble put a wall of internal
+            // summary at the top of a restored tab.
+            label = "Continued from a compacted session"
         } else {
             return nil
         }
         let body: String = {
-            guard let close = text.range(of: "]") else { return text }
+            // The bracket-prefixed markers above are ours: "[label] body".
+            // The CLI's continuation has no marker, so show it whole.
+            guard text.hasPrefix("["), let close = text.range(of: "]") else { return text }
             return String(text[close.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
         }()
         return (label, body)
     }
+
+    /// Opening words of the message claude injects when its own
+    /// context-ceiling compaction rolls a session over.
+    private static let cliContinuationPrefix =
+        "This session is being continued from a previous conversation"
 
     /// Grey-marker label for orchestrator housekeeping tools; nil for
     /// tools that keep their full card (send_to_agent, new_agent,
