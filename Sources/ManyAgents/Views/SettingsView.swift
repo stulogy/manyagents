@@ -262,7 +262,7 @@ private struct OptimizeSettingsTab: View {
                 }
                 .disabled(!enabled)
             } footer: {
-                Text("Applies only to a tab an orchestrator spawns or dispatches — never to the orchestrator (or a repo lead) itself, and never to a tab you opened and drive by hand. \"Default\" leaves those tabs on your main Model, i.e. no downgrade.")
+                Text("The DEFAULT for a tab an orchestrator spawns or dispatches — never the orchestrator (or a repo lead) itself, and never a tab you opened and drive by hand. The orchestrator can ask for the full model when it hands over heavy work, and any tab can be moved either way from its own menu; a tab not on your main model says so next to its context gauge. \"Default\" leaves dispatched tabs on your main Model, i.e. no downgrade.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }

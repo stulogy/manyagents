@@ -492,6 +492,21 @@ struct ConversationView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            // Only when this tab ISN'T on the app default: a downgraded tab
+            // (Optimize Mode) or a deliberately pinned one used to look
+            // exactly like every other tab, which made a weak answer from a
+            // cheap model impossible to account for.
+            if session.effectiveModel != (UserDefaults.standard.string(forKey: ClaudeBridge.Keys.model) ?? "") {
+                Text(session.effectiveModelLabel)
+                    .font(AppFont.mono(10))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.primary.opacity(0.07)))
+                    .help(session.modelTier == .auto
+                          ? "Optimize Mode runs tabs an orchestrator dispatched on the cheaper model. Change it from the tab's menu."
+                          : "Model pinned for this tab. Change it from the tab's menu.")
+            }
             if session.lastTurnContextTokens > 0 {
                 contextGauge
             }

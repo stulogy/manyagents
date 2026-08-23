@@ -165,11 +165,50 @@ final class AgentSession: ObservableObject, Identifiable {
     /// needs its real intelligence to coordinate. A tab the user opened and
     /// drives by hand (reportToOrchestratorId is nil) keeps whatever model
     /// they picked in Settings regardless of this toggle.
+    /// Which model this tab runs on, relative to the user's settings.
+    ///
+    /// Optimize Mode used to be all-or-nothing: every tab an orchestrator
+    /// spawned got the cheap model, whatever it had been asked to do. A tab
+    /// told to build a net-new epic — data model, endpoints, an
+    /// authorization contract, a test plan — ran on the same model as one
+    /// told to rename some files. So the cheap model is now the DEFAULT for
+    /// dispatched tabs, not the rule: the orchestrator can ask for the full
+    /// model when it hands over heavy work (it is the thing that knows), and
+    /// the user can move any tab either way from its menu.
+    ///
+    /// Deliberately not a model id. What "full" and "cheap" mean stays in
+    /// Settings, so changing either there moves every tab that follows it.
+    enum ModelTier: String, Codable {
+        /// The app default, unless Optimize Mode downgrades dispatched tabs.
+        case auto
+        /// The app default, never downgraded.
+        case full
+        /// Optimize Mode's subagent model, even for an orchestrator.
+        case cheap
+    }
+
+    @Published var modelTier: ModelTier = .auto
+
     var effectiveModel: String {
         let base = UserDefaults.standard.string(forKey: ClaudeBridge.Keys.model) ?? ""
-        guard OptimizeMode.enabled, !isCoordinator, reportToOrchestratorId != nil else { return base }
-        let sub = OptimizeMode.subagentModel
-        return sub.isEmpty ? base : sub
+        let cheap = OptimizeMode.subagentModel.isEmpty ? base : OptimizeMode.subagentModel
+        switch modelTier {
+        case .full:
+            return base
+        case .cheap:
+            return cheap
+        case .auto:
+            guard OptimizeMode.enabled, !isCoordinator, reportToOrchestratorId != nil
+            else { return base }
+            return cheap
+        }
+    }
+
+    /// Human-readable name of the model this tab will actually use.
+    var effectiveModelLabel: String {
+        let id = effectiveModel
+        if id.isEmpty { return "Default" }
+        return ClaudeBridge.availableModels.first { $0.id == id }?.label ?? id
     }
 
     static func contextWindow(for model: String?) -> Int {

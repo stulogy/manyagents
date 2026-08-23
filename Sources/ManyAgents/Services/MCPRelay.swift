@@ -522,6 +522,15 @@ final class MCPRelay {
         // it sits outside the orchestrator's own project.
         let orchUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
         target.reportToOrchestratorId = orchUUID
+        // The orchestrator gets to say when a task is too heavy for the
+        // cheap model — it's the only thing that knows what it just handed
+        // over. Omitted means "follow the user's settings", which is the
+        // right default for the scoped work most dispatched tabs get.
+        switch (req["model"] as? String)?.lowercased() {
+        case "full": target.modelTier = .full
+        case "cheap": target.modelTier = .cheap
+        default: break
+        }
         if !prompt.isEmpty {
             // Spawned with a task → auto-report back to the orchestrator
             // when it finishes (new_agent doesn't wait).
@@ -543,6 +552,9 @@ final class MCPRelay {
         let targetRoot = ProjectNaming.projectRoot(forCwd: cwd)
         return ["id": id, "ok": true, "agent_id": target.id.uuidString, "reused": reused,
                 "cwd": cwd, "project": ProjectNaming.name(forCwd: targetRoot),
+                // Named back so the orchestrator can see what it actually got
+                // — and notice when a tab it expected to be capable isn't.
+                "model": target.effectiveModelLabel,
                 "outside": sourceRoot != nil && sourceRoot != targetRoot]
     }
 

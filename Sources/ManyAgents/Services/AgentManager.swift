@@ -645,6 +645,9 @@ final class AgentManager: ObservableObject {
             /// first — see AgentSession.priorSessionIds. Optional for
             /// back-compat with snapshots written before rolling compaction.
             let priorSessionIds: [String]?
+            /// Per-tab model choice, when it isn't just following settings.
+            /// Optional for back-compat with older snapshots.
+            let modelTier: AgentSession.ModelTier?
 
             var id: String { (claudeSessionId ?? "") + cwd }
         }
@@ -668,7 +671,8 @@ final class AgentManager: ObservableObject {
                 tabId: s.id,
                 wasRunning: s.status == .running ? true : nil,
                 contextWindow: s.lastTurnContextWindow,
-                priorSessionIds: s.priorSessionIds.isEmpty ? nil : s.priorSessionIds
+                priorSessionIds: s.priorSessionIds.isEmpty ? nil : s.priorSessionIds,
+                modelTier: s.modelTier == .auto ? nil : s.modelTier
             )
         })
         if snap.agents.isEmpty {
@@ -739,6 +743,7 @@ final class AgentManager: ObservableObject {
             // designated before this rule kept their old auto-names.
             if session.isCoordinator { session.aiTitle = "Orchestrator" }
             session.hiddenFromOrchestrator = a.hiddenFromOrchestrator ?? false
+            session.modelTier = a.modelTier ?? .auto
             // Restore the real window so the gauge's denominator is right.
             session.lastTurnContextWindow = a.contextWindow
             // Restore the queued stack as STAGED items (visible in the strip,

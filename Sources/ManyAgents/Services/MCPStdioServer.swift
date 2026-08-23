@@ -322,7 +322,7 @@ private final class ServerState: @unchecked Sendable {
                 // workers are told plainly they are not the orchestrator.
                 "instructions": args.isCoordinator
                 ? """
-                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server. This session is an ORCHESTRATOR: the board tools (list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent) let you coordinate the user's other tabs. Your board covers your own scope — the whole workspace if you sit at its root, otherwise just your repo. When a repo nested inside your workspace grows its own multi-tab workstream, delegate_orchestrator makes one of its tabs that repo's lead; you keep seeing its tabs, it runs them. Refer to the app as "ManyAgents".
+                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server. This session is an ORCHESTRATOR: the board tools (list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent) let you coordinate the user's other tabs. Your board covers your own scope — the whole workspace if you sit at its root, otherwise just your repo. When a repo nested inside your workspace grows its own multi-tab workstream, delegate_orchestrator makes one of its tabs that repo's lead; you keep seeing its tabs, it runs them. If the user runs Optimize Mode, tabs you spawn default to a cheaper model — pass model:"full" to new_agent when the work you're handing over genuinely needs the stronger one. Refer to the app as "ManyAgents".
                 """
                 : """
                 You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server. This session is NOT the orchestrator — a separate dedicated tab may hold that role. To reach it (you're blocked, need a cross-tab decision, or finished a long task it's waiting on), call notify_orchestrator. Refer to the app as "ManyAgents".
@@ -444,7 +444,8 @@ private final class ServerState: @unchecked Sendable {
                     "properties": [
                         "cwd": ["type": "string", "description": "Optional. Omit to spawn in your own project (default). Only set to open a tab in a different existing project (an absolute cwd from list_agents)."],
                         "title": ["type": "string", "description": "Optional short tab title (2-4 words) — set this so the tab shows the name you intend instead of an auto-generated one."],
-                        "prompt": ["type": "string", "description": "Optional first task to hand the new tab immediately."]
+                        "prompt": ["type": "string", "description": "Optional first task to hand the new tab immediately."],
+                        "model": ["type": "string", "enum": ["full", "cheap"], "description": "Optional. Which model the tab runs on. When the user has Optimize Mode on, tabs you spawn default to the cheaper model — right for scoped, mechanical work. Pass \"full\" when the task genuinely needs the stronger model: net-new design, unfamiliar code, anything where a wrong answer costs more than the tokens saved. Pass \"cheap\" to force the cheaper model even when Optimize Mode is off. Omit to follow the user's settings."]
                     ],
                     "additionalProperties": false
                 ]
@@ -652,6 +653,7 @@ private final class ServerState: @unchecked Sendable {
                 if let cwd = arguments["cwd"] as? String { payload["cwd"] = cwd }
                 if let p = arguments["prompt"] as? String { payload["prompt"] = p }
                 if let t = arguments["title"] as? String { payload["title"] = t }
+                if let m = arguments["model"] as? String { payload["model"] = m }
                 let res = try await awaitRelay(payload)
                 if (res["ok"] as? Bool) == true {
                     let aid = res["agent_id"] as? String ?? "?"
@@ -663,7 +665,8 @@ private final class ServerState: @unchecked Sendable {
                     let outside = (res["outside"] as? Bool) == true
                         ? " in project `\(res["project"] as? String ?? "?")` — a DIFFERENT project from yours. It stays on your board and reports to you, but the other tabs there aren't yours to coordinate."
                         : ""
-                    respondToolResult(id: id, text: "\(reused ? "Reused empty tab" : "Created tab") \(aid)\(outside).")
+                    let onModel = (res["model"] as? String).map { " on the \($0) model" } ?? ""
+                    respondToolResult(id: id, text: "\(reused ? "Reused empty tab" : "Created tab") \(aid)\(onModel)\(outside).")
                 } else {
                     respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "new_agent failed")", isError: true)
                 }

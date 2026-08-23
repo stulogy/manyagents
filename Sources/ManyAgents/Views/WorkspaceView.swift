@@ -415,6 +415,27 @@ private struct AgentTab: View {
                 .disabled(manager.orchestrator(for: session.cwd) == nil)
             }
             Divider()
+            // Which model this tab runs on. Worth surfacing even at .auto:
+            // with Optimize Mode on, a dispatched tab is quietly downgraded,
+            // and nothing else in the UI said so.
+            Menu("Model: \(session.effectiveModelLabel)") {
+                Button {
+                    session.modelTier = .auto
+                } label: {
+                    Label("Automatic", systemImage: session.modelTier == .auto ? "checkmark" : "")
+                }
+                Button {
+                    session.modelTier = .full
+                } label: {
+                    Label("Full model", systemImage: session.modelTier == .full ? "checkmark" : "")
+                }
+                Button {
+                    session.modelTier = .cheap
+                } label: {
+                    Label("Cheaper model", systemImage: session.modelTier == .cheap ? "checkmark" : "")
+                }
+            }
+            Divider()
             if isWorktreeTab {
                 // Closing the tab leaves the worktree behind, which is how
                 // one repo here reached 86 of them. Removal is gated: clean
