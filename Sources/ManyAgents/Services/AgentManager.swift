@@ -641,6 +641,10 @@ final class AgentManager: ObservableObject {
             /// restored context gauge has the right denominator (and
             /// doesn't false-alarm at "100%" against a default guess).
             let contextWindow: Int?
+            /// claude sessions this tab used before its current one, oldest
+            /// first — see AgentSession.priorSessionIds. Optional for
+            /// back-compat with snapshots written before rolling compaction.
+            let priorSessionIds: [String]?
 
             var id: String { (claudeSessionId ?? "") + cwd }
         }
@@ -663,7 +667,8 @@ final class AgentManager: ObservableObject {
                 hiddenFromOrchestrator: s.hiddenFromOrchestrator ? true : nil,
                 tabId: s.id,
                 wasRunning: s.status == .running ? true : nil,
-                contextWindow: s.lastTurnContextWindow
+                contextWindow: s.lastTurnContextWindow,
+                priorSessionIds: s.priorSessionIds.isEmpty ? nil : s.priorSessionIds
             )
         })
         if snap.agents.isEmpty {
@@ -752,8 +757,13 @@ final class AgentManager: ObservableObject {
                 // works through them.
                 let cwd = a.cwd
                 let wasRunning = a.wasRunning == true
+                // Oldest first, current last: a tab that has been through a
+                // rolling compact spans more than one claude session, and its
+                // thread on screen spans all of them.
+                let chain = (a.priorSessionIds ?? []) + [sid]
+                session.priorSessionIds = a.priorSessionIds ?? []
                 Self.restoreQueue.async { [weak session] in
-                    let restored = TranscriptLoader.restore(cwd: cwd, sessionId: sid)
+                    let restored = TranscriptLoader.restoreChain(cwd: cwd, sessionIds: chain)
                     DispatchQueue.main.async {
                         guard let session else { return }
                         if !restored.messages.isEmpty {

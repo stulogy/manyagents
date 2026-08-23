@@ -113,6 +113,43 @@ enum TranscriptLoader {
         return Restored(messages: out, contextTokens: context, truncated: cut || dropped)
     }
 
+    /// Rebuild history across a chain of claude sessions, oldest id first.
+    ///
+    /// A rolling compact abandons the old claude session and starts a new
+    /// one, so from the CLI's point of view the conversation is now two
+    /// files. In the app it is one thread, and it stays one thread on
+    /// screen — which meant nothing after a restart, because restore only
+    /// ever read the current session's transcript and the scrollback the
+    /// rolling compact had gone out of its way to preserve was gone the
+    /// next time the app opened.
+    ///
+    /// Walked newest-first and stopped as soon as the window is full, so a
+    /// long chain costs no more to restore than a single session does.
+    static func restoreChain(cwd: String, sessionIds: [String]) -> Restored {
+        var chunks: [[Message]] = []
+        var context: Int? = nil
+        var truncated = false
+        var total = 0
+        for (i, sid) in sessionIds.reversed().enumerated() where !sid.isEmpty {
+            let r = restore(cwd: cwd, sessionId: sid)
+            // Only the newest session's usage describes the model's CURRENT
+            // context. An older one's figure is pre-compaction and would put
+            // the gauge back where the compact just took it from.
+            if i == 0 { context = r.contextTokens }
+            if r.truncated { truncated = true }
+            if r.messages.isEmpty { continue }
+            chunks.append(r.messages)
+            total += r.messages.count
+            if total >= maxMessages { truncated = true; break }
+        }
+        var out = Array(chunks.reversed().joined())
+        if out.count > maxMessages {
+            out.removeFirst(out.count - maxMessages)
+            truncated = true
+        }
+        return Restored(messages: out, contextTokens: context, truncated: truncated)
+    }
+
     /// Kept for callers that only want the history.
     static func load(cwd: String, sessionId: String) -> [Message] {
         restore(cwd: cwd, sessionId: sessionId).messages
@@ -363,6 +400,10 @@ enum TranscriptLoader {
         // them on restore; their assistant reply stays visible.
         if s.hasPrefix("[Orchestrator catch-up") { return "" }
         if s.hasPrefix("[The ManyAgents app restarted") { return "" }
+        // The rolling auto-compact's reseed. Dispatched invisibly live, so it
+        // has to be dropped here too or it comes back as a wall of amber the
+        // next time the app opens.
+        if s.hasPrefix("[Context auto-compacted") { return "" }
         return s
     }
 

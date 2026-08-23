@@ -284,6 +284,14 @@ final class AgentSession: ObservableObject, Identifiable {
     /// happens out of the way.
     @Published private(set) var isBackgroundTurn = false
 
+    /// claude sessions this tab used BEFORE its current one, oldest first.
+    ///
+    /// A rolling compact starts a fresh claude session, which means a fresh
+    /// transcript file. The visible thread doesn't restart, so restore has
+    /// to read the chain, not just the tail of the newest file. Bounded:
+    /// only enough history to fill the restore window is ever useful.
+    var priorSessionIds: [String] = []
+
     /// claude called AskUserQuestion mid-turn and is now waiting for our
     /// selection. The UI renders an inline picker bound to this; clicking
     /// an option calls `answerQuestion` which posts the result back to
@@ -655,6 +663,10 @@ final class AgentSession: ObservableObject, Identifiable {
         // Drop transcript + transient state so the UI doesn't carry old
         // tool-result rows / pending prompts into the fresh context.
         messages.removeAll()
+        // A manual compact deliberately wipes the transcript, so the chain
+        // goes with it — otherwise the next relaunch would restore exactly
+        // the history the user just asked to be rid of.
+        priorSessionIds.removeAll()
         pendingPrompts.removeAll()
         pendingAskUserQuestion = nil
         answeredAsk = nil
@@ -859,6 +871,14 @@ final class AgentSession: ObservableObject, Identifiable {
             return
         }
 
+        // Remember the session we're leaving, so a relaunch can stitch its
+        // transcript back onto the front of this tab's history.
+        if let outgoing = claudeSessionId ?? resumeSessionId, !outgoing.isEmpty {
+            priorSessionIds.append(outgoing)
+            if priorSessionIds.count > 4 {
+                priorSessionIds.removeFirst(priorSessionIds.count - 4)
+            }
+        }
         // Reset the model's live session exactly like manual compact does.
         bridge.currentSessionId = nil
         resumeSessionId = nil
