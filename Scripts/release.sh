@@ -59,6 +59,13 @@ security find-identity -v -p codesigning | grep -q "$DEVELOPER_ID" \
     || die "Cert not in keychain: $DEVELOPER_ID"
 xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 \
     || die "notarytool profile '$NOTARY_PROFILE' missing — see Scripts/README.md"
+# The appcast is signed at the very END of a publish run, long after the
+# GitHub Release is public. Check the key is reachable NOW so a missing one
+# can't strand a release with no update feed entry.
+if [[ "$PUBLISH" == "1" && -z "${SPARKLE_KEY_FILE:-}" ]]; then
+    security find-generic-password -s "https://sparkle-project.org" >/dev/null 2>&1 \
+        || die "Sparkle EdDSA key not in the keychain. Import it, or run with SPARKLE_KEY_FILE=/path/to/key"
+fi
 ok "version $VERSION · team $TEAM_ID"
 
 # ── Regenerate project ────────────────────────────────────────────────
@@ -254,7 +261,18 @@ EOF
     b "Updating Sparkle appcast"
     SIGN_UPDATE="$BUILD_DIR/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update"
     [[ -x "$SIGN_UPDATE" ]] || die "sign_update not found at $SIGN_UPDATE (build first)"
-    SIG_ATTRS="$("$SIGN_UPDATE" "$DMG_PATH")"   # -> sparkle:edSignature="…" length="…"
+    # sign_update reads the EdDSA key from the login keychain by default.
+    # On a machine where the key lives in a file instead (a fresh Mac that
+    # hasn't imported it yet), point SPARKLE_KEY_FILE at it rather than
+    # discovering mid-release that the appcast step can't sign. Never put
+    # the key itself in this repo.
+    SIGN_ARGS=()
+    if [[ -n "${SPARKLE_KEY_FILE:-}" ]]; then
+        [[ -f "$SPARKLE_KEY_FILE" ]] || die "SPARKLE_KEY_FILE set but not found: $SPARKLE_KEY_FILE"
+        SIGN_ARGS+=(--ed-key-file "$SPARKLE_KEY_FILE")
+        ok "signing appcast with key file $SPARKLE_KEY_FILE"
+    fi
+    SIG_ATTRS="$("$SIGN_UPDATE" "${SIGN_ARGS[@]}" "$DMG_PATH")"   # -> sparkle:edSignature="…" length="…"
     BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP_PATH/Contents/Info.plist")"
     PUBDATE="$(date -u +'%a, %d %b %Y %H:%M:%S +0000')"
     DL_URL="https://github.com/stulogy/manyagents/releases/download/$TAG/$SCHEME-$VERSION.dmg"
