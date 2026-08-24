@@ -85,22 +85,11 @@ final class StayAwake: ObservableObject {
         self.mode = Mode(rawValue: defaults.string(forKey: Keys.mode) ?? "") ?? .off
         self.keepGoingWithLidClosed = defaults.bool(forKey: Keys.lidClosed)
 
-        // Adopt whatever the system already says rather than asking for
-        // a password to re-apply a setting that's still in place — a
-        // reboot clears it, a relaunch doesn't.
-        let systemDisabled = Self.systemLidSleepDisabled()
-        self.lidSleepDisabled = systemDisabled
-        if defaults.bool(forKey: Keys.didDisable) {
-            if systemDisabled {
-                // Ours from a previous run. Still wanted? Keep it. If the
-                // option is off, offer to put it back instead of doing it
-                // silently — reverting needs a password too.
-                needsLidSleepRevert = !(keepGoingWithLidClosed && mode != .off)
-            } else {
-                // A reboot (or someone else) already put it back.
-                defaults.set(false, forKey: Keys.didDisable)
-            }
-        }
+        // NOTHING that blocks belongs in here. This runs inside SwiftUI's
+        // @StateObject instantiation, and Process.waitUntilExit() spins a
+        // nested runloop, which re-enters the graph mid-update and makes
+        // AttributeGraph abort the process on launch. The system read
+        // happens in `attach`, off the main thread, after the app is up.
 
         // Always release everything on the way out. Terminating without
         // this leaves the Mac unable to sleep until the next reboot.
@@ -116,11 +105,40 @@ final class StayAwake: ObservableObject {
     /// lands here; debounced because that fires on every streamed token.
     func attach(manager: AgentManager) {
         self.manager = manager
+        refreshSystemLidState()
         manager.objectWillChange
             .debounce(for: .milliseconds(400), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in self?.evaluate() }
             .store(in: &cancellables)
         evaluate()
+    }
+
+    /// Read the live lid-sleep setting off the main thread, then reconcile.
+    /// Adopting a setting that's already in place avoids asking for a
+    /// password to re-apply it — a reboot clears it, a relaunch doesn't.
+    private func refreshSystemLidState() {
+        Task.detached(priority: .utility) {
+            let systemDisabled = Self.systemLidSleepDisabled()
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.lidSleepDisabled = systemDisabled
+                let defaults = UserDefaults.standard
+                if defaults.bool(forKey: Keys.didDisable) {
+                    if systemDisabled {
+                        // Ours from a previous run. Still wanted? Keep it.
+                        // If the option is off, offer to put it back rather
+                        // than doing it silently — reverting needs a
+                        // password too.
+                        self.needsLidSleepRevert =
+                            !(self.keepGoingWithLidClosed && self.mode != .off)
+                    } else {
+                        // A reboot (or someone else) already put it back.
+                        defaults.set(false, forKey: Keys.didDisable)
+                    }
+                }
+                self.evaluate()
+            }
+        }
     }
 
     /// Human-readable one-liner for the Settings footer / status row.
@@ -273,7 +291,7 @@ final class StayAwake: ObservableObject {
 
     /// Read the live system setting. `pmset -g` only prints the key when
     /// it's been set, so absence means "normal sleep behavior".
-    static func systemLidSleepDisabled() -> Bool {
+    nonisolated static func systemLidSleepDisabled() -> Bool {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
         proc.arguments = ["-g"]
@@ -281,8 +299,10 @@ final class StayAwake: ObservableObject {
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
         do { try proc.run() } catch { return false }
+        // Read to EOF and stop there. waitUntilExit() spins a runloop,
+        // which is safe on this background thread but not worth keeping
+        // in a function anyone might later call from main.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
         guard let out = String(data: data, encoding: .utf8) else { return false }
         for line in out.split(separator: "\n") where line.contains("SleepDisabled") {
             return line.contains("1")
