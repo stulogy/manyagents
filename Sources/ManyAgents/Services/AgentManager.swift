@@ -741,7 +741,13 @@ final class AgentManager: ObservableObject {
             session.isCoordinator = a.isOrchestrator ?? false
             // Enforce the fixed role name on restore too — orchestrators
             // designated before this rule kept their old auto-names.
-            if session.isCoordinator { session.aiTitle = "Orchestrator" }
+            if session.isCoordinator {
+                session.aiTitle = "Orchestrator"
+                // didSet doesn't fire for a value assigned during restore
+                // setup in every path; publish explicitly so the bridge can
+                // find the orchestrator before its first turn.
+                session.publishRelayConfig()
+            }
             session.hiddenFromOrchestrator = a.hiddenFromOrchestrator ?? false
             session.modelTier = a.modelTier ?? .auto
             // Restore the real window so the gauge's denominator is right.

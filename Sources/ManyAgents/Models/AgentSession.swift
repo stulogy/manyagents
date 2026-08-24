@@ -371,7 +371,28 @@ final class AgentSession: ObservableObject, Identifiable {
     /// gets MCP tools to see/read/send/mute the other tabs, and is woken
     /// ("watch & nudge") whenever a watched tab finishes a turn. Toggled via
     /// the tab menu; takes effect on the next turn.
-    @Published var isCoordinator: Bool = false
+    @Published var isCoordinator: Bool = false {
+        didSet {
+            guard isCoordinator, isCoordinator != oldValue else { return }
+            publishRelayConfig()
+        }
+    }
+
+    /// Write this tab's MCP config drop now, without waiting for its next
+    /// turn. The drop is how anything outside the app finds the current
+    /// relay socket, its token, and which tab holds the orchestrator hat —
+    /// the ma-bridge reads exactly that. Written only at first turn, an
+    /// orchestrator restored at launch was invisible until someone typed
+    /// at it, and every board call from outside was refused as
+    /// "not the project's orchestrator".
+    func publishRelayConfig() {
+        do {
+            _ = try MCPRelay.shared.startIfNeeded()
+            _ = try CoordinatorConfig.write(for: self)
+        } catch {
+            // Non-fatal: the next turn writes it anyway.
+        }
+    }
 
     // MARK: - Orchestrator (v2)
 
