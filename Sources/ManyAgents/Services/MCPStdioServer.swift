@@ -286,6 +286,34 @@ private final class ServerState {
                     "required": ["agent_id", "prompt"],
                     "additionalProperties": false
                 ]
+            ],
+            [
+                "name": "create_agent",
+                "description": "Open a NEW agent session in ManyAgents. A project in the sidebar is just a unique working directory, so passing a cwd that isn't open yet creates a new project; passing a folder nested inside an existing project creates a sub-project of it. Set coordinator=true to make the new tab an orchestrator that can itself list, dispatch and create agents. Optionally send it a first prompt so it starts working immediately. Returns the new agent's id, usable with dispatch_agent.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "cwd": [
+                            "type": "string",
+                            "description": "Absolute path (or ~/ path, or a path relative to your own cwd) of the folder the agent works in. Must already exist. This path is what groups the agent into a project."
+                        ],
+                        "title": [
+                            "type": "string",
+                            "description": "Optional tab title, e.g. \"Compass Core\". Without it the tab is auto-named after its first exchange."
+                        ],
+                        "coordinator": [
+                            "type": "boolean",
+                            "description": "If true, the new agent gets these same orchestration tools (an orchestrator tab). Default false.",
+                            "default": false
+                        ],
+                        "prompt": [
+                            "type": "string",
+                            "description": "Optional first prompt. Sent as a hand-off from you as soon as the agent is open; the call returns without waiting for its reply. Use dispatch_agent for follow-ups."
+                        ]
+                    ],
+                    "required": ["cwd"],
+                    "additionalProperties": false
+                ]
             ]
         ]
     }
@@ -364,6 +392,35 @@ private final class ServerState {
                 } else {
                     respondToolResult(id: id,
                                       text: "Error: \(res["error"] as? String ?? "dispatch failed")",
+                                      isError: true)
+                }
+            case "create_agent":
+                guard let cwd = arguments["cwd"] as? String, !cwd.isEmpty else {
+                    respondToolResult(id: id, text: "Error: missing cwd.", isError: true)
+                    return
+                }
+                var payload: [String: Any] = [
+                    "op": "create_agent",
+                    "source_session_id": args.sourceSessionId as Any,
+                    "cwd": cwd,
+                    "coordinator": (arguments["coordinator"] as? Bool) ?? false
+                ]
+                if let title = arguments["title"] as? String { payload["title"] = title }
+                if let prompt = arguments["prompt"] as? String { payload["prompt"] = prompt }
+                let res = try await awaitRelay(payload)
+                if (res["ok"] as? Bool) == true {
+                    let newId = res["agent_id"] as? String ?? "?"
+                    let project = res["project"] as? String ?? "?"
+                    let title = res["title"] as? String ?? project
+                    let isCoord = (res["coordinator"] as? Bool) == true
+                    let sent = (res["prompt_sent"] as? Bool) == true
+                    var body = "Opened agent id=\(newId) in project \(project) (\(res["cwd"] as? String ?? cwd)), title \"\(title)\""
+                    if isCoord { body += ", orchestrator mode on" }
+                    body += sent ? ". First prompt sent; it is working now." : "."
+                    respondToolResult(id: id, text: body)
+                } else {
+                    respondToolResult(id: id,
+                                      text: "Error: \(res["error"] as? String ?? "create failed")",
                                       isError: true)
                 }
             default:

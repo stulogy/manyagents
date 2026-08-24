@@ -126,11 +126,84 @@ final class MCPRelay {
             return await listAgents(id: id)
         case "dispatch":
             return await dispatch(req: req, id: id)
+        case "create_agent":
+            return await createAgent(req: req, id: id)
         case "permission_prompt":
             return await permissionPrompt(req: req, id: id)
         default:
             return ["id": id, "ok": false, "error": "unknown op: \(op)"]
         }
+    }
+
+    // MARK: - Agent creation
+
+    /// Spawn a brand-new agent session on behalf of a coordinator.
+    /// Projects in the sidebar are just unique cwds, so a cwd that
+    /// isn't open yet becomes a new project row — and a path nested
+    /// under an existing project becomes its own sub-project. Pass
+    /// `coordinator: true` to make the new tab an orchestrator itself.
+    @MainActor
+    private func createAgent(req: [String: Any], id: String) async -> [String: Any] {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
+        let source = sourceUUID.flatMap { uuid in mgr.sessions.first(where: { $0.id == uuid }) }
+
+        guard let rawCwd = (req["cwd"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawCwd.isEmpty
+        else { return ["id": id, "ok": false, "error": "missing cwd"] }
+
+        let cwd = resolvePath(rawCwd, relativeTo: source?.cwd)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue else {
+            return ["id": id, "ok": false, "error": "no such directory: \(cwd)"]
+        }
+
+        let coordinator = req["coordinator"] as? Bool ?? false
+        let title = (req["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = (req["prompt"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // spawn() focuses the tab it creates. The user is watching the
+        // coordinator's turn unfold, so hand focus straight back rather
+        // than yanking them into a tab that hasn't done anything yet.
+        let previouslyActive = mgr.activeSessionId
+        let session = mgr.spawn(cwd: cwd)
+        if let title, !title.isEmpty { session.aiTitle = title }
+        session.isCoordinator = coordinator
+        if let previouslyActive { mgr.activeSessionId = previouslyActive }
+
+        if let prompt, !prompt.isEmpty {
+            let recordId = mgr.recordDispatchStart(coordinatorId: sourceUUID,
+                                                   target: session, prompt: prompt)
+            if let src = source {
+                mgr.handOff(from: src.id, to: session.id, prompt: prompt, autoSend: true)
+            } else {
+                session.send(prompt)
+            }
+            mgr.recordDispatchEnd(recordId, success: true)
+        }
+
+        return [
+            "id": id,
+            "ok": true,
+            "agent_id": session.id.uuidString,
+            "cwd": cwd,
+            "project": ProjectNaming.name(forCwd: cwd),
+            "title": session.aiTitle ?? session.displayName,
+            "coordinator": coordinator,
+            "prompt_sent": (prompt?.isEmpty == false)
+        ]
+    }
+
+    /// Expand `~`, resolve a relative path against the calling agent's
+    /// cwd, and strip `..` / trailing-slash noise so two spellings of
+    /// the same folder can't produce two project rows.
+    private func resolvePath(_ path: String, relativeTo base: String?) -> String {
+        var p = (path as NSString).expandingTildeInPath
+        if !p.hasPrefix("/"), let base {
+            p = (base as NSString).appendingPathComponent(p)
+        }
+        return URL(fileURLWithPath: p).standardizedFileURL.path
     }
 
     // MARK: - Permission prompt

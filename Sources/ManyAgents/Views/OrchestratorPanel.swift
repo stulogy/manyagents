@@ -69,7 +69,7 @@ struct OrchestratorPanel: View {
             }
             .toggleStyle(.switch)
             .controlSize(.small)
-            Text("It can see your other open agents and hand work to them on its own — handy for a planner that delegates to workers. Takes effect on the next turn.")
+            Text("It can see your other open agents, hand work to them, and open new ones (including sub-projects and further orchestrators) on its own. Takes effect on the next turn.")
                 .font(.system(size: 10.5))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -80,7 +80,7 @@ struct OrchestratorPanel: View {
         VStack(alignment: .leading, spacing: 6) {
             sectionLabel("Agents it can run")
             if others.isEmpty {
-                Text("No other agents open. Open another session (⌘N / ⌘T) to give the orchestrator something to delegate to.")
+                Text("No other agents open yet. Open one yourself (⌘N / ⌘T), or just ask this agent to create the ones it needs.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
