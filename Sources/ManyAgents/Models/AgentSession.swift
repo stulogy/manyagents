@@ -1614,6 +1614,17 @@ final class AgentSession: ObservableObject, Identifiable {
             DispatchQueue.main.async { [weak self] in self?.drainQueueIfReady() }
         case .systemError(let message):
             reportTurnError(message)
+        case .harnessNotice(let notice):
+            // Muted one-liner: "a background agent finished". The report
+            // itself belongs to the model, not the transcript. Skip the
+            // append if the same notice is already the last row — the same
+            // task can notify more than once.
+            if case .system = messages.last?.role,
+               messages.last?.flatText == notice {
+                break
+            }
+            messages.append(Message(role: .system,
+                                    blocks: [.text(id: UUID(), text: notice)]))
         case .userTurnBegan:
             // The CLI began a turn — possibly one IT initiated (a steered
             // message that missed its window, queued and run after the

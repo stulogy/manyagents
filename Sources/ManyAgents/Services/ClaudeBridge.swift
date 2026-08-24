@@ -43,6 +43,11 @@ enum BridgeEvent {
     /// queueing app-side, and the turn-start watchdog killed the silent
     /// (but working) process mid-turn.
     case userTurnBegan
+    /// A `<task-notification>` the harness injected — a background agent
+    /// finished. Carries only the one-line summary; the raw report inside
+    /// the block is deliberately dropped here so it can never reach the
+    /// transcript as body text.
+    case harnessNotice(String)
 
     struct AskPrompt: Equatable {
         let header: String?
@@ -259,7 +264,8 @@ final class ClaudeBridge {
         // waiting cue, and the tool note were dead the whole time. That is
         // why "never write comprehensive reports" kept producing them.
         var appended = [Self.waitingCueSystemPrompt,
-                        Self.brevitySystemPrompt]
+                        Self.brevitySystemPrompt,
+                        Self.shellCwdSystemPrompt]
         if mcpConfigPath != nil {
             appended.append(Self.manyAgentsToolsSystemPrompt)
             // Nudge the orchestrator to use the user's open tabs (left to
@@ -612,6 +618,16 @@ final class ClaudeBridge {
         // bridge busy so steer() can reach CLI-initiated turns too.
         let hasToolResult = content.contains { ($0["type"] as? String) == "tool_result" }
         if !hasToolResult {
+            // Background-agent completions ride in on this same frame. Show
+            // the user a muted one-liner that one finished; never the
+            // `<result>` body, which is the subagent's raw report.
+            for block in content where (block["type"] as? String) == "text" {
+                guard let text = block["text"] as? String,
+                      HarnessNotice.contains(text) else { continue }
+                for notice in HarnessNotice.rewrite(text).notices {
+                    emit(.harnessNotice(notice))
+                }
+            }
             if content.contains(where: {
                 let t = $0["type"] as? String
                 return t == "text" || t == "image"
@@ -822,6 +838,21 @@ final class ClaudeBridge {
     - Don't start a word with `=`. A bare `===` or `==` separator triggers zsh's `=` expansion and fails with "== not found"; use `echo "==="` or a different separator.
     - `timeout` does not exist on macOS. Use the Bash tool's own timeout parameter, or run the thing in the background and poll it.
     A command that dies this way did NOT run — the exit code is the shell's, not the tool's. Fix the quoting and re-run rather than concluding the search found nothing.
+    """
+
+    /// The shell's cwd persists across Bash calls, and background agents
+    /// inherit it. A scratch `cd` earlier in a turn has sent subagents to
+    /// the wrong repo, where they find nothing and come back with a
+    /// failure report — which the user then has to read.
+    private static let shellCwdSystemPrompt = """
+    Your shell's working directory persists between Bash calls, and anything you \
+    launch from the session — background agents especially — starts in whatever \
+    directory you last left it in, not the project root. A stray `cd` into a \
+    scratch folder sends the next subagent to the wrong repo, where it finds \
+    nothing and reports failure. Never leave the shell parked outside the \
+    project: run one-off commands elsewhere in a subshell — `(cd /tmp/scratch && \
+    …)` — or with absolute paths, so the working directory is unchanged when the \
+    command returns.
     """
 
     private static let brevitySystemPrompt = """

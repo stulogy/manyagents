@@ -72,6 +72,19 @@ enum TranscriptLoader {
                     if m.role == .user { pendingBoardWake = false }
                     out.append(m)
                 }
+            case "attachment":
+                // A notification that arrived while a turn was in flight is
+                // recorded here rather than as a user row. Show the same
+                // muted line the live path does, so restore matches live.
+                if let att = obj["attachment"] as? [String: Any],
+                   let prompt = att["prompt"] as? String,
+                   HarnessNotice.contains(prompt) {
+                    let notices = HarnessNotice.rewrite(prompt).notices
+                    for n in notices where out.last?.flatText != n {
+                        out.append(Message(role: .system,
+                                           blocks: [.text(id: UUID(), text: n)]))
+                    }
+                }
             case "assistant":
                 if let msg = obj["message"] as? [String: Any] {
                     if let content = msg["content"] as? [[String: Any]] {
@@ -238,7 +251,7 @@ enum TranscriptLoader {
             if let notice = harnessNoticeText(s) {
                 return Message(role: .system, blocks: [.text(id: UUID(), text: notice)])
             }
-            let cleaned = sanitizeUserText(s)
+            let cleaned = sanitizeUserText(stripNotices(s))
             if !cleaned.isEmpty {
                 blocks.append(.text(id: UUID(), text: cleaned))
                 isToolResultsOnly = false
@@ -253,7 +266,7 @@ enum TranscriptLoader {
                         blocks.append(.text(id: UUID(), text: notice))
                         continue
                     }
-                    let cleaned = sanitizeUserText(t)
+                    let cleaned = sanitizeUserText(stripNotices(t))
                     if !cleaned.isEmpty {
                         blocks.append(.text(id: UUID(), text: cleaned))
                         isToolResultsOnly = false
@@ -372,21 +385,30 @@ enum TranscriptLoader {
         return Message(role: .assistant, blocks: blocks, fromBoardWake: boardWake)
     }
 
-    /// Harness-injected "user" lines the user never typed — e.g. the
+    /// Harness-injected "user" lines the user never typed — the
     /// <task-notification> block Claude Code injects when a background
-    /// command finishes. Returns a compact human-readable line to show
-    /// as a muted system row, or nil when the text is a real prompt.
+    /// agent finishes. Returns a compact line to show as a muted system
+    /// row, or nil when there's nothing harness-y in the text.
+    ///
+    /// Containment, not prefix: a notification queued mid-turn can arrive
+    /// concatenated with the user's own prompt, and a prefix test lets the
+    /// whole raw report through as body text.
     private static func harnessNoticeText(_ raw: String) -> String? {
-        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard s.hasPrefix("<task-notification>") else { return nil }
-        if let start = s.range(of: "<summary>"),
-           let end = s.range(of: "</summary>"),
-           start.upperBound <= end.lowerBound {
-            let summary = s[start.upperBound..<end.lowerBound]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return "Background task: \(summary)"
-        }
-        return "Background task update"
+        guard HarnessNotice.contains(raw) else { return nil }
+        let (text, notices) = HarnessNotice.rewrite(raw)
+        guard !notices.isEmpty else { return nil }
+        // Real typed text alongside it keeps its own bubble; the caller
+        // handles that case via `rewrite` directly.
+        guard text.isEmpty else { return nil }
+        return notices.joined(separator: "\n")
+    }
+
+    /// Text that mixes a real prompt with an injected notification: keep
+    /// the prompt, drop the block. Without this the subagent's whole
+    /// report renders as if the user had typed it.
+    private static func stripNotices(_ raw: String) -> String {
+        guard HarnessNotice.contains(raw) else { return raw }
+        return HarnessNotice.rewrite(raw).text
     }
 
     /// Strip the synthetic tags claude code wraps system reminders and IDE
