@@ -3,11 +3,66 @@ import SwiftUI
 struct WorkspaceView: View {
     @EnvironmentObject var manager: AgentManager
     @EnvironmentObject var readiness: ClaudeReadiness
+    @EnvironmentObject var stayAwake: StayAwake
     @AppStorage("sidebar.width") private var sidebarWidth: Double = 260
     @AppStorage("sidebar.collapsed") private var sidebarCollapsed: Bool = false
     @AppStorage("workspace.viewMode") private var viewModeRaw: String = WorkspaceMode.row.rawValue
     @State private var pendingCloseTarget: AgentSession?
     @State private var showShortcuts: Bool = false
+    @State private var indicatorPulse: Bool = false
+
+    /// Only present while we actually hold the assertion. Reads as a live
+    /// state, not a decorative glyph: it says what it is, it's tinted, and
+    /// it breathes so a glance tells you the Mac is being held awake right
+    /// now. Red on battery, since that's charge being spent. Clicking
+    /// opens Settings, where it goes off.
+    @ViewBuilder
+    private var stayAwakeIndicator: some View {
+        if stayAwake.isHoldingAwake {
+            SettingsLink {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(indicatorTint)
+                        .frame(width: 5, height: 5)
+                        .opacity(indicatorPulse ? 0.3 : 1)
+                    Text("Caffeinated")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(indicatorTint)
+                    if stayAwake.onBattery {
+                        Image(systemName: "battery.25")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(indicatorTint)
+                    }
+                }
+                .padding(.horizontal, 8)
+                // Fixed, deliberately small height: a toolbar item taller
+                // than the standard control metric makes the whole unified
+                // title bar grow, so the window chrome changes size the
+                // moment this appears.
+                .frame(height: 17)
+                .background(
+                    Capsule()
+                        .fill(indicatorTint.opacity(0.14))
+                        .overlay(Capsule().strokeBorder(indicatorTint.opacity(0.35), lineWidth: 0.5))
+                )
+                .contentShape(Capsule())
+                .fixedSize()
+            }
+            .buttonStyle(.plain)
+            .help(stayAwake.indicatorHelp)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                    indicatorPulse = true
+                }
+            }
+            .onDisappear { indicatorPulse = false }
+        }
+    }
+
+    /// Red while it's costing battery, amber on power.
+    private var indicatorTint: Color {
+        stayAwake.onBattery ? Color(red: 0.90, green: 0.25, blue: 0.25) : Color.brandOrange
+    }
 
     private var viewMode: Binding<WorkspaceMode> {
         Binding(
@@ -28,6 +83,14 @@ struct WorkspaceView: View {
             }
             mainPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .toolbar {
+            // Title bar, not the sidebar: the sidebar collapses (⌘⇧S) and
+            // this must not vanish with it. Stopping a Mac from sleeping
+            // should never be invisible — least of all on battery.
+            ToolbarItem(placement: .automatic) {
+                stayAwakeIndicator
+            }
         }
         .animation(.easeInOut(duration: 0.2), value: sidebarCollapsed)
         .onReceive(NotificationCenter.default.publisher(for: .maToggleSidebar)) { _ in

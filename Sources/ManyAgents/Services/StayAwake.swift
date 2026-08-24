@@ -58,6 +58,14 @@ final class StayAwake: ObservableObject {
         didSet {
             guard keepGoingWithLidClosed != oldValue else { return }
             UserDefaults.standard.set(keepGoingWithLidClosed, forKey: Keys.lidClosed)
+            // Flipping this switch is the ONLY thing that asks for a
+            // password. Earlier versions reconciled the system setting on
+            // launch, on quit, and on every re-evaluation, which meant
+            // three prompts in one session for a setting the user had
+            // already agreed to once.
+            if keepGoingWithLidClosed != lidSleepDisabled {
+                setSystemLidSleepDisabled(keepGoingWithLidClosed)
+            }
             evaluate()
         }
     }
@@ -71,7 +79,11 @@ final class StayAwake: ObservableObject {
     /// than throwing a password prompt at launch.
     @Published private(set) var needsLidSleepRevert = false
     @Published private(set) var lastError: String?
+    /// Live power source, polled while we're holding. The indicator needs
+    /// it to say whether the Mac is burning battery to stay up.
+    @Published private(set) var onBattery: Bool = false
 
+    private var powerPoll: AnyCancellable?
     private var idleAssertion: IOPMAssertionID = 0
     private var systemAssertion: IOPMAssertionID = 0
     private var activityToken: NSObjectProtocol?
@@ -113,28 +125,32 @@ final class StayAwake: ObservableObject {
         evaluate()
     }
 
-    /// Read the live lid-sleep setting off the main thread, then reconcile.
-    /// Adopting a setting that's already in place avoids asking for a
-    /// password to re-apply it — a reboot clears it, a relaunch doesn't.
+    /// Read the live lid-sleep setting off the main thread, then make our
+    /// state agree with the system's. Never changes the system setting —
+    /// that only happens when the user flips the switch.
     private func refreshSystemLidState() {
         Task.detached(priority: .utility) {
             let systemDisabled = Self.systemLidSleepDisabled()
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.lidSleepDisabled = systemDisabled
                 let defaults = UserDefaults.standard
-                if defaults.bool(forKey: Keys.didDisable) {
-                    if systemDisabled {
-                        // Ours from a previous run. Still wanted? Keep it.
-                        // If the option is off, offer to put it back rather
-                        // than doing it silently — reverting needs a
-                        // password too.
-                        self.needsLidSleepRevert =
-                            !(self.keepGoingWithLidClosed && self.mode != .off)
-                    } else {
-                        // A reboot (or someone else) already put it back.
-                        defaults.set(false, forKey: Keys.didDisable)
-                    }
+                self.lidSleepDisabled = systemDisabled
+                let weSetIt = defaults.bool(forKey: Keys.didDisable)
+
+                if systemDisabled {
+                    // Still in effect. If the switch is on, that's exactly
+                    // what the user asked for — adopt it silently. If it's
+                    // off and we're the ones who set it, offer the "Put it
+                    // back" button rather than reverting unasked.
+                    self.needsLidSleepRevert = weSetIt && !self.keepGoingWithLidClosed
+                } else {
+                    // Not in effect. Anything we recorded is stale.
+                    if weSetIt { defaults.set(false, forKey: Keys.didDisable) }
+                    self.needsLidSleepRevert = false
+                    // The switch claiming a lid-close guarantee we don't
+                    // have is worse than it reading off, so tell the truth.
+                    // Costs no prompt: both sides already agree it's off.
+                    if self.keepGoingWithLidClosed { self.keepGoingWithLidClosed = false }
                 }
                 self.evaluate()
             }
@@ -162,6 +178,16 @@ final class StayAwake: ObservableObject {
         }
     }
 
+    /// Tooltip for the menu-bar-ish indicator in the sidebar.
+    var indicatorHelp: String {
+        let why = mode == .always
+            ? "Set to stay awake always"
+            : "An agent is working"
+        return onBattery
+            ? "\(why) — this Mac won't sleep, and it's on battery. Click to change."
+            : "\(why) — this Mac won't sleep. Click to change."
+    }
+
     // MARK: - Evaluation
 
     /// Single decision point: work out whether we should be holding, and
@@ -180,13 +206,9 @@ final class StayAwake: ObservableObject {
             release()
         }
 
-        // The system-wide override tracks the toggle, not the momentary
-        // hold — asking for a password every time an agent starts a turn
-        // would be intolerable.
-        let wantLidOverride = keepGoingWithLidClosed && mode != .off
-        if wantLidOverride != lidSleepDisabled {
-            setSystemLidSleepDisabled(wantLidOverride)
-        }
+        // Deliberately does NOT touch the pmset override. That is a
+        // system-wide, password-gated setting: it changes when the user
+        // flips the switch, and at no other time.
     }
 
     private var anyAgentBusy: Bool {
@@ -231,6 +253,16 @@ final class StayAwake: ObservableObject {
             systemAssertion = 0
         }
         isHoldingAwake = idleAssertion != 0
+        onBattery = !Self.onACPower()
+        if powerPoll == nil {
+            // Cheap, and only runs while we're actually holding.
+            powerPoll = Timer.publish(every: 30, on: .main, in: .common)
+                .autoconnect()
+                .sink { [weak self] _ in
+                    guard let self else { return }
+                    self.onBattery = !Self.onACPower()
+                }
+        }
     }
 
     private func release() {
@@ -247,14 +279,18 @@ final class StayAwake: ObservableObject {
             activityToken = nil
         }
         isHoldingAwake = false
+        powerPoll?.cancel()
+        powerPoll = nil
     }
 
-    /// Drop every hold INCLUDING the system-wide override. Quit path.
+    /// Quit path. Assertions die with the process anyway; release them
+    /// tidily and leave the pmset override exactly as the user left it.
+    /// Reverting here meant a password prompt every time the app closed —
+    /// and prompting during termination is a good way to get force-quit
+    /// halfway through. The override stays until the switch goes off, and
+    /// `needsLidSleepRevert` offers to put it back if it was left on.
     private func releaseEverything() {
         release()
-        if lidSleepDisabled || UserDefaults.standard.bool(forKey: Keys.didDisable) {
-            setSystemLidSleepDisabled(false)
-        }
     }
 
     // MARK: - Lid sleep override

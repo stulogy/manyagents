@@ -93,7 +93,7 @@ private struct GeneralSettingsTab: View {
             } header: {
                 Text("Staying awake")
             } footer: {
-                Text("Both are off unless you switch them on. \"While agents are working\" holds the Mac awake only during a turn, then lets it sleep again. Closing the lid is a special case: macOS sleeps on lid close regardless, so that option changes a system-wide power setting (pmset disablesleep) and needs your admin password — ManyAgents puts it back when you switch it off or quit. Wi-Fi recovery only ever asks macOS to rejoin a network you've already saved.")
+                Text("Both are off unless you switch them on. \"While agents are working\" holds the Mac awake only during a turn, then lets it sleep again. Closing the lid is a special case: macOS sleeps on lid close regardless, so that option changes a system-wide power setting (pmset disablesleep) and asks for your admin password once, when you switch it. It stays in effect after you quit ManyAgents, until you switch it back off here — nothing re-applies or reverts it behind your back. Wi-Fi recovery only ever asks macOS to rejoin a network you've already saved.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }

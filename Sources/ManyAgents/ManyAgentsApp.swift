@@ -85,6 +85,7 @@ struct ManyAgentsApp: App {
             WorkspaceView()
                 .environmentObject(manager)
                 .environmentObject(readiness)
+                .environmentObject(stayAwake)
                 .tint(Color.brandOrange)
                 .frame(minWidth: 960, minHeight: 600)
                 .onAppear {
