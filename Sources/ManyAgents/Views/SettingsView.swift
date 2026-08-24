@@ -27,6 +27,8 @@ private struct GeneralSettingsTab: View {
     private var preferredModel = ""
     @AppStorage(VoiceCapture.Keys.inputDeviceUID)
     private var inputDeviceUID = ""
+    @EnvironmentObject private var stayAwake: StayAwake
+    @EnvironmentObject private var wifi: WiFiWatchdog
 
     var body: some View {
         Form {
@@ -50,6 +52,48 @@ private struct GeneralSettingsTab: View {
                 }
             } footer: {
                 Text("Used for voice input in the composer. System Default follows the input selected in macOS Sound settings — pick a specific microphone if your default input is an audio interface.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Picker("Keep the Mac awake", selection: $stayAwake.mode) {
+                    ForEach(StayAwake.Mode.allCases) { m in
+                        Text(m.label).tag(m)
+                    }
+                }
+
+                Toggle("Keep going with the lid closed", isOn: $stayAwake.keepGoingWithLidClosed)
+                    .disabled(stayAwake.mode == .off)
+
+                Toggle("Reconnect Wi-Fi if it drops", isOn: $wifi.isEnabled)
+
+                LabeledContent("Status") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(stayAwake.statusText)
+                        Text(wifi.statusText)
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.system(size: 11))
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if stayAwake.needsLidSleepRevert {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text("A previous run left lid sleep switched off system-wide.")
+                            .font(.system(size: 11))
+                        Spacer()
+                        Button("Put it back") {
+                            stayAwake.setSystemLidSleepDisabled(false)
+                        }
+                    }
+                }
+            } header: {
+                Text("Staying awake")
+            } footer: {
+                Text("Both are off unless you switch them on. \"While agents are working\" holds the Mac awake only during a turn, then lets it sleep again. Closing the lid is a special case: macOS sleeps on lid close regardless, so that option changes a system-wide power setting (pmset disablesleep) and needs your admin password — ManyAgents puts it back when you switch it off or quit. Wi-Fi recovery only ever asks macOS to rejoin a network you've already saved.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }

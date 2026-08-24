@@ -37,6 +37,8 @@ struct ManyAgentsApp: App {
     @StateObject private var autoNamer = AutoNamer()
     @StateObject private var readiness = ClaudeReadiness()
     @StateObject private var updater = UpdaterViewModel()
+    @StateObject private var stayAwake = StayAwake()
+    @StateObject private var wifi = WiFiWatchdog()
     @State private var restored = false
 
     init() {
@@ -91,6 +93,10 @@ struct ManyAgentsApp: App {
                     readiness.refresh()
                     manager.loadPendingSnapshot()
                     autoNamer.attach(manager: manager)
+                    // Power/network resilience: hold the Mac awake per
+                    // the user's setting, and nudge Wi-Fi back if it drops.
+                    stayAwake.attach(manager: manager)
+                    _ = wifi
                     // Register the notification delegate + request permission
                     // so "agent finished" banners can fire.
                     NotificationService.shared.bootstrap()
@@ -150,6 +156,11 @@ struct ManyAgentsApp: App {
                     NotificationCenter.default.post(name: .maCycleTab, object: nil)
                 }
                 .keyboardShortcut("`", modifiers: [.command, .shift])
+                Divider()
+                Toggle("Keep This Mac Awake", isOn: Binding(
+                    get: { stayAwake.mode != .off },
+                    set: { stayAwake.mode = $0 ? .whileWorking : .off }
+                ))
             }
             CommandGroup(replacing: .help) {
                 Button("Keyboard Shortcuts") {
@@ -171,6 +182,8 @@ struct ManyAgentsApp: App {
         Settings {
             SettingsView()
                 .environmentObject(updater)
+                .environmentObject(stayAwake)
+                .environmentObject(wifi)
         }
     }
 
