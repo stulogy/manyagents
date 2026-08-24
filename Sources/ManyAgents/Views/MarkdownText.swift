@@ -43,10 +43,15 @@ struct MarkdownText: View {
                 .font(.system(size: headingSize(level), weight: .semibold))
                 .padding(.top, level <= 2 ? 4 : 2)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // Same reason as the list rows below: without this a
+                // scroll-proposed height wins over the text's own and the
+                // line gets cut with an ellipsis instead of wrapping.
+                .fixedSize(horizontal: false, vertical: true)
         case .paragraph(let text):
             Text(inline(text))
                 .assistantTextStyle()
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
         case .bulletList(let items):
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
@@ -141,6 +146,7 @@ struct MarkdownText: View {
                             .assistantTextStyle()
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .padding(.leading, 10)
