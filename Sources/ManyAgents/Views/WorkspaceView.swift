@@ -10,45 +10,38 @@ struct WorkspaceView: View {
     @State private var pendingCloseTarget: AgentSession?
     @State private var showShortcuts: Bool = false
     @State private var indicatorPulse: Bool = false
+    @Environment(\.openSettings) private var openSettings
 
-    /// Only present while we actually hold the assertion. Reads as a live
-    /// state, not a decorative glyph: it says what it is, it's tinted, and
-    /// it breathes so a glance tells you the Mac is being held awake right
-    /// now. Red on battery, since that's charge being spent. Clicking
-    /// opens Settings, where it goes off.
+    /// Only present while we actually hold the assertion. A badge, not a
+    /// control: a Button or SettingsLink in the toolbar gets macOS's own
+    /// button chrome drawn behind it, so the capsule ended up sitting
+    /// inside a second oval. A plain view plus the openSettings action
+    /// keeps the click without the container.
     @ViewBuilder
     private var stayAwakeIndicator: some View {
         if stayAwake.isHoldingAwake {
-            SettingsLink {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(indicatorTint)
-                        .frame(width: 5, height: 5)
-                        .opacity(indicatorPulse ? 0.3 : 1)
-                    Text("Caffeinated")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(indicatorTint)
-                    if stayAwake.onBattery {
-                        Image(systemName: "battery.25")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(indicatorTint)
-                    }
-                }
-                .padding(.horizontal, 8)
-                // Fixed, deliberately small height: a toolbar item taller
-                // than the standard control metric makes the whole unified
-                // title bar grow, so the window chrome changes size the
-                // moment this appears.
-                .frame(height: 17)
-                .background(
-                    Capsule()
-                        .fill(indicatorTint.opacity(0.14))
-                        .overlay(Capsule().strokeBorder(indicatorTint.opacity(0.35), lineWidth: 0.5))
-                )
-                .contentShape(Capsule())
-                .fixedSize()
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(indicatorTint)
+                    .frame(width: 5, height: 5)
+                    .opacity(indicatorPulse ? 0.3 : 1)
+                Text("Caffeinated")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(indicatorTint)
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 8)
+            // Fixed, deliberately small height: a toolbar item taller than
+            // the standard control metric makes the whole unified title bar
+            // grow the moment this appears.
+            .frame(height: 17)
+            .background(
+                Capsule()
+                    .fill(indicatorTint.opacity(0.14))
+                    .overlay(Capsule().strokeBorder(indicatorTint.opacity(0.35), lineWidth: 0.5))
+            )
+            .fixedSize()
+            .contentShape(Capsule())
+            .onTapGesture { openSettings() }
             .help(stayAwake.indicatorHelp)
             .onAppear {
                 withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
@@ -59,7 +52,10 @@ struct WorkspaceView: View {
         }
     }
 
-    /// Red while it's costing battery, amber on power.
+    /// Red while it's costing battery, amber on power. The colour is the
+    /// whole signal — an earlier version drew a battery glyph next to it,
+    /// but it was a fixed `battery.25` symbol that never read the real
+    /// charge, so it looked like a low-battery warning it couldn't back up.
     private var indicatorTint: Color {
         stayAwake.onBattery ? Color(red: 0.90, green: 0.25, blue: 0.25) : Color.brandOrange
     }
@@ -88,8 +84,19 @@ struct WorkspaceView: View {
             // Title bar, not the sidebar: the sidebar collapses (⌘⇧S) and
             // this must not vanish with it. Stopping a Mac from sleeping
             // should never be invisible — least of all on battery.
-            ToolbarItem(placement: .automatic) {
-                stayAwakeIndicator
+            //
+            // macOS 26 gives every toolbar item its own glass container,
+            // which drew a second capsule around the badge. Hide it where
+            // the API exists; older systems never drew one.
+            if #available(macOS 26.0, *) {
+                ToolbarItem(placement: .automatic) {
+                    stayAwakeIndicator
+                }
+                .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .automatic) {
+                    stayAwakeIndicator
+                }
             }
         }
         .animation(.easeInOut(duration: 0.2), value: sidebarCollapsed)

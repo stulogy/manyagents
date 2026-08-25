@@ -20,11 +20,18 @@ struct MarkdownText: View {
     private var blocks: [MdBlock] { MdBlock.parse(raw) }
 
     var body: some View {
+        // One flexible frame for the whole document, not one per block.
+        // Pairing `.frame(maxWidth: .infinity)` with `.fixedSize` on every
+        // paragraph made each block its own _FlexFrameLayout; a long
+        // transcript then spent minutes in sizeThatFits recursion and the
+        // window stopped responding. The VStack's own leading alignment
+        // does the same job for free.
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 view(for: block)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         // SwiftUI's default openURL on macOS doesn't reliably handle
         // file:// URLs (it's geared toward http schemes / Universal Links).
         // Route every link click through NSWorkspace so .html opens in
@@ -42,7 +49,6 @@ struct MarkdownText: View {
             Text(inline(text, size: headingSize(level)))
                 .font(.system(size: headingSize(level), weight: .semibold))
                 .padding(.top, level <= 2 ? 4 : 2)
-                .frame(maxWidth: .infinity, alignment: .leading)
                 // Same reason as the list rows below: without this a
                 // scroll-proposed height wins over the text's own and the
                 // line gets cut with an ellipsis instead of wrapping.
@@ -50,7 +56,6 @@ struct MarkdownText: View {
         case .paragraph(let text):
             Text(inline(text))
                 .assistantTextStyle()
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
         case .bulletList(let items):
             VStack(alignment: .leading, spacing: 6) {
@@ -64,7 +69,6 @@ struct MarkdownText: View {
                             .assistantTextStyle()
                             // Fill the row so long items wrap instead of
                             // truncating to one line with an ellipsis.
-                            .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -82,7 +86,6 @@ struct MarkdownText: View {
                             .assistantTextStyle()
                             // Fill the row so long items wrap instead of
                             // truncating to one line with an ellipsis.
-                            .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -145,7 +148,6 @@ struct MarkdownText: View {
                         Text(inline(para))
                             .assistantTextStyle()
                             .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
