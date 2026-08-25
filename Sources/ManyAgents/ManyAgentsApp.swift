@@ -39,6 +39,7 @@ struct ManyAgentsApp: App {
     @StateObject private var updater = UpdaterViewModel()
     @StateObject private var stayAwake = StayAwake()
     @StateObject private var wifi = WiFiWatchdog()
+    @StateObject private var phone = PhoneLink()
     @State private var restored = false
 
     init() {
@@ -97,6 +98,7 @@ struct ManyAgentsApp: App {
                     // Power/network resilience: hold the Mac awake per
                     // the user's setting, and nudge Wi-Fi back if it drops.
                     stayAwake.attach(manager: manager)
+                    phone.attach(manager: manager)
                     _ = wifi
                     // Register the notification delegate + request permission
                     // so "agent finished" banners can fire.
@@ -185,6 +187,7 @@ struct ManyAgentsApp: App {
                 .environmentObject(updater)
                 .environmentObject(stayAwake)
                 .environmentObject(wifi)
+                .environmentObject(phone)
         }
     }
 

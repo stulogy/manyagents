@@ -1,4 +1,6 @@
 import SwiftUI
+import CoreImage
+import AppKit
 
 /// The app's preferences window (⌘,), split into tabs so each concern
 /// has room to grow. Each control binds straight to the UserDefaults
@@ -16,6 +18,8 @@ struct SettingsView: View {
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
             OptimizeSettingsTab()
                 .tabItem { Label("Optimize", systemImage: "bolt.badge.clock") }
+            PhoneSettingsTab()
+                .tabItem { Label("Phone", systemImage: "iphone") }
         }
         .frame(width: 460)
         .fixedSize(horizontal: false, vertical: true)
@@ -329,5 +333,104 @@ private struct OptimizeSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+
+// MARK: - Phone
+
+private struct PhoneSettingsTab: View {
+    @EnvironmentObject private var phone: PhoneLink
+    @AppStorage("manyagents.phonelink.relayToken") private var relayToken = ""
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Let my phone reach these tabs", isOn: $phone.isEnabled)
+                SecureField("Relay token", text: $relayToken)
+                LabeledContent("Status") {
+                    Text(statusText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(statusColor)
+                }
+            } header: {
+                Text("Phone access")
+            } footer: {
+                Text("ManyAgents dials out to the relay, so there's no port to open and it works from cellular. The relay only forwards sealed envelopes — the pairing key below never leaves this Mac and your phone, and transcripts are encrypted end to end.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            if phone.isEnabled {
+                Section {
+                    HStack(alignment: .top, spacing: 14) {
+                        QRCodeView(text: phone.pairingPayload)
+                            .frame(width: 132, height: 132)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Scan this in the ManyAgents phone app to pair.")
+                                .font(.system(size: 11))
+                            Text("Room \(phone.room)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            Button("Generate a new code") { phone.regenerateSecret() }
+                                .controlSize(.small)
+                            Text("Revokes any paired phone.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                } header: {
+                    Text("Pairing")
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var statusText: String {
+        switch phone.state {
+        case .off:             return "Off"
+        case .connecting:      return "Connecting to the relay…"
+        case .waitingForPhone: return "Connected — waiting for your phone"
+        case .paired:          return "Phone connected"
+        case .failed(let why): return why
+        }
+    }
+
+    private var statusColor: Color {
+        switch phone.state {
+        case .paired:          return .green
+        case .failed:          return .orange
+        default:               return .secondary
+        }
+    }
+}
+
+/// Renders the pairing string as a QR the phone camera can read. Built with
+/// CoreImage so there's no dependency to add for one image.
+private struct QRCodeView: View {
+    let text: String
+
+    var body: some View {
+        if let image = qr() {
+            Image(nsImage: image)
+                .interpolation(.none)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+        } else {
+            RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.08))
+        }
+    }
+
+    private func qr() -> NSImage? {
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(Data(text.utf8), forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let ci = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)) else { return nil }
+        let rep = NSCIImageRep(ciImage: ci)
+        let img = NSImage(size: rep.size)
+        img.addRepresentation(rep)
+        return img
     }
 }
