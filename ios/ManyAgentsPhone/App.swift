@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct ManyAgentsPhoneApp: App {
     @StateObject private var link = MacLink()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -13,6 +14,9 @@ struct ManyAgentsPhoneApp: App {
                 // simulator, which has no camera to scan with.
                 .onOpenURL { url in
                     if let p = MacLink.Pairing.parse(url.absoluteString) { link.pairing = p }
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { link.appDidBecomeActive() }
                 }
                 .tint(Theme.orange)
                 .preferredColorScheme(.dark)

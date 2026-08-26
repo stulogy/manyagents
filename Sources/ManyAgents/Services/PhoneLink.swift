@@ -27,7 +27,12 @@ final class PhoneLink: NSObject, ObservableObject {
         static let relayURL = "manyagents.phonelink.relayURL"
     }
 
-    static let defaultRelay = "wss://your-relay.example.com"
+    /// No default, deliberately. This is an open-source app and a relay is
+    /// someone's own infrastructure — baking one person's host in would
+    /// silently route other people's transcripts through it. `relay/` in
+    /// this repo is a ~150-line service you can deploy anywhere; point
+    /// this at your own.
+    static let defaultRelay = ""
 
     enum State: Equatable {
         case off
@@ -143,7 +148,12 @@ final class PhoneLink: NSObject, ObservableObject {
     private func connect() {
         guard isEnabled else { return }
         disconnect(resetState: false)
-        let base = UserDefaults.standard.string(forKey: Keys.relayURL) ?? Self.defaultRelay
+        let base = (UserDefaults.standard.string(forKey: Keys.relayURL) ?? Self.defaultRelay)
+            .trimmingCharacters(in: .whitespaces)
+        guard !base.isEmpty else {
+            state = .failed("Set a relay URL in Settings — see relay/README.md to run one.")
+            return
+        }
         guard let accessToken = relayAccessToken() else {
             state = .failed("No relay token — set MANYAGENTS_RELAY_TOKEN or pair again.")
             return

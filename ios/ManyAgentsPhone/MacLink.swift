@@ -284,6 +284,21 @@ final class MacLink: ObservableObject {
         request("identify", ["device": name])
     }
 
+    /// Called when the app comes to the foreground. iOS suspends the
+    /// socket while backgrounded, so what's on screen is whatever was true
+    /// when you last looked. Reconnect if the socket died, and resync if it
+    /// didn't — either way the first thing you see is current.
+    func appDidBecomeActive() {
+        reconnectAttempts = 0
+        let socketAlive = task != nil && connection == .connected
+        if socketAlive {
+            refreshBoard()
+            if let tab = watchedTab { openTab(tab) }
+        } else {
+            reconnect()
+        }
+    }
+
     func refreshBoard() {
         request("board") { [weak self] reply in
             guard let self, reply["ok"] as? Bool == true else { return }

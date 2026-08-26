@@ -342,11 +342,14 @@ private struct OptimizeSettingsTab: View {
 private struct PhoneSettingsTab: View {
     @EnvironmentObject private var phone: PhoneLink
     @AppStorage("manyagents.phonelink.relayToken") private var relayToken = ""
+    @AppStorage("manyagents.phonelink.relayURL") private var relayURL = ""
 
     var body: some View {
         Form {
             Section {
                 Toggle("Let my phone reach these tabs", isOn: $phone.isEnabled)
+                TextField("Relay URL", text: $relayURL, prompt: Text("wss://your-relay.example.com"))
+                    .textContentType(.URL)
                 SecureField("Relay token", text: $relayToken)
                 LabeledContent("Status") {
                     Text(statusText)
@@ -356,7 +359,7 @@ private struct PhoneSettingsTab: View {
             } header: {
                 Text("Phone access")
             } footer: {
-                Text("ManyAgents dials out to the relay, so there's no port to open and it works from cellular. The relay only forwards sealed envelopes — the pairing key below never leaves this Mac and your phone, and transcripts are encrypted end to end.")
+                Text("ManyAgents dials out to the relay, so there's no port to open and it works from cellular. The relay only forwards sealed envelopes — the pairing key below never leaves this Mac and your phone, and transcripts are encrypted end to end. Run your own: see relay/ in the ManyAgents repo, deployable to any host that speaks websockets.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }

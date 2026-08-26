@@ -1,0 +1,11 @@
+{
+  "name": "manyagents-relay",
+  "version": "1.0.0",
+  "private": false,
+  "type": "module",
+  "description": "Websocket relay pairing the ManyAgents Mac app with its iOS companion",
+  "main": "relay.js",
+  "scripts": { "start": "node relay.js" },
+  "dependencies": { "ws": "^8.18.0" },
+  "engines": { "node": ">=18" }
+}
