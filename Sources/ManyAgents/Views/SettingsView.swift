@@ -435,9 +435,12 @@ private struct QRCodeView: View {
         filter.setValue(Data(text.utf8), forKey: "inputMessage")
         filter.setValue("M", forKey: "inputCorrectionLevel")
         guard let ci = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)) else { return nil }
-        let rep = NSCIImageRep(ciImage: ci)
-        let img = NSImage(size: rep.size)
-        img.addRepresentation(rep)
-        return img
+        // Rasterise NOW rather than handing SwiftUI an NSCIImageRep. That
+        // rep keeps the CIImage lazy and re-runs the filter on every draw,
+        // so caching the NSImage changed nothing — the code still visibly
+        // re-rendered whenever anything on the pane updated.
+        let context = CIContext(options: [.useSoftwareRenderer: true])
+        guard let cg = context.createCGImage(ci, from: ci.extent) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
 }
