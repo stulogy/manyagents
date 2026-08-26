@@ -38,11 +38,23 @@ final class MacLink: ObservableObject {
     struct Tab: Identifiable, Equatable {
         let id: String
         var title: String
+        /// The repo this tab works in — the grouping unit, matching the Mac.
         var project: String
+        var repo: String
+        /// The workspace the repo sits in — `~/Sites/uhp` for a repo cloned
+        /// at `~/Sites/uhp/dev/UHP-OPS-Agent`. Equal to `repo` for a repo
+        /// that isn't nested in one.
+        var workspace: String
+        var workspaceName: String
+        /// Which checkout of that repo: a worktree's own name with the repo
+        /// prefix trimmed, empty when the tab is in the repo itself.
+        var checkout: String
         var cwd: String
         var status: String
         var blocked: String?          // "permission" | "question" | nil
         var permissionTool: String?
+
+        var isWorktree: Bool { !checkout.isEmpty }
 
         var isBusy: Bool { status == "running" }
         /// Only a permission prompt or an unanswered question actually
@@ -352,6 +364,10 @@ final class MacLink: ObservableObject {
             Tab(id: r["id"] as? String ?? "",
                 title: r["title"] as? String ?? "Untitled",
                 project: r["project"] as? String ?? "",
+                repo: r["repo"] as? String ?? "",
+                workspace: r["workspace"] as? String ?? "",
+                workspaceName: r["workspaceName"] as? String ?? "",
+                checkout: r["checkout"] as? String ?? "",
                 cwd: r["cwd"] as? String ?? "",
                 status: r["status"] as? String ?? "idle",
                 blocked: r["blocked"] as? String,

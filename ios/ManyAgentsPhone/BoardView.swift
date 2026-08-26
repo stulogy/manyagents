@@ -20,20 +20,53 @@ struct BoardView: View {
         }
     }
 
-    /// Everything else, bucketed by project and ordered by the project's
-    /// liveliness so the thing you're working on is near the top.
-    private var projects: [(name: String, tabs: [MacLink.Tab])] {
+    /// The Mac's two-level sidebar: workspaces on top carrying the repos
+    /// cloned inside them, each repo carrying its worktrees. `~/Sites/uhp`
+    /// is one row with three repos under it, not four unrelated projects.
+    struct Group: Identifiable {
+        let id: String            // workspace or repo path
+        let name: String
+        var directTabs: [MacLink.Tab] = []          // tabs in the top repo itself
+        var repos: [(name: String, tabs: [MacLink.Tab])] = []
+        var count: Int { directTabs.count + repos.reduce(0) { $0 + $1.tabs.count } }
+        var busy: Bool {
+            directTabs.contains(where: \.isBusy) || repos.contains { $0.tabs.contains(where: \.isBusy) }
+        }
+    }
+
+    private var groups: [Group] {
         let rest = link.board.filter { !$0.needsYou }
-        let grouped = Dictionary(grouping: rest, by: { $0.project })
-        return grouped
-            .map { (name: $0.key, tabs: $0.value.sorted { $0.title < $1.title }) }
-            .sorted { a, b in
-                let aBusy = a.tabs.contains { $0.isBusy }
-                let bBusy = b.tabs.contains { $0.isBusy }
-                if aBusy != bBusy { return aBusy }
-                if a.tabs.count != b.tabs.count { return a.tabs.count > b.tabs.count }
-                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        // A repo nests under its workspace only when that workspace has tabs
+        // of its own — otherwise it stands on its own, same rule as the Mac.
+        let reposWithTabs = Set(rest.map(\.repo))
+        func topKey(_ t: MacLink.Tab) -> String {
+            (!t.workspace.isEmpty && t.workspace != t.repo && reposWithTabs.contains(t.workspace))
+                ? t.workspace : t.repo
+        }
+
+        var built: [String: Group] = [:]
+        var order: [String] = []
+        for tab in rest {
+            let key = topKey(tab)
+            if built[key] == nil {
+                let name = key == tab.repo ? tab.project : tab.workspaceName
+                built[key] = Group(id: key, name: name.isEmpty ? tab.project : name)
+                order.append(key)
             }
+            if tab.repo == key {
+                built[key]?.directTabs.append(tab)
+            } else {
+                if let i = built[key]?.repos.firstIndex(where: { $0.name == tab.project }) {
+                    built[key]?.repos[i].tabs.append(tab)
+                } else {
+                    built[key]?.repos.append((name: tab.project, tabs: [tab]))
+                }
+            }
+        }
+        return order.compactMap { built[$0] }.sorted { a, b in
+            if a.busy != b.busy { return a.busy }
+            return a.count > b.count
+        }
     }
 
     var body: some View {
@@ -50,8 +83,8 @@ struct BoardView: View {
                                     ForEach(needsYou) { tab in row(tab, highlighted: true) }
                                 }
                             }
-                            ForEach(projects, id: \.name) { project in
-                                projectSection(project)
+                            ForEach(groups) { group in
+                                groupSection(group)
                             }
                         }
                         .padding(.horizontal, 14)
@@ -64,8 +97,9 @@ struct BoardView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Theme.canvas, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { ConnectionChip(connection: link.connection,
-                                                                       mac: link.pairing?.mac) }
+                ToolbarItem(placement: .topBarLeading) {
+                    ConnectionDot(connection: link.connection)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showSettings = true } label: {
                         Image(systemName: "gearshape").foregroundStyle(Theme.dim)
@@ -90,35 +124,73 @@ struct BoardView: View {
     }
 
     @ViewBuilder
-    private func projectSection(_ project: (name: String, tabs: [MacLink.Tab])) -> some View {
-        let isCollapsed = collapsed.contains(project.name)
+    private func groupSection(_ group: Group) -> some View {
+        let isCollapsed = collapsed.contains(group.id)
         VStack(alignment: .leading, spacing: 8) {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) {
-                    if isCollapsed { collapsed.remove(project.name) } else { collapsed.insert(project.name) }
+                    if isCollapsed { collapsed.remove(group.id) } else { collapsed.insert(group.id) }
                 }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
                         .font(.system(size: 9, weight: .bold))
-                    Text(project.name.uppercased())
+                    Text(group.name.uppercased())
                         .font(.system(size: 10, weight: .semibold))
                         .tracking(1.1)
-                    Text("\(project.tabs.count)")
+                    Text("\(group.count)")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Theme.dim)
-                    if project.tabs.contains(where: { $0.isBusy }) {
+                        .foregroundStyle(Theme.dim.opacity(0.7))
+                    if group.busy {
                         Circle().fill(Theme.orange).frame(width: 5, height: 5)
                     }
                     Spacer()
                 }
                 .foregroundStyle(Theme.dim)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
             if !isCollapsed {
-                ForEach(project.tabs) { tab in row(tab, highlighted: false) }
+                ForEach(group.directTabs) { tab in tabRows(tab) }
+                ForEach(group.repos, id: \.name) { repo in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "shippingbox")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text(repo.name)
+                                .font(.system(size: 10.5, weight: .medium))
+                            Text("\(repo.tabs.count)")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.dim.opacity(0.6))
+                        }
+                        .foregroundStyle(Theme.dim)
+                        .padding(.leading, 12)
+                        ForEach(repo.tabs) { tab in
+                            tabRows(tab).padding(.leading, 12)
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    /// A tab row, prefixed with its checkout when it lives in a worktree.
+    @ViewBuilder
+    private func tabRows(_ tab: MacLink.Tab) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if tab.isWorktree {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 8, weight: .semibold))
+                    Text(tab.checkout)
+                        .font(.system(size: 9.5))
+                }
+                .foregroundStyle(Theme.dim.opacity(0.75))
+                .padding(.leading, 12)
+            }
+            row(tab, highlighted: false)
+                .padding(.leading, tab.isWorktree ? 12 : 0)
         }
     }
 
@@ -169,6 +241,50 @@ struct BoardView: View {
             .card(highlighted: highlighted)
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Just a dot. The old chip crammed the Mac's name into a circular
+/// toolbar slot and rendered as "St…", which said nothing and looked
+/// broken; the name lives in Settings, where there's room for it.
+struct ConnectionDot: View {
+    let connection: MacLink.Connection
+    @State private var pulse = false
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 9, height: 9)
+            .opacity(connecting && pulse ? 0.25 : 1)
+            .onAppear {
+                guard connecting else { return }
+                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            }
+            .accessibilityLabel(label)
+    }
+
+    private var connecting: Bool {
+        if case .connecting = connection { return true }
+        return false
+    }
+    private var color: Color {
+        switch connection {
+        case .connected:  return Color(red: 0.30, green: 0.78, blue: 0.45)
+        case .macOffline: return Theme.orange
+        case .failed:     return Theme.status("error")
+        default:          return Theme.dim
+        }
+    }
+    private var label: String {
+        switch connection {
+        case .connected:  return "Connected to your Mac"
+        case .macOffline: return "Mac offline"
+        case .connecting: return "Connecting"
+        case .failed:     return "Connection error"
+        case .idle:       return "Offline"
+        }
     }
 }
 

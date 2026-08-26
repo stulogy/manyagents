@@ -348,10 +348,25 @@ final class PhoneLink: NSObject, ObservableObject {
     private func boardPayload() -> [[String: Any]] {
         guard let mgr = manager else { return [] }
         return mgr.sessions.map { s in
+            // The board groups by REPO, not by raw cwd: a repo and six
+            // worktrees cut from it are one project with six checkouts, not
+            // seven projects. `checkout` is what distinguishes them, empty
+            // when the tab sits in the repo itself.
+            // Two levels, exactly as the Mac's sidebar builds them: a
+            // workspace (~/Sites/uhp) carries the repos cloned inside it
+            // (dev/UHP-OPS-Agent, uhp-student-app), and each repo carries
+            // its worktrees. Sending only the repo made ~/Sites/uhp read as
+            // four unrelated projects on the phone.
+            let repo = ProjectNaming.repoRoot(forCwd: s.cwd)
+            let workspace = ProjectNaming.projectRoot(forCwd: repo)
             var row: [String: Any] = [
                 "id": s.id.uuidString,
                 "title": s.aiTitle ?? s.displayName,
-                "project": ProjectNaming.name(forCwd: s.cwd),
+                "project": ProjectNaming.name(forCwd: repo),
+                "repo": repo,
+                "workspace": workspace,
+                "workspaceName": ProjectNaming.name(forCwd: workspace),
+                "checkout": ProjectNaming.checkoutLabel(forCwd: s.cwd),
                 "cwd": ProjectNaming.prettyCwd(s.cwd),
                 "status": statusString(s.status),
             ]
