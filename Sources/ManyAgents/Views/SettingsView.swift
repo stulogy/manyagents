@@ -393,7 +393,7 @@ private struct PhoneSettingsTab: View {
         case .off:             return "Off"
         case .connecting:      return "Connecting to the relay…"
         case .waitingForPhone: return "Connected — waiting for your phone"
-        case .paired:          return "Phone connected"
+        case .paired:          return phone.connectedDevice.map { "Connected: \($0)" } ?? "A client is connected"
         case .failed(let why): return why
         }
     }

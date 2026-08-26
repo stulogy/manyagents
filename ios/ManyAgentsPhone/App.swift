@@ -14,7 +14,7 @@ struct ManyAgentsPhoneApp: App {
                 .onOpenURL { url in
                     if let p = MacLink.Pairing.parse(url.absoluteString) { link.pairing = p }
                 }
-                .tint(.brandOrange)
+                .tint(Theme.orange)
                 .preferredColorScheme(.dark)
         }
     }
@@ -28,20 +28,6 @@ struct RootView: View {
             PairView()
         } else {
             BoardView()
-        }
-    }
-}
-
-extension Color {
-    /// Same orange the Mac app uses, so the two read as one product.
-    static let brandOrange = Color(red: 0.85, green: 0.40, blue: 0.20)
-
-    static func status(_ s: String) -> Color {
-        switch s {
-        case "running": return .brandOrange
-        case "waiting": return .blue
-        case "error":   return .red
-        default:        return .secondary
         }
     }
 }

@@ -33,7 +33,7 @@ struct PairView: View {
                     link.pairing = p
                 }
                 RoundedRectangle(cornerRadius: 20)
-                    .strokeBorder(Color.brandOrange.opacity(0.9), lineWidth: 3)
+                    .strokeBorder(Theme.orange.opacity(0.9), lineWidth: 3)
                     .padding(28)
                     .allowsHitTesting(false)
             }

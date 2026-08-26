@@ -40,6 +40,9 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSCameraUsageDescription: "Scanning the pairing code shown in ManyAgents on your Mac."
+        NSMicrophoneUsageDescription: "Talking to your agents hands-free."
+        NSSpeechRecognitionUsageDescription: "Turning what you say into a message for your agents. Recognition runs on this iPhone."
+        UIBackgroundModes: [audio]
         CFBundleDisplayName: ManyAgents
     settings:
       base:

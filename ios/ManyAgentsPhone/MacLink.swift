@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import Combine
+import UIKit
 
 /// The phone half of the link. Mirrors `PhoneLink.swift` on the Mac: same
 /// relay, same room, same AES-GCM envelope. Everything it shows comes
@@ -44,13 +45,28 @@ final class MacLink: ObservableObject {
         var permissionTool: String?
 
         var isBusy: Bool { status == "running" }
-        var needsYou: Bool { blocked != nil || status == "waiting" }
+        /// Only a permission prompt or an unanswered question actually
+        /// wants you. "waiting" is just what a tab looks like after it
+        /// finishes a turn — treating that as needing attention put every
+        /// tab in the urgent pile, which is the same as having no pile.
+        var needsYou: Bool { blocked != nil }
     }
 
     struct Msg: Identifiable, Equatable {
         let id = UUID()
         let role: String
         let text: String
+        var blocks: [Block] = []
+    }
+
+    /// Mirrors what the Mac sends: prose, a tool call reduced to one line,
+    /// or a tool failure. Successful tool output never crosses — the agent
+    /// already said what it found.
+    enum Block: Equatable {
+        case text(String)
+        case tool(name: String, detail: String)
+        case toolError(String)
+        case image
     }
 
     enum Connection: Equatable {
@@ -165,6 +181,7 @@ final class MacLink: ObservableObject {
         switch t {
         case "hello":
             connection = .connected
+            identify()
             refreshBoard()
         case "peer":
             if obj["role"] as? String == "mac" {
@@ -238,6 +255,18 @@ final class MacLink: ObservableObject {
         return (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any]
     }
 
+    /// Tell the Mac what it's talking to, so its Settings can say
+    /// "Connected: StooPhone" instead of the ambiguous "Phone connected"
+    /// — which is equally true of a simulator running on that same Mac.
+    private func identify() {
+        #if targetEnvironment(simulator)
+        let name = UIDevice.current.name + " (Simulator)"
+        #else
+        let name = UIDevice.current.name
+        #endif
+        request("identify", ["device": name])
+    }
+
     func refreshBoard() {
         request("board") { [weak self] reply in
             guard let self, reply["ok"] as? Bool == true else { return }
@@ -262,7 +291,7 @@ final class MacLink: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         // Show it immediately; the Mac's next push replaces the list.
-        messages[tab, default: []].append(Msg(role: "user", text: trimmed))
+        messages[tab, default: []].append(Msg(role: "user", text: trimmed, blocks: [.text(trimmed)]))
         sending = true
         request("send", ["tab": tab, "text": trimmed]) { [weak self] _ in
             self?.sending = false
@@ -292,8 +321,20 @@ final class MacLink: ObservableObject {
     }
 
     private static func decodeMessages(_ raw: Any?) -> [Msg] {
-        (raw as? [[String: Any]] ?? []).map {
-            Msg(role: $0["role"] as? String ?? "assistant", text: $0["text"] as? String ?? "")
+        (raw as? [[String: Any]] ?? []).map { row in
+            let blocks: [Block] = (row["blocks"] as? [[String: Any]] ?? []).compactMap { b in
+                switch b["k"] as? String {
+                case "text":      return .text(b["t"] as? String ?? "")
+                case "tool":      return .tool(name: b["name"] as? String ?? "tool",
+                                               detail: b["detail"] as? String ?? "")
+                case "toolError": return .toolError(b["t"] as? String ?? "")
+                case "image":     return .image
+                default:          return nil
+                }
+            }
+            return Msg(role: row["role"] as? String ?? "assistant",
+                       text: row["text"] as? String ?? "",
+                       blocks: blocks)
         }
     }
 }

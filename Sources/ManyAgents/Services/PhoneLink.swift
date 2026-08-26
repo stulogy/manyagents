@@ -39,6 +39,10 @@ final class PhoneLink: NSObject, ObservableObject {
 
     @Published private(set) var state: State = .off
     @Published private(set) var lastActivity: Date?
+    /// What the connected client calls itself. Without this, "Phone
+    /// connected" is true of a simulator on this very Mac, which reads as
+    /// though a phone you're holding is on the board when it isn't.
+    @Published private(set) var connectedDevice: String?
     @Published var isEnabled: Bool {
         didSet {
             guard isEnabled != oldValue else { return }
@@ -220,8 +224,9 @@ final class PhoneLink: NSObject, ObservableObject {
             state = .waitingForPhone
         case "peer":
             if obj["role"] as? String == "phone" {
-                state = (obj["present"] as? Bool == true) ? .paired : .waitingForPhone
-                if state == .paired { pushBoardIfPaired() }
+                let present = obj["present"] as? Bool == true
+                state = present ? .paired : .waitingForPhone
+                if present { pushBoardIfPaired() } else { connectedDevice = nil }
             }
         case "env":
             guard let sealed = obj["data"] as? String,
@@ -273,6 +278,10 @@ final class PhoneLink: NSObject, ObservableObject {
         }
 
         switch op {
+        case "identify":
+            connectedDevice = (req["device"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            reply(["ok": true])
+
         case "board":
             reply(["ok": true, "board": boardPayload()])
 
@@ -345,16 +354,65 @@ final class PhoneLink: NSObject, ObservableObject {
         }
     }
 
+    /// Typed blocks rather than one flattened string. A transcript is
+    /// mostly prose with tool activity threaded through it; flattening
+    /// turns a Bash call into a paragraph of shell output the phone then
+    /// has to render as if the agent had said it.
     private func messagePayload(_ s: AgentSession, limit: Int) -> [[String: Any]] {
-        s.messages.suffix(limit).map { m in
+        s.messages.suffix(limit).compactMap { m -> [String: Any]? in
             let role: String
             switch m.role {
             case .assistant: role = "assistant"
             case .user:      role = "user"
             case .system:    role = "system"
             }
-            return ["role": role, "text": m.flatText]
+
+            var blocks: [[String: Any]] = []
+            for block in m.blocks {
+                switch block {
+                case .text(_, let t):
+                    let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty { blocks.append(["k": "text", "t": trimmed]) }
+                case .toolUse(_, _, let name, let input, _):
+                    blocks.append(["k": "tool", "name": name, "detail": Self.toolDetail(name: name, input: input)])
+                case .toolResult(_, _, let content, let isError, _):
+                    // Only failures are worth a phone's screen; a successful
+                    // tool result is noise the agent already summarised.
+                    if isError {
+                        blocks.append(["k": "toolError", "t": String(content.prefix(400))])
+                    }
+                case .image:
+                    blocks.append(["k": "image"])
+                case .thinking:
+                    break   // never leaves the Mac
+                }
+            }
+            if blocks.isEmpty { return nil }
+            return ["role": role, "blocks": blocks, "text": m.flatText]
         }
+    }
+
+    /// One line describing what a tool call is doing — the command, the
+    /// path, the pattern. Enough to follow along without the payload.
+    private static func toolDetail(name: String, input: [String: AnyCodable]) -> String {
+        func str(_ key: String) -> String? {
+            guard let v = input[key]?.value as? String else { return nil }
+            return v.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let raw: String?
+        switch name {
+        case "Bash":                 raw = str("command")
+        case "Read", "Write":        raw = str("file_path")
+        case "Edit":                 raw = str("file_path")
+        case "Grep":                 raw = str("pattern")
+        case "Glob":                 raw = str("pattern")
+        case "WebFetch":             raw = str("url")
+        case "Task", "Agent":        raw = str("description")
+        default:                     raw = str("description") ?? str("path") ?? str("file_path")
+        }
+        guard let raw, !raw.isEmpty else { return "" }
+        let oneLine = raw.replacingOccurrences(of: "\n", with: " ")
+        return oneLine.count > 90 ? String(oneLine.prefix(90)) + "…" : oneLine
     }
 
     private func statusString(_ s: AgentStatus) -> String {
