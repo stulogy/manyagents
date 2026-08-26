@@ -31,14 +31,18 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: ManyAgentsPhone
+    info:
+      path: ManyAgentsPhone/Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: co.ailogy.manyagents.phone
+            CFBundleURLSchemes: [manyagents]
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSCameraUsageDescription: "Scanning the pairing code shown in ManyAgents on your Mac."
+        CFBundleDisplayName: ManyAgents
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: co.ailogy.manyagents.phone
         PRODUCT_NAME: ManyAgents
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_CFBundleDisplayName: ManyAgents
-        # Pairing is a QR scan, which needs the camera and nothing else.
-        INFOPLIST_KEY_NSCameraUsageDescription: "Scanning the pairing code shown in ManyAgents on your Mac."
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
         TARGETED_DEVICE_FAMILY: "1,2"
