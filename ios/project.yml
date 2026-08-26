@@ -48,4 +48,5 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: co.ailogy.manyagents.phone
         PRODUCT_NAME: ManyAgents
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"

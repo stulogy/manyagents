@@ -38,7 +38,10 @@ final class PhoneLink: NSObject, ObservableObject {
     }
 
     @Published private(set) var state: State = .off
-    @Published private(set) var lastActivity: Date?
+    /// Deliberately NOT @Published: this ticks on every frame the phone
+    /// sends, and publishing it redrew the Settings pane — and with it the
+    /// QR code — many times a second.
+    private(set) var lastActivity: Date?
     /// What the connected client calls itself. Without this, "Phone
     /// connected" is true of a simulator on this very Mac, which reads as
     /// though a phone you're holding is on the board when it isn't.
@@ -359,7 +362,13 @@ final class PhoneLink: NSObject, ObservableObject {
     /// turns a Bash call into a paragraph of shell output the phone then
     /// has to render as if the agent had said it.
     private func messagePayload(_ s: AgentSession, limit: Int) -> [[String: Any]] {
-        s.messages.suffix(limit).compactMap { m -> [String: Any]? in
+        // Absolute index travels with each message. Without a stable id the
+        // phone can't tell a re-sent tail from new messages, and merging a
+        // 12-message push into an 80-message transcript duplicates the tail
+        // on every push.
+        let start = max(0, s.messages.count - limit)
+        return s.messages.enumerated().dropFirst(start).compactMap { pair -> [String: Any]? in
+            let (index, m) = pair
             let role: String
             switch m.role {
             case .assistant: role = "assistant"
@@ -388,7 +397,7 @@ final class PhoneLink: NSObject, ObservableObject {
                 }
             }
             if blocks.isEmpty { return nil }
-            return ["role": role, "blocks": blocks, "text": m.flatText]
+            return ["seq": index, "role": role, "blocks": blocks, "text": m.flatText]
         }
     }
 

@@ -199,7 +199,7 @@ struct ConnectionChip: View {
         switch connection {
         case .idle:       return "offline"
         case .connecting: return "connecting"
-        case .connected:  return mac ?? "connected"
+        case .connected:  return mac ?? "connected to your Mac"
         case .macOffline: return "Mac asleep"
         case .failed:     return "error"
         }
@@ -272,6 +272,7 @@ struct StatusDot: View {
 struct SettingsView: View {
     @EnvironmentObject var link: MacLink
     @Environment(\.dismiss) private var dismiss
+    @State private var justTapped = false
 
     var body: some View {
         NavigationStack {
@@ -279,9 +280,35 @@ struct SettingsView: View {
                 Section("Paired Mac") {
                     LabeledContent("Mac", value: link.pairing?.mac ?? "—")
                     LabeledContent("Room", value: link.pairing?.room ?? "—")
+                    // Reconnect used to give no sign it had done anything.
+                    // Showing live state here means the button has visible
+                    // consequences: connecting → connected, or the reason
+                    // it can't.
+                    LabeledContent("Connection") {
+                        HStack(spacing: 6) {
+                            ConnectionChip(connection: link.connection, mac: nil)
+                            if case .connecting = link.connection {
+                                ProgressView().controlSize(.mini)
+                            }
+                        }
+                    }
                 }
                 Section {
-                    Button("Reconnect") { link.reconnect() }
+                    Button {
+                        justTapped = true
+                        link.reconnect()
+                        Task {
+                            try? await Task.sleep(for: .seconds(2))
+                            justTapped = false
+                        }
+                    } label: {
+                        HStack {
+                            Text(justTapped ? "Reconnecting…" : "Reconnect")
+                            Spacer()
+                            if justTapped { ProgressView().controlSize(.mini) }
+                        }
+                    }
+                    .disabled(justTapped)
                     Button("Unpair this phone", role: .destructive) {
                         link.unpair()
                         dismiss()

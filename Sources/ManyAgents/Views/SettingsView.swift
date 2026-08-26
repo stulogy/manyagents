@@ -411,16 +411,23 @@ private struct PhoneSettingsTab: View {
 /// CoreImage so there's no dependency to add for one image.
 private struct QRCodeView: View {
     let text: String
+    /// Rendered once per distinct payload. Regenerating it inside `body`
+    /// meant a fresh CIFilter render on every redraw, which looked like
+    /// the pairing code was reissuing itself every second.
+    @State private var image: NSImage?
 
     var body: some View {
-        if let image = qr() {
-            Image(nsImage: image)
-                .interpolation(.none)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-        } else {
-            RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.08))
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .interpolation(.none)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.08))
+            }
         }
+        .task(id: text) { image = qr() }
     }
 
     private func qr() -> NSImage? {

@@ -53,10 +53,17 @@ final class MacLink: ObservableObject {
     }
 
     struct Msg: Identifiable, Equatable {
-        let id = UUID()
+        /// The message's index in the tab's own transcript. Identity has to
+        /// come from the Mac: a locally-generated UUID differs on every
+        /// decode, which made every re-sent tail look like new messages.
+        let seq: Int
         let role: String
         let text: String
         var blocks: [Block] = []
+
+        var id: Int { seq }
+        /// Negative sequences are local echoes not yet confirmed by the Mac.
+        var isPending: Bool { seq < 0 }
     }
 
     /// Mirrors what the Mac sends: prose, a tool call reduced to one line,
@@ -209,20 +216,30 @@ final class MacLink: ObservableObject {
             board = Self.decodeBoard(payload["board"])
         case "messages":
             if let tab = payload["tab"] as? String {
-                let incoming = Self.decodeMessages(payload["messages"])
-                // Pushes carry only the tail; keep whatever is longer so
-                // scrollback isn't truncated by a live update.
-                if incoming.count >= (messages[tab]?.count ?? 0) {
-                    messages[tab] = incoming
-                } else if let existing = messages[tab],
-                          let last = incoming.last,
-                          existing.last != last {
-                    messages[tab] = existing + [last]
-                }
+                merge(Self.decodeMessages(payload["messages"]), into: tab)
             }
         default:
             break
         }
+    }
+
+    /// Fold a tail into what we already hold, keyed by sequence, so a
+    /// push overwrites the messages it covers and leaves earlier
+    /// scrollback alone. Local echoes drop out once the Mac confirms
+    /// anything newer.
+    private func merge(_ incoming: [Msg], into tab: String) {
+        guard !incoming.isEmpty else { return }
+        var bySeq: [Int: Msg] = [:]
+        for m in messages[tab] ?? [] where !m.isPending { bySeq[m.seq] = m }
+        for m in incoming { bySeq[m.seq] = m }
+        var merged = bySeq.values.sorted { $0.seq < $1.seq }
+        // Keep an unconfirmed echo only while nothing newer has arrived.
+        if let pending = (messages[tab] ?? []).last(where: { $0.isPending }),
+           let highest = incoming.last,
+           highest.role != "user" || highest.text != pending.text {
+            merged.append(pending)
+        }
+        messages[tab] = merged
     }
 
     // MARK: - Requests
@@ -282,6 +299,12 @@ final class MacLink: ObservableObject {
         }
     }
 
+    /// Next sequence for a local echo: below everything real, so it sorts
+    /// to the end and is obviously not a confirmed message.
+    private func pendingSeq(for tab: String) -> Int {
+        ((messages[tab] ?? []).map(\.seq).max() ?? 0) + 1_000_000
+    }
+
     func closeTab(_ id: String) {
         if watchedTab == id { watchedTab = nil }
         request("unwatch", ["tab": id])
@@ -291,7 +314,8 @@ final class MacLink: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         // Show it immediately; the Mac's next push replaces the list.
-        messages[tab, default: []].append(Msg(role: "user", text: trimmed, blocks: [.text(trimmed)]))
+        messages[tab, default: []].append(
+            Msg(seq: -pendingSeq(for: tab), role: "user", text: trimmed, blocks: [.text(trimmed)]))
         sending = true
         request("send", ["tab": tab, "text": trimmed]) { [weak self] _ in
             self?.sending = false
@@ -332,7 +356,8 @@ final class MacLink: ObservableObject {
                 default:          return nil
                 }
             }
-            return Msg(role: row["role"] as? String ?? "assistant",
+            return Msg(seq: row["seq"] as? Int ?? 0,
+                       role: row["role"] as? String ?? "assistant",
                        text: row["text"] as? String ?? "",
                        blocks: blocks)
         }

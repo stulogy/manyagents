@@ -13,7 +13,7 @@ struct DriveModeView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var handsFree = true
-    @State private var lastSpokenId: UUID?
+    @State private var lastSpokenSeq: Int?
     @State private var awaitingReply = false
 
     private var tab: MacLink.Tab? { link.board.first { $0.id == tabId } }
@@ -78,9 +78,9 @@ struct DriveModeView: View {
             awaitingReply = true
         }
         // A new assistant message arrived → read it, then listen again.
-        .onChange(of: lastAssistant?.id) { _, _ in
-            guard let msg = lastAssistant, msg.id != lastSpokenId else { return }
-            lastSpokenId = msg.id
+        .onChange(of: lastAssistant?.seq) { _, _ in
+            guard let msg = lastAssistant, msg.seq != lastSpokenSeq else { return }
+            lastSpokenSeq = msg.seq
             guard awaitingReply else { return }
             awaitingReply = false
             voice.speak(msg.text)
