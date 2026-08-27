@@ -64,6 +64,8 @@ struct TabChatView: View {
         }
         .fullScreenCover(isPresented: $driveMode) {
             DriveModeView(tabId: tabId)
+                .environmentObject(link)
+                .environmentObject(Voice.shared)
         }
         .onAppear { link.openTab(tabId) }
         .onDisappear { link.closeTab(tabId) }

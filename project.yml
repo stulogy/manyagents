@@ -17,7 +17,7 @@ settings:
     # local build is labelled too. Scripts/release.sh overrides it with
     # the version being released — before this, the flag it passed went
     # nowhere and the bundle kept whatever was hardcoded in the plist.
-    MARKETING_VERSION: "0.13.9"
+    MARKETING_VERSION: "0.13.10"
 
 packages:
   Sparkle:

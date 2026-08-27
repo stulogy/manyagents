@@ -103,6 +103,41 @@ final class MacLink: ObservableObject {
     /// The tab hands-free mode talks to. See `askForCompanion`.
     @Published private(set) var companionTab: String?
     @Published private(set) var companionError: String?
+    /// Which project's board the companion covers. Remembered, because a
+    /// companion that silently followed whatever the Mac was focused on
+    /// meant you could never be sure whose board you were asking about.
+    @Published private(set) var companionScope: String? {
+        didSet { UserDefaults.standard.set(companionScope, forKey: "companionScope") }
+    }
+
+    /// Every tab wearing the orchestrator hat, one per board it covers.
+    /// With two of these on the Mac, "talk to ManyAgents" is a question,
+    /// not an instruction — so the user picks, and the pick sticks.
+    var orchestrators: [Tab] { board.filter(\.isOrchestrator) }
+
+    /// The project a given orchestrator answers for.
+    func scope(of tab: Tab) -> String {
+        tab.workspace.isEmpty ? tab.repo : tab.workspace
+    }
+
+    func scopeName(of tab: Tab) -> String {
+        let name = tab.workspace.isEmpty || tab.workspace == tab.repo
+            ? tab.project : tab.workspaceName
+        return name.isEmpty ? tab.project : name
+    }
+
+    /// How many tabs that orchestrator can actually see — the number that
+    /// makes "sees every tab" a claim you can check.
+    func tabCount(inScopeOf tab: Tab) -> Int {
+        let scope = scope(of: tab)
+        return board.filter { ($0.workspace.isEmpty ? $0.repo : $0.workspace) == scope }.count
+    }
+
+    func chooseCompanion(_ tab: Tab) {
+        companionTab = tab.id
+        companionScope = scope(of: tab)
+        companionError = nil
+    }
     @Published var pairing: Pairing? {
         didSet {
             guard pairing != oldValue else { return }
@@ -119,6 +154,7 @@ final class MacLink: ObservableObject {
     private var watchedTab: String?
 
     init() {
+        companionScope = UserDefaults.standard.string(forKey: "companionScope")
         if let raw = UserDefaults.standard.data(forKey: "pairing"),
            let p = try? JSONDecoder().decode(Pairing.self, from: raw) {
             pairing = p
@@ -336,18 +372,26 @@ final class MacLink: ObservableObject {
     ///
     /// `create` lets it appoint one when nothing is wearing the hat, which
     /// beats failing at a set of traffic lights.
-    func askForCompanion(create: Bool = false, then: ((String?) -> Void)? = nil) {
-        // Trust a live board over a round trip when it already says.
-        if let known = board.first(where: { $0.isOrchestrator })?.id {
-            companionTab = known
-            companionError = nil
-            then?(known)
+    func askForCompanion(scope: String? = nil, create: Bool = false,
+                         then: ((String?) -> Void)? = nil) {
+        let wanted = scope ?? companionScope
+        // Trust a live board over a round trip when it already answers.
+        // Prefer the remembered project; with only one orchestrator there
+        // is nothing to choose between.
+        let candidates = orchestrators
+        if let match = candidates.first(where: { self.scope(of: $0) == wanted }) ?? (
+            wanted == nil ? candidates.first : nil) {
+            chooseCompanion(match)
+            then?(match.id)
             return
         }
-        let asked = request("companion", ["create": create]) { [weak self] reply in
+        var body: [String: Any] = ["create": create]
+        if let wanted { body["scope"] = wanted }
+        let asked = request("companion", body) { [weak self] reply in
             guard let self else { return }
             if reply["ok"] as? Bool == true, let tab = reply["tab"] as? String {
                 self.companionTab = tab
+                self.companionScope = wanted
                 self.companionError = nil
                 if reply["created"] as? Bool == true { self.refreshBoard() }
                 then?(tab)

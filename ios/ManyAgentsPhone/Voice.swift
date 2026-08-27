@@ -18,6 +18,15 @@ import os
 @MainActor
 final class Voice: NSObject, ObservableObject {
 
+    /// One instance for the app, not one per screen.
+    ///
+    /// Owned by a view, speech died the moment you left the screen that
+    /// started it — you'd tap back to the board to see what it was talking
+    /// about and it went quiet mid-sentence. Audio outlives views: it
+    /// stops when you stop it, when it finishes, or when something else
+    /// starts talking.
+    static let shared = Voice()
+
     @Published private(set) var isListening = false
     @Published private(set) var isSpeaking = false
     @Published private(set) var heard = ""
@@ -121,11 +130,34 @@ final class Voice: NSObject, ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
+    /// Leaving the hands-free screen: stop listening — a hot microphone
+    /// you can't see is not something to leave running — but let the
+    /// current reply finish. The session is released once it does, so the
+    /// app isn't holding audio open for nothing.
+    func leaveHandsFree() {
+        cancelListening()
+        guard isSpeaking || isBuffering else {
+            endHandsFree()
+            return
+        }
+        releaseWhenQuiet = true
+    }
+
+    private var releaseWhenQuiet = false
+
+    /// Called wherever speech ends, from either voice.
+    fileprivate func settled() {
+        guard releaseWhenQuiet, !isSpeaking, !isBuffering else { return }
+        releaseWhenQuiet = false
+        endHandsFree()
+    }
+
     /// Done talking, whichever voice did it: drop the duck so the car's
     /// own audio comes back while the agent thinks.
     fileprivate func finishedSpeaking() {
         isSpeaking = false
         if keepAlive != nil { try? configureSession(.idle) }
+        settled()
     }
 
     /// Half a second of 44.1 kHz mono silence, built rather than bundled so
@@ -256,7 +288,7 @@ final class Voice: NSObject, ObservableObject {
                      onAudioStart: { [weak self] in self?.isBuffering = false },
                      onFinish: { [weak self] in
                          self?.isBuffering = false
-                         self?.isSpeaking = false
+                         self?.finishedSpeaking()
                      },
                      onFailure: { [weak self] remaining, error in
                          guard let self else { return }
@@ -315,6 +347,7 @@ final class Voice: NSObject, ObservableObject {
         eleven.stop()
         if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
         isSpeaking = false
+        settled()
         // Un-duck: whatever the car was playing comes back between turns
         // rather than staying quiet for the whole drive.
         if keepAlive != nil { try? configureSession(.idle) }

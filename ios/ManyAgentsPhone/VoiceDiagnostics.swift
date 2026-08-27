@@ -10,7 +10,6 @@ import os
 enum VoiceDiagnostics {
     private static let log = Logger(subsystem: "co.ailogy.manyagents.phone",
                                     category: "voice")
-    private static var voice: Voice?
 
     /// `manyagents://voicetest?key=…&voice=…&text=…` — every part
     /// optional, so it can test what's already configured or a candidate
@@ -34,8 +33,7 @@ enum VoiceDiagnostics {
             hasKey=\(s.hasKey) source=\(s.keySource.rawValue, privacy: .public) \
             keyChars=\(s.apiKey.count) voice=\(s.voiceID, privacy: .public)
             """)
-        let v = Voice()
-        voice = v          // held, or it deallocates mid-sentence
+        let v = Voice.shared
         Task {
             if let failure = await v.preview(say) {
                 log.error("diagnostics: FAILED — \(failure, privacy: .public)")

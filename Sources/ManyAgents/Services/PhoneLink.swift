@@ -344,11 +344,28 @@ final class PhoneLink: NSObject, ObservableObject {
             //
             // Prefer the orchestrator for whatever is active on the Mac, so
             // asking from the car matches what you'd see on the screen.
-            let existing = mgr.activeSession.flatMap { mgr.orchestrator(for: $0.cwd) }
-                ?? mgr.sessions.first { $0.isCoordinator && $0.boardScope == $0.projectRoot }
-                ?? mgr.sessions.first { $0.isCoordinator }
+            // A scope makes this unambiguous: "the orchestrator for
+            // ~/Sites/uhp", not "whichever one the Mac happens to be
+            // looking at". The phone sends one whenever the user picked a
+            // project; without one we fall back to the active tab's.
+            let scope = (req["scope"] as? String)?.trimmingCharacters(in: .whitespaces)
+            let existing: AgentSession?
+            if let scope, !scope.isEmpty {
+                existing = mgr.orchestrator(for: scope)
+            } else {
+                existing = mgr.activeSession.flatMap { mgr.orchestrator(for: $0.cwd) }
+                    ?? mgr.sessions.first { $0.isCoordinator && $0.boardScope == $0.projectRoot }
+                    ?? mgr.sessions.first { $0.isCoordinator }
+            }
             if let existing {
                 reply(["ok": true, "tab": existing.id.uuidString, "created": false])
+            } else if (req["create"] as? Bool) == true, let scope, !scope.isEmpty,
+                      // Appointing one for a named project: a tab in that
+                      // project, wearing the hat.
+                      FileManager.default.fileExists(atPath: scope) {
+                let session = mgr.spawn(cwd: scope)
+                mgr.designateOrchestrator(session)
+                reply(["ok": true, "tab": session.id.uuidString, "created": true])
             } else if (req["create"] as? Bool) == true,
                       // Last resort is the un-restored snapshot: after a
                       // Mac restart the board is empty until someone

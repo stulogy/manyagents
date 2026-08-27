@@ -13,6 +13,7 @@ struct BoardView: View {
     struct DriveTarget: Identifiable { let id: String }
     @State private var driveTab: DriveTarget?
     @State private var appointing = false
+    @State private var showCompanionPicker = false
 
     private var needsYou: [MacLink.Tab] {
         // Written out rather than as a tuple comparison: the tuple form
@@ -121,8 +122,18 @@ struct BoardView: View {
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showCompanionPicker) {
+                CompanionPicker { tab in
+                    link.chooseCompanion(tab)
+                    showCompanionPicker = false
+                }
+                .environmentObject(link)
+                .presentationDetents([.medium])
+            }
             .fullScreenCover(item: $driveTab) { target in
-                DriveModeView(tabId: target.id).environmentObject(link)
+                DriveModeView(tabId: target.id)
+                    .environmentObject(link)
+                    .environmentObject(Voice.shared)
             }
         }
         .tint(Theme.orange)
@@ -170,26 +181,73 @@ struct BoardView: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Theme.dim)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
+            .overlay(alignment: .trailing) { companionSwitcher.padding(.trailing, 8) }
             .card(highlighted: true)
         }
         .buttonStyle(.plain)
         .disabled(appointing)
     }
 
+    /// Names the board it's on. "Sees every tab" was a lie the moment a
+    /// second orchestrator existed: each one covers its own project, and
+    /// leaving that implicit meant you couldn't tell whose work you were
+    /// asking about.
     private var companionSubtitle: String {
         if appointing { return "Starting one on your Mac…" }
         if let error = link.companionError, link.companionTab == nil { return error }
         guard let id = link.companionTab,
               let tab = link.board.first(where: { $0.id == id })
-        else { return "Hands-free, across every tab" }
-        if tab.isBusy { return "\(tab.title) · working" }
-        return "\(tab.title) · sees every tab"
+        else { return "Hands-free, across a project's tabs" }
+        let count = link.tabCount(inScopeOf: tab)
+        let where_ = link.scopeName(of: tab)
+        if tab.isBusy { return "\(where_) · working" }
+        return "\(where_) · \(count) tab\(count == 1 ? "" : "s")"
+    }
+
+    /// Switching boards is a first-class action, not a hidden one — with
+    /// more than one orchestrator the top button is otherwise a coin toss
+    /// the user never sees being flipped.
+    @ViewBuilder
+    private var companionSwitcher: some View {
+        if link.orchestrators.count > 1 {
+            Button { showCompanionPicker = true } label: {
+                Image(systemName: "arrow.triangle.swap")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.orange)
+                    .padding(8)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Switch which project you're talking to")
+        } else {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.dim)
+        }
+    }
+
+    /// Talk to *this* project. One tap from the board, so the answer to
+    /// "which one is it referring to" is "the one you tapped".
+    @ViewBuilder
+    private func groupTalkButton(_ group: Group) -> some View {
+        Button {
+            appointing = true
+            link.askForCompanion(scope: group.id, create: true) { tab in
+                appointing = false
+                driveTab = tab.map(DriveTarget.init)
+            }
+        } label: {
+            Image(systemName: "waveform")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.orange.opacity(0.85))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Talk to \(group.name)")
     }
 
     @ViewBuilder
@@ -231,6 +289,7 @@ struct BoardView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .overlay(alignment: .trailing) { groupTalkButton(group) }
 
             if !isCollapsed {
                 ForEach(group.directTabs) { tab in tabRows(tab) }

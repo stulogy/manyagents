@@ -9,7 +9,7 @@ import SwiftUI
 struct DriveModeView: View {
     let tabId: String
     @EnvironmentObject var link: MacLink
-    @StateObject private var voice = Voice()
+    @EnvironmentObject private var voice: Voice
     @Environment(\.dismiss) private var dismiss
 
     @State private var handsFree = true
@@ -86,11 +86,9 @@ struct DriveModeView: View {
             // screen off, which is where a phone is in a car.
             voice.beginHandsFree()
         }
-        .onDisappear {
-            voice.cancelListening()
-            voice.stopSpeaking()
-            voice.endHandsFree()
-        }
+        // Deliberately NOT stopSpeaking(): closing this screen to look at
+        // the board shouldn't cut the answer off mid-sentence.
+        .onDisappear { voice.leaveHandsFree() }
         // Utterance finished → send it.
         .onChange(of: voice.finishedUtterance) { _, new in
             guard let text = new, !text.isEmpty else { return }

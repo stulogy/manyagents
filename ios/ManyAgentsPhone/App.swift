@@ -3,12 +3,14 @@ import SwiftUI
 @main
 struct ManyAgentsPhoneApp: App {
     @StateObject private var link = MacLink()
+    @StateObject private var voice = Voice.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(link)
+                .environmentObject(voice)
                 // A pairing link pairs the app on tap — handy on the phone
                 // (AirDrop the code to yourself) and the only way in on a
                 // simulator, which has no camera to scan with.

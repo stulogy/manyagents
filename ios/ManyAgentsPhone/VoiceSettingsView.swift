@@ -5,7 +5,7 @@ import SwiftUI
 struct VoiceSettingsView: View {
     @EnvironmentObject var link: MacLink
     @StateObject private var settings = VoiceSettings.shared
-    @StateObject private var voice = Voice()
+    @StateObject private var voice = Voice.shared
 
     @State private var typedKey = ""
     @State private var editingKey = false
