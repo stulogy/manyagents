@@ -44,6 +44,11 @@ targets:
         NSSpeechRecognitionUsageDescription: "Turning what you say into a message for your agents. Recognition runs on this iPhone."
         UIBackgroundModes: [audio]
         CFBundleDisplayName: ManyAgents
+        # Read from the build settings so a build can be identified on the
+        # device. Hardcoded as 1, every install looked identical and there
+        # was no way to answer "is the latest actually on my phone?".
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: co.ailogy.manyagents.phone

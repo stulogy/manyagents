@@ -419,27 +419,17 @@ enum MdBlock {
 
             // Bullet list.
             if let item = bulletItem(trimmed) {
-                var items: [String] = [item]
-                i += 1
-                while i < lines.count,
-                      let nxt = bulletItem(lines[i].trimmingCharacters(in: .whitespaces)) {
-                    items.append(nxt)
-                    i += 1
-                }
-                blocks.append(.bulletList(items))
+                let (items, next) = gatherList(lines, from: i, match: bulletItem)
+                blocks.append(.bulletList(items.isEmpty ? [item] : items))
+                i = next
                 continue
             }
 
             // Ordered list.
             if let item = orderedItem(trimmed) {
-                var items: [String] = [item]
-                i += 1
-                while i < lines.count,
-                      let nxt = orderedItem(lines[i].trimmingCharacters(in: .whitespaces)) {
-                    items.append(nxt)
-                    i += 1
-                }
-                blocks.append(.orderedList(items))
+                let (items, next) = gatherList(lines, from: i, match: orderedItem)
+                blocks.append(.orderedList(items.isEmpty ? [item] : items))
+                i = next
                 continue
             }
 
@@ -469,6 +459,53 @@ enum MdBlock {
             blocks.append(.paragraph(paraLines.joined(separator: "\n")))
         }
         return blocks
+    }
+
+    /// Collect one list, tolerating the way people actually write them.
+    ///
+    /// A blank line between items does NOT end the list — that's a "loose"
+    /// list, and treating it as a terminator made every item its own
+    /// single-item list, so an ordered list rendered as "1." over and over
+    /// instead of counting. An indented line after an item is that item's
+    /// continuation, not a new paragraph.
+    ///
+    /// Returns the items and the index of the first line after the list.
+    private static func gatherList(_ lines: [String], from start: Int,
+                                   match: (String) -> String?) -> ([String], Int) {
+        var items: [String] = []
+        var i = start
+        while i < lines.count {
+            let raw = lines[i]
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+
+            if let item = match(trimmed) {
+                items.append(item)
+                i += 1
+                continue
+            }
+
+            if trimmed.isEmpty {
+                // Only a terminator if no further item follows the gap.
+                var j = i + 1
+                while j < lines.count,
+                      lines[j].trimmingCharacters(in: .whitespaces).isEmpty { j += 1 }
+                if j < lines.count,
+                   match(lines[j].trimmingCharacters(in: .whitespaces)) != nil {
+                    i = j
+                    continue
+                }
+                break
+            }
+
+            // Indented text under an item belongs to it.
+            if !items.isEmpty, raw.hasPrefix("  ") || raw.hasPrefix("\t") {
+                items[items.count - 1] += "\n" + trimmed
+                i += 1
+                continue
+            }
+            break
+        }
+        return (items, i)
     }
 
     private static func bulletItem(_ s: String) -> String? {

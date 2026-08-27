@@ -21,6 +21,17 @@ struct Markdown: View {
                         .font(.system(size: level <= 1 ? 19 : (level == 2 ? 17 : 15),
                                       weight: .semibold))
                         .fixedSize(horizontal: false, vertical: true)
+                case .ordered(let items):
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
+                            HStack(alignment: .top, spacing: 7) {
+                                Text("\(idx + 1).")
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                                Text(inline(item)).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
                 case .bullet(let items):
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(items.enumerated()), id: \.offset) { _, item in
@@ -50,13 +61,29 @@ struct Markdown: View {
         case paragraph(String)
         case heading(Int, String)
         case bullet([String])
+        /// Rendered with a running count, not the digits in the source —
+        /// agents write "1." for every item as often as they number them.
+        case ordered([String])
         case code(String?, String)
+    }
+
+    /// "1. " / "12. " → the text after it.
+    static func orderedItem(_ s: String) -> String? {
+        var digits = 0
+        for c in s { if c.isNumber { digits += 1; if digits > 3 { return nil } } else { break } }
+        guard digits > 0 else { return nil }
+        let after = s.index(s.startIndex, offsetBy: digits)
+        guard after < s.endIndex, s[after] == ".",
+              s.index(after: after) < s.endIndex,
+              s[s.index(after: after)] == " " else { return nil }
+        return String(s[s.index(after, offsetBy: 2)...])
     }
 
     static func parse(_ raw: String) -> [Block] {
         var blocks: [Block] = []
         var paragraph: [String] = []
         var bullets: [String] = []
+        var ordered: [String] = []
         var codeLines: [String] = []
         var codeLang: String?
         var inCode = false
@@ -69,6 +96,9 @@ struct Markdown: View {
         func flushBullets() {
             if !bullets.isEmpty { blocks.append(.bullet(bullets)); bullets = [] }
         }
+        func flushOrdered() {
+            if !ordered.isEmpty { blocks.append(.ordered(ordered)); ordered = [] }
+        }
 
         for line in raw.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -78,7 +108,7 @@ struct Markdown: View {
                     blocks.append(.code(codeLang, codeLines.joined(separator: "\n")))
                     codeLines = []; codeLang = nil; inCode = false
                 } else {
-                    flushParagraph(); flushBullets()
+                    flushParagraph(); flushBullets(); flushOrdered()
                     let lang = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
                     codeLang = lang.isEmpty ? nil : lang
                     inCode = true
@@ -87,25 +117,36 @@ struct Markdown: View {
             }
             if inCode { codeLines.append(line); continue }
 
-            if trimmed.isEmpty { flushParagraph(); flushBullets(); continue }
+            if trimmed.isEmpty {
+                // A blank line inside a list is spacing, not a terminator:
+                // ending the list here restarted the numbering at 1 on
+                // every item.
+                flushParagraph()
+                continue
+            }
 
             if trimmed.hasPrefix("#") {
-                flushParagraph(); flushBullets()
+                flushParagraph(); flushBullets(); flushOrdered()
                 let hashes = trimmed.prefix { $0 == "#" }.count
                 blocks.append(.heading(hashes,
                     String(trimmed.dropFirst(hashes)).trimmingCharacters(in: .whitespaces)))
                 continue
             }
             if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
-                flushParagraph()
+                flushParagraph(); flushOrdered()
                 bullets.append(String(trimmed.dropFirst(2)))
                 continue
             }
-            flushBullets()
+            if let item = orderedItem(trimmed) {
+                flushParagraph(); flushBullets()
+                ordered.append(item)
+                continue
+            }
+            flushBullets(); flushOrdered()
             paragraph.append(trimmed)
         }
         if inCode, !codeLines.isEmpty { blocks.append(.code(codeLang, codeLines.joined(separator: "\n"))) }
-        flushParagraph(); flushBullets()
+        flushParagraph(); flushBullets(); flushOrdered()
         return blocks
     }
 }

@@ -16,6 +16,10 @@ cd "$ROOT"
 SCHEME=ManyAgentsPhone
 BUNDLE_ID=co.ailogy.manyagents.phone
 TARGET="${1:-auto}"
+# Stamp each build so `devicectl device info apps` tells you which one is
+# actually on the phone.
+BUILD_STAMP="$(date +%y%m%d%H%M)"
+TEAM="${DEVELOPMENT_TEAM:-44KY89SZJD}"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 
@@ -35,20 +39,31 @@ if [[ "$TARGET" != "simulator" ]]; then
         DEVICE_UDID="$TARGET"
     else
         DEVICE_UDID="$(xcrun devicectl list devices 2>/dev/null \
-            | awk '/connected/ && /iPhone|iPad/ {print $(NF-1); exit}')" || true
+            | awk '/iPhone|iPad/ && /connected|available/ {
+                     for (i = 1; i <= NF; i++) if ($i ~ /^[0-9A-F-]{36}$/) { print $i; exit }
+                   }')" || true
     fi
 fi
 
 if [[ -n "$DEVICE_UDID" ]]; then
-    b "Building for device $DEVICE_UDID"
+    b "Building for device $DEVICE_UDID (build $BUILD_STAMP)"
+    # Generic destination on purpose: targeting the device directly needs a
+    # developer disk image mounted, which fails when the phone's iOS is
+    # newer than the installed platform — and a DDI is only needed to
+    # debug, not to install.
     xcodebuild -project "$SCHEME.xcodeproj" -scheme "$SCHEME" \
-        -destination "id=$DEVICE_UDID" -configuration Debug \
+        -destination "generic/platform=iOS" -configuration Debug \
+        -allowProvisioningUpdates DEVELOPMENT_TEAM="$TEAM" \
+        CURRENT_PROJECT_VERSION="$BUILD_STAMP" \
         -derivedDataPath build/device build | tail -3
     APP="build/device/Build/Products/Debug-iphoneos/ManyAgents.app"
     [[ -d "$APP" ]] || die "build produced no app at $APP"
     b "Installing"
     xcrun devicectl device install app --device "$DEVICE_UDID" "$APP" >/dev/null
-    ok "installed on device — launch it from the home screen"
+    ok "installed on device — build $BUILD_STAMP"
+    echo
+    echo "Confirm what the phone is running:"
+    echo "  xcrun devicectl device info apps --device $DEVICE_UDID | grep manyagents"
     exit 0
 fi
 
