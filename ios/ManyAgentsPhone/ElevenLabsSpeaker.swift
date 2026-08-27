@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import os
 
 /// Reads text aloud with an ElevenLabs voice.
 ///
@@ -38,6 +39,12 @@ final class ElevenLabsSpeaker: NSObject {
         }
     }
 
+    /// Voice problems are invisible by nature — you get silence either
+    /// way. Every step says what it did, so `log stream --predicate
+    /// 'subsystem == "co.ailogy.manyagents.phone"'` answers "which half
+    /// broke" without a rebuild.
+    static let log = Logger(subsystem: "co.ailogy.manyagents.phone", category: "voice")
+
     private var player: AVAudioPlayer?
     private var playback: CheckedContinuation<Void, Never>?
     private var job: Task<Void, Never>?
@@ -48,18 +55,26 @@ final class ElevenLabsSpeaker: NSObject {
     var isSpeaking: Bool { job != nil }
 
     /// - Parameters:
+    ///   - onAudioStart: the first audio is actually playing. Everything
+    ///     before this is network, and silence during it looks identical
+    ///     to a hang unless the caller says otherwise.
     ///   - onFinish: the whole thing was spoken.
     ///   - onFailure: could not continue. Carries the text that never got
     ///     said, for the caller to fall back with.
     func speak(_ text: String,
                config: Config,
+               onAudioStart: @escaping () -> Void = {},
                onFinish: @escaping () -> Void,
                onFailure: @escaping (String, Error) -> Void) {
         stop()
         generation += 1
         let mine = generation
         let chunks = Self.chunk(text)
-        guard !chunks.isEmpty else { onFinish(); return }
+        Self.log.info("speak: \(text.count) chars, \(chunks.count) chunks, voice \(config.voiceID, privacy: .public)")
+        guard !chunks.isEmpty else {
+            Self.log.error("speak: nothing to say after chunking")
+            onFinish(); return
+        }
 
         job = Task { [weak self] in
             guard let self else { return }
@@ -72,6 +87,8 @@ final class ElevenLabsSpeaker: NSObject {
                 do {
                     let data = try await current.value
                     guard mine == self.generation else { return }
+                    Self.log.info("chunk \(i): \(data.count) bytes")
+                    if i == 0 { onAudioStart() }
                     try await self.play(data)
                 } catch is CancellationError {
                     return
@@ -79,6 +96,7 @@ final class ElevenLabsSpeaker: NSObject {
                     guard mine == self.generation else { return }
                     inFlight?.cancel()
                     self.job = nil
+                    Self.log.error("chunk \(i) failed: \(error.localizedDescription, privacy: .public)")
                     onFailure(chunks[i...].joined(separator: " "), error)
                     return
                 }
@@ -107,18 +125,62 @@ final class ElevenLabsSpeaker: NSObject {
         }
     }
 
+    /// One session for every request, configured for a moving car rather
+    /// than a desk: wait for connectivity instead of failing the instant
+    /// the radio is between cells, and don't let a stalled connection sit
+    /// there past the point the answer is still wanted.
+    private nonisolated static let session: URLSession = {
+        let c = URLSessionConfiguration.default
+        c.waitsForConnectivity = true
+        c.timeoutIntervalForRequest = 20
+        c.timeoutIntervalForResource = 45
+        c.allowsConstrainedNetworkAccess = true
+        c.allowsExpensiveNetworkAccess = true
+        return URLSession(configuration: c)
+    }()
+
+    /// Errors worth one more go. A dropped connection mid-request is the
+    /// normal state of a phone in a moving car, and giving up on the first
+    /// one drops you to the built-in voice for no good reason.
+    private nonisolated static func isTransient(_ error: Error) -> Bool {
+        if case Failure.http(let code, _) = error { return code == 429 || code >= 500 }
+        let ns = error as NSError
+        guard ns.domain == NSURLErrorDomain else { return false }
+        return [NSURLErrorNetworkConnectionLost, NSURLErrorTimedOut,
+                NSURLErrorCannotConnectToHost, NSURLErrorNotConnectedToInternet,
+                NSURLErrorSecureConnectionFailed].contains(ns.code)
+    }
+
     private nonisolated static func synthesise(_ text: String, _ config: Config) async throws -> Data {
+        do {
+            return try await request(text, config)
+        } catch {
+            guard isTransient(error) else { throw error }
+            log.info("retrying after: \(error.localizedDescription, privacy: .public)")
+            try await Task.sleep(nanoseconds: 400_000_000)
+            return try await request(text, config)
+        }
+    }
+
+    private nonisolated static func request(_ text: String, _ config: Config) async throws -> Data {
         // 22 kHz / 32 kbps mp3: available on every ElevenLabs plan
         // (the higher bitrates are not), and indistinguishable from the
         // default over a car speaker while being a third of the bytes to
         // pull down on a patchy cellular link.
+        //
+        // Not the /stream variant. Streaming saves a little time to first
+        // byte, but it answers with a chunked response held open until the
+        // whole clip is generated, and that connection being dropped
+        // underneath us — "the network connection was lost" — was exactly
+        // what stopped anything playing. A plain response with a
+        // Content-Length is the thing URLSession is reliable at.
         var comps = URLComponents(string:
-            "https://api.elevenlabs.io/v1/text-to-speech/\(config.voiceID)/stream")!
+            "https://api.elevenlabs.io/v1/text-to-speech/\(config.voiceID)")!
         comps.queryItems = [.init(name: "output_format", value: "mp3_22050_32")]
 
         var req = URLRequest(url: comps.url!)
         req.httpMethod = "POST"
-        req.timeoutInterval = 25
+        req.timeoutInterval = 20
         req.setValue(config.apiKey, forHTTPHeaderField: "xi-api-key")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: [
@@ -136,7 +198,7 @@ final class ElevenLabsSpeaker: NSObject {
             "text_normalization": "auto",
         ])
 
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await session.data(for: req)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else {
             throw Failure.http(code, String(data: data, encoding: .utf8) ?? "")
@@ -148,11 +210,21 @@ final class ElevenLabsSpeaker: NSObject {
     // MARK: - Playback
 
     private func play(_ data: Data) async throws {
-        guard let p = try? AVAudioPlayer(data: data) else { throw Failure.badAudio }
+        guard let p = try? AVAudioPlayer(data: data) else {
+            Self.log.error("play: AVAudioPlayer rejected \(data.count) bytes")
+            throw Failure.badAudio
+        }
         p.delegate = self
         player = p
+        p.volume = 1
         p.prepareToPlay()
-        guard p.play() else { throw Failure.badAudio }
+        guard p.play() else {
+            Self.log.error("play: refused to start (session inactive?)")
+            throw Failure.badAudio
+        }
+        let route = AVAudioSession.sharedInstance().currentRoute.outputs
+            .map(\.portType.rawValue).joined(separator: ",")
+        Self.log.info("play: \(p.duration, format: .fixed(precision: 1))s out of \(route, privacy: .public)")
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             playback = c
         }

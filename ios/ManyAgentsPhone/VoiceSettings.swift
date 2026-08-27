@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import os
 
 /// Which voice reads replies aloud, and the credentials for it.
 ///
@@ -71,6 +72,8 @@ final class VoiceSettings: ObservableObject {
 
     var apiKey: String { Keychain.string(Keys.account) ?? "" }
 
+    private static let log = Logger(subsystem: "co.ailogy.manyagents.phone", category: "voice")
+
     /// Everything the speaker needs, or nil when we should use the phone's
     /// own voice — no key, or you asked for on-device.
     var elevenConfig: ElevenLabsSpeaker.Config? {
@@ -87,7 +90,11 @@ final class VoiceSettings: ObservableObject {
         Keychain.set(trimmed.isEmpty ? nil : trimmed, for: Keys.account)
         keySource = trimmed.isEmpty ? .none : .manual
         UserDefaults.standard.set(keySource.rawValue, forKey: Keys.source)
-        hasKey = !trimmed.isEmpty
+        // Read back rather than assume. A Keychain write can be refused,
+        // and reporting a key we haven't got means the app looks
+        // configured and stays silent, which is the worst of both.
+        hasKey = !apiKey.isEmpty
+        Self.log.info("key set by hand: stored=\(self.hasKey)")
     }
 
     /// The Mac pushed its configuration. Takes it only when there's nothing
@@ -98,7 +105,8 @@ final class VoiceSettings: ObservableObject {
         guard !trimmed.isEmpty, keySource != .manual else { return }
         if trimmed != apiKey {
             Keychain.set(trimmed, for: Keys.account)
-            hasKey = true
+            hasKey = !apiKey.isEmpty
+            Self.log.info("key from Mac: \(trimmed.count) chars, stored=\(self.hasKey)")
         }
         keySource = .mac
         UserDefaults.standard.set(keySource.rawValue, forKey: Keys.source)
@@ -134,19 +142,25 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func set(_ value: String?, for account: String) {
+    @discardableResult
+    static func set(_ value: String?, for account: String) -> OSStatus {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
         SecItemDelete(base as CFDictionary)
-        guard let value, let data = value.data(using: .utf8) else { return }
+        guard let value, let data = value.data(using: .utf8) else { return errSecSuccess }
         var add = base
         add[kSecValueData as String] = data
         // Needs to be readable when the phone is locked in a pocket while
         // it reads a reply out over CarPlay.
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(add as CFDictionary, nil)
+        let status = SecItemAdd(add as CFDictionary, nil)
+        if status != errSecSuccess {
+            Logger(subsystem: "co.ailogy.manyagents.phone", category: "voice")
+                .error("keychain write failed: \(status)")
+        }
+        return status
     }
 }

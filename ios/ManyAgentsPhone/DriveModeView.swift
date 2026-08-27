@@ -30,11 +30,16 @@ struct DriveModeView: View {
 
                 Spacer(minLength: 0)
 
-                Text(bigStatus)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Theme.orange)
-                    .textCase(.uppercase)
-                    .tracking(1.2)
+                HStack(spacing: 8) {
+                    Text(bigStatus)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.orange)
+                        .textCase(.uppercase)
+                        .tracking(1.2)
+                    if voice.isBuffering {
+                        ProgressView().controlSize(.small).tint(Theme.orange)
+                    }
+                }
 
                 // Why it suddenly sounds like the phone rather than the
                 // voice you chose. Said once, quietly, never in the way.
@@ -75,10 +80,16 @@ struct DriveModeView: View {
             .padding(.top, 12)
         }
         .navigationBarBackButtonHidden(true)
-        .onAppear { link.openTab(tabId) }
+        .onAppear {
+            link.openTab(tabId)
+            // Holds the audio session open so this keeps working with the
+            // screen off, which is where a phone is in a car.
+            voice.beginHandsFree()
+        }
         .onDisappear {
             voice.cancelListening()
             voice.stopSpeaking()
+            voice.endHandsFree()
         }
         // Utterance finished → send it.
         .onChange(of: voice.finishedUtterance) { _, new in
@@ -159,6 +170,9 @@ struct DriveModeView: View {
     private var bigStatus: String {
         if voice.permissionDenied { return "microphone blocked" }
         if voice.isListening { return "listening" }
+        // Fetching audio is not speaking. Saying "speaking" through the
+        // silence before the first word makes a working app look hung.
+        if voice.isBuffering { return "getting the voice" }
         if voice.isSpeaking { return "speaking" }
         if awaitingReply || tab?.isBusy == true { return "working" }
         return "tap to talk"

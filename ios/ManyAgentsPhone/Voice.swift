@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import Speech
+import os
 
 /// Speech in and speech out.
 ///
@@ -26,6 +27,10 @@ final class Voice: NSObject, ObservableObject {
     /// Last reason the cloud voice bailed, if it did. Shown quietly rather
     /// than thrown as an alert — the reply still gets read out.
     @Published private(set) var voiceNotice: String?
+    /// Fetching the first audio. A cloud voice has a gap between "asked"
+    /// and "talking", and without saying so, that gap is indistinguishable
+    /// from the app being broken.
+    @Published private(set) var isBuffering = false
 
     private let engine = AVAudioEngine()
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-GB"))
@@ -39,6 +44,7 @@ final class Voice: NSObject, ObservableObject {
     /// How long a pause means "I'm done talking". Long enough to think
     /// mid-sentence, short enough not to feel broken.
     private let silenceGap: TimeInterval = 1.4
+    private static let log = Logger(subsystem: "co.ailogy.manyagents.phone", category: "voice")
 
     override init() {
         super.init()
@@ -47,37 +53,97 @@ final class Voice: NSObject, ObservableObject {
 
     // MARK: - Session
 
-    /// One session config for the whole app: duck the radio rather than
-    /// stopping it, and pick the right Bluetooth profile for what we're
-    /// about to do.
+    enum Use { case idle, speaking, listening }
+
+    /// The audio session, reconfigured for each of the three things this
+    /// app does with sound. Two decisions are load-bearing in a car:
     ///
-    /// The profile is the whole game in a car. `.allowBluetooth` means
-    /// HFP — the hands-free phone-call channel, 8 kHz mono — and once a
-    /// car kit is on it, speech comes out stuttering and thin. That's what
-    /// made the built-in voice unusable while driving, and it would have
-    /// done the same to ElevenLabs audio. Recording needs HFP because A2DP
-    /// carries no microphone, so it's requested there and *only* there;
-    /// playback asks for A2DP alone, which is the stereo music route the
-    /// car already plays well.
-    private func configureSession(forRecording: Bool) throws {
+    /// **The Bluetooth profile.** `.allowBluetooth` means HFP, the
+    /// hands-free call channel — 8 kHz, mono, half-duplex. A car kit put
+    /// on it for the microphone stays there, and every reply afterwards
+    /// plays down a phone-call link however good the source audio is;
+    /// that's what made speech choppy while driving. A2DP carries no
+    /// microphone, so HFP is asked for while listening and nowhere else.
+    ///
+    /// **Ducking.** Ducking the radio is right while the voice is talking
+    /// and wrong the rest of the time — the keep-alive below plays silence
+    /// continuously, and ducking on that would leave your music quiet for
+    /// the whole drive. So idle mixes, speech ducks.
+    private func configureSession(_ use: Use) throws {
         let session = AVAudioSession.sharedInstance()
-        if forRecording {
+        switch use {
+        case .listening:
             try session.setCategory(.playAndRecord, mode: .measurement,
                                     options: [.duckOthers, .defaultToSpeaker,
                                               .allowBluetooth, .allowBluetoothA2DP])
-        } else {
+        case .speaking:
             try session.setCategory(.playback, mode: .spokenAudio,
                                     options: [.duckOthers, .allowBluetoothA2DP])
+        case .idle:
+            try session.setCategory(.playback, mode: .spokenAudio,
+                                    options: [.mixWithOthers, .allowBluetoothA2DP])
         }
         try session.setActive(true, options: .notifyOthersOnDeactivation)
     }
 
-    /// Hand the route back before playing. Without this the session can
-    /// still be sitting on the HFP link it took to record, and the first
-    /// reply plays down the call channel however good the audio is.
-    private func releaseRecordingRoute() {
-        guard !engine.isRunning else { return }
+    // MARK: - Staying alive with the screen off
+
+    /// Hands-free is worth nothing if it stops the moment the phone locks,
+    /// which is where a phone lives in a car. An app with the audio
+    /// background mode keeps running only while it is actually playing
+    /// something, so between turns — while an agent is thinking — this
+    /// plays silence to hold the process, the socket and the microphone
+    /// open. It mixes rather than ducks, so nothing else goes quiet.
+    ///
+    /// Started when drive mode opens and stopped when it closes: the cost
+    /// is real, and it has no business running while the app sits in a
+    /// pocket doing nothing.
+    private var keepAlive: AVAudioPlayer?
+
+    func beginHandsFree() {
+        guard keepAlive == nil else { return }
+        do {
+            try configureSession(.idle)
+            let player = try AVAudioPlayer(data: Self.silence())
+            player.numberOfLoops = -1
+            player.volume = 0
+            player.play()
+            keepAlive = player
+            Self.log.info("hands-free session held open")
+        } catch {
+            Self.log.error("keep-alive failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func endHandsFree() {
+        keepAlive?.stop()
+        keepAlive = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    /// Done talking, whichever voice did it: drop the duck so the car's
+    /// own audio comes back while the agent thinks.
+    fileprivate func finishedSpeaking() {
+        isSpeaking = false
+        if keepAlive != nil { try? configureSession(.idle) }
+    }
+
+    /// Half a second of 44.1 kHz mono silence, built rather than bundled so
+    /// there's no asset to lose.
+    private static func silence(seconds: Double = 0.5) -> Data {
+        let rate = 44_100, channels = 1, bits = 16
+        let frames = Int(Double(rate) * seconds)
+        let dataBytes = frames * channels * bits / 8
+        var out = Data()
+        func u32(_ v: Int) { var l = UInt32(v).littleEndian; out.append(Data(bytes: &l, count: 4)) }
+        func u16(_ v: Int) { var l = UInt16(v).littleEndian; out.append(Data(bytes: &l, count: 2)) }
+        out.append(contentsOf: Array("RIFF".utf8)); u32(36 + dataBytes)
+        out.append(contentsOf: Array("WAVE".utf8))
+        out.append(contentsOf: Array("fmt ".utf8)); u32(16); u16(1); u16(channels)
+        u32(rate); u32(rate * channels * bits / 8); u16(channels * bits / 8); u16(bits)
+        out.append(contentsOf: Array("data".utf8)); u32(dataBytes)
+        out.append(Data(count: dataBytes))
+        return out
     }
 
     func requestPermissions() async -> Bool {
@@ -102,7 +168,7 @@ final class Voice: NSObject, ObservableObject {
         Task {
             guard await requestPermissions() else { return }
             do {
-                try configureSession(forRecording: true)
+                try configureSession(.listening)
                 let req = SFSpeechAudioBufferRecognitionRequest()
                 req.shouldReportPartialResults = true
                 request = req
@@ -178,20 +244,25 @@ final class Voice: NSObject, ObservableObject {
         guard !text.isEmpty else { return }
         stopSpeaking()
         voiceNotice = nil
-        releaseRecordingRoute()
-        do { try configureSession(forRecording: false) } catch { }
+        do { try configureSession(.speaking) } catch { }
 
         guard let config = settings.elevenConfig else {
             speakOnDevice(text)
             return
         }
         isSpeaking = true
+        isBuffering = true
         eleven.speak(text, config: config,
-                     onFinish: { [weak self] in self?.isSpeaking = false },
+                     onAudioStart: { [weak self] in self?.isBuffering = false },
+                     onFinish: { [weak self] in
+                         self?.isBuffering = false
+                         self?.isSpeaking = false
+                     },
                      onFailure: { [weak self] remaining, error in
                          guard let self else { return }
                          // Say the rest in this phone's own voice. Told
                          // about it afterwards, not interrupted by it.
+                         self.isBuffering = false
                          self.voiceNotice = error.localizedDescription
                          self.speakOnDevice(remaining)
                      })
@@ -214,22 +285,25 @@ final class Voice: NSObject, ObservableObject {
     /// silently succeeding in the wrong voice would be the one useless
     /// outcome.
     func preview(_ text: String) async -> String? {
-        releaseRecordingRoute()
-        do { try configureSession(forRecording: false) } catch { }
+        do { try configureSession(.speaking) } catch { }
         guard let config = settings.elevenConfig else {
             speakOnDevice(text)
             return nil
         }
         stopSpeaking()
         isSpeaking = true
+        isBuffering = true
         return await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
             var resumed = false
             eleven.speak(text, config: config,
+                         onAudioStart: { [weak self] in self?.isBuffering = false },
                          onFinish: { [weak self] in
+                             self?.isBuffering = false
                              self?.isSpeaking = false
                              if !resumed { resumed = true; c.resume(returning: nil) }
                          },
                          onFailure: { [weak self] _, error in
+                             self?.isBuffering = false
                              self?.isSpeaking = false
                              if !resumed { resumed = true; c.resume(returning: error.localizedDescription) }
                          })
@@ -237,9 +311,13 @@ final class Voice: NSObject, ObservableObject {
     }
 
     func stopSpeaking() {
+        isBuffering = false
         eleven.stop()
         if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
         isSpeaking = false
+        // Un-duck: whatever the car was playing comes back between turns
+        // rather than staying quiet for the whole drive.
+        if keepAlive != nil { try? configureSession(.idle) }
     }
 
     /// Prefer a downloaded premium/enhanced voice when the user has one;
@@ -294,10 +372,10 @@ final class Voice: NSObject, ObservableObject {
 extension Voice: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
                                        didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.isSpeaking = false }
+        Task { @MainActor in self.finishedSpeaking() }
     }
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
                                        didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.isSpeaking = false }
+        Task { @MainActor in self.finishedSpeaking() }
     }
 }

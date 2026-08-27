@@ -14,6 +14,16 @@ struct ManyAgentsPhoneApp: App {
                 // simulator, which has no camera to scan with.
                 .onOpenURL { url in
                     if let p = MacLink.Pairing.parse(url.absoluteString) { link.pairing = p }
+                    #if DEBUG
+                    // Debug builds only: `xcrun simctl openurl booted
+                    // "manyagents://voicetest"` exercises the whole speech
+                    // path headlessly. Voice bugs are silent by
+                    // definition, and tapping through three screens to
+                    // reproduce one is how they stay unfixed.
+                    if url.host == "voicetest" || url.path == "voicetest" {
+                        VoiceDiagnostics.run(url: url)
+                    }
+                    #endif
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { link.appDidBecomeActive() }
