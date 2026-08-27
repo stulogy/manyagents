@@ -8,6 +8,11 @@ struct BoardView: View {
     @EnvironmentObject var link: MacLink
     @State private var showSettings = false
     @State private var collapsed: Set<String> = []
+    /// Wrapped because `fullScreenCover(item:)` wants Identifiable, and a
+    /// bare tab id string isn't.
+    struct DriveTarget: Identifiable { let id: String }
+    @State private var driveTab: DriveTarget?
+    @State private var appointing = false
 
     private var needsYou: [MacLink.Tab] {
         // Written out rather than as a tuple comparison: the tuple form
@@ -74,10 +79,19 @@ struct BoardView: View {
             ZStack {
                 Theme.canvas.ignoresSafeArea()
                 if link.board.isEmpty {
-                    EmptyBoard(connection: link.connection)
+                    // The companion stays reachable with an empty board.
+                    // Hiding it here hid the one control that can fix the
+                    // emptiness — it appoints an orchestrator on the Mac,
+                    // and after a Mac restart that's exactly the state
+                    // you're in.
+                    VStack(spacing: 0) {
+                        companionBar.padding(.horizontal, 14).padding(.top, 12)
+                        EmptyBoard(connection: link.connection)
+                    }
                 } else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 18) {
+                            companionBar
                             if !needsYou.isEmpty {
                                 section(title: "Needs you", tint: Theme.orange) {
                                     ForEach(needsYou) { tab in row(tab, highlighted: true) }
@@ -107,8 +121,75 @@ struct BoardView: View {
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .fullScreenCover(item: $driveTab) { target in
+                DriveModeView(tabId: target.id).environmentObject(link)
+            }
         }
         .tint(Theme.orange)
+    }
+
+    /// The one control this app exists for.
+    ///
+    /// Everything below it is a tab doing one job. This talks to the
+    /// orchestrator, which can see the whole board and drive it — so
+    /// "what's everyone up to" and "tell the ops one to run the tests"
+    /// both land somewhere that can actually answer. Kept at the top, big,
+    /// and reachable with a thumb, because the moment you want it you are
+    /// usually driving.
+    @ViewBuilder
+    private var companionBar: some View {
+        Button {
+            if let tab = link.companionTab {
+                driveTab = DriveTarget(id: tab)
+            } else {
+                appointing = true
+                link.askForCompanion(create: true) { tab in
+                    appointing = false
+                    driveTab = tab.map(DriveTarget.init)
+                }
+            }
+        } label: {
+            HStack(spacing: 13) {
+                ZStack {
+                    Circle().fill(Theme.orange.opacity(0.16)).frame(width: 44, height: 44)
+                    if appointing {
+                        ProgressView().controlSize(.small).tint(Theme.orange)
+                    } else {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundStyle(Theme.orange)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Talk to ManyAgents")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                    Text(companionSubtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.dim)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.dim)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .card(highlighted: true)
+        }
+        .buttonStyle(.plain)
+        .disabled(appointing)
+    }
+
+    private var companionSubtitle: String {
+        if appointing { return "Starting one on your Mac…" }
+        if let error = link.companionError, link.companionTab == nil { return error }
+        guard let id = link.companionTab,
+              let tab = link.board.first(where: { $0.id == id })
+        else { return "Hands-free, across every tab" }
+        if tab.isBusy { return "\(tab.title) · working" }
+        return "\(tab.title) · sees every tab"
     }
 
     @ViewBuilder

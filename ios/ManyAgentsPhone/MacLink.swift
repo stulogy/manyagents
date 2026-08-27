@@ -53,6 +53,9 @@ final class MacLink: ObservableObject {
         var status: String
         var blocked: String?          // "permission" | "question" | nil
         var permissionTool: String?
+        /// Wears the orchestrator hat on the Mac: it can see and drive the
+        /// other tabs, which is what makes it worth talking to.
+        var isOrchestrator: Bool = false
 
         var isWorktree: Bool { !checkout.isEmpty }
 
@@ -97,6 +100,9 @@ final class MacLink: ObservableObject {
     @Published private(set) var board: [Tab] = []
     @Published private(set) var messages: [String: [Msg]] = [:]   // tab id → transcript
     @Published private(set) var sending = false
+    /// The tab hands-free mode talks to. See `askForCompanion`.
+    @Published private(set) var companionTab: String?
+    @Published private(set) var companionError: String?
     @Published var pairing: Pairing? {
         didSet {
             guard pairing != oldValue else { return }
@@ -203,6 +209,7 @@ final class MacLink: ObservableObject {
             identify()
             refreshBoard()
             refreshVoiceConfig()
+            askForCompanion()
         case "peer":
             if obj["role"] as? String == "mac" {
                 let up = obj["present"] as? Bool == true
@@ -319,6 +326,43 @@ final class MacLink: ObservableObject {
         }
     }
 
+    /// Find the tab worth talking to.
+    ///
+    /// Every other tab is one agent doing one job; the orchestrator can see
+    /// the whole board and drive it. Voice wants that one — "what's
+    /// everyone doing", "tell the ops tab to stop and run the tests" — so
+    /// hands-free mode routes here rather than making you pick a tab at
+    /// 70mph.
+    ///
+    /// `create` lets it appoint one when nothing is wearing the hat, which
+    /// beats failing at a set of traffic lights.
+    func askForCompanion(create: Bool = false, then: ((String?) -> Void)? = nil) {
+        // Trust a live board over a round trip when it already says.
+        if let known = board.first(where: { $0.isOrchestrator })?.id {
+            companionTab = known
+            companionError = nil
+            then?(known)
+            return
+        }
+        let asked = request("companion", ["create": create]) { [weak self] reply in
+            guard let self else { return }
+            if reply["ok"] as? Bool == true, let tab = reply["tab"] as? String {
+                self.companionTab = tab
+                self.companionError = nil
+                if reply["created"] as? Bool == true { self.refreshBoard() }
+                then?(tab)
+            } else {
+                self.companionError = reply["error"] as? String
+                    ?? "Your Mac has no orchestrator tab yet."
+                then?(nil)
+            }
+        }
+        if !asked {
+            companionError = "Not connected to your Mac."
+            then?(nil)
+        }
+    }
+
     /// Ask the Mac for its voice credentials.
     ///
     /// The alternative is typing a 51-character API key on a phone
@@ -392,7 +436,8 @@ final class MacLink: ObservableObject {
                 cwd: r["cwd"] as? String ?? "",
                 status: r["status"] as? String ?? "idle",
                 blocked: r["blocked"] as? String,
-                permissionTool: (r["permission"] as? [String: Any])?["tool"] as? String)
+                permissionTool: (r["permission"] as? [String: Any])?["tool"] as? String,
+                isOrchestrator: r["orchestrator"] as? Bool ?? false)
         }
     }
 

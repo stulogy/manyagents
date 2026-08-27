@@ -332,6 +332,41 @@ final class PhoneLink: NSObject, ObservableObject {
                                   message: req["message"] as? String)
             reply(["ok": true])
 
+        case "companion":
+            // The tab you talk to hands-free.
+            //
+            // Not a new kind of session: it's the orchestrator that already
+            // exists on the Mac, which holds the board tools (list_agents,
+            // read_agent, send_to_agent, new_agent). Talking to it is what
+            // makes the phone a companion rather than a microphone wired to
+            // one tab — "what's everyone doing" and "tell the ops one to
+            // stop and run the tests" are things only that tab can answer.
+            //
+            // Prefer the orchestrator for whatever is active on the Mac, so
+            // asking from the car matches what you'd see on the screen.
+            let existing = mgr.activeSession.flatMap { mgr.orchestrator(for: $0.cwd) }
+                ?? mgr.sessions.first { $0.isCoordinator && $0.boardScope == $0.projectRoot }
+                ?? mgr.sessions.first { $0.isCoordinator }
+            if let existing {
+                reply(["ok": true, "tab": existing.id.uuidString, "created": false])
+            } else if (req["create"] as? Bool) == true,
+                      // Last resort is the un-restored snapshot: after a
+                      // Mac restart the board is empty until someone
+                      // accepts the restore sheet, and "no project to
+                      // start one in" is a useless answer from a car when
+                      // we plainly know where you were working.
+                      let cwd = mgr.activeSession?.cwd ?? mgr.sessions.first?.cwd
+                        ?? mgr.pendingRestore?.agents.first?.cwd {
+                // Nothing is wearing the hat. Rather than fail at a red
+                // light, put one on: a fresh tab in whatever project is
+                // active, designated, which delivers its own catch-up brief.
+                let session = mgr.spawn(cwd: cwd)
+                mgr.designateOrchestrator(session)
+                reply(["ok": true, "tab": session.id.uuidString, "created": true])
+            } else {
+                reply(["ok": false, "error": "no orchestrator, and no project to start one in"])
+            }
+
         case "voice_config":
             // Only ever answered over the sealed channel, to a phone that
             // holds the pairing key. Empty when nothing is configured, and
@@ -386,6 +421,9 @@ final class PhoneLink: NSObject, ObservableObject {
                 "checkout": ProjectNaming.checkoutLabel(forCwd: s.cwd),
                 "cwd": ProjectNaming.prettyCwd(s.cwd),
                 "status": statusString(s.status),
+                // The hat. The phone surfaces this tab as the companion you
+                // talk to, rather than one more row in the list.
+                "orchestrator": s.isCoordinator,
             ]
             // What the phone actually needs to know: is this tab stuck
             // waiting on a human?
