@@ -48,15 +48,36 @@ final class Voice: NSObject, ObservableObject {
     // MARK: - Session
 
     /// One session config for the whole app: duck the radio rather than
-    /// stopping it, prefer the car's speaker, and allow Bluetooth so this
-    /// works over a car kit.
+    /// stopping it, and pick the right Bluetooth profile for what we're
+    /// about to do.
+    ///
+    /// The profile is the whole game in a car. `.allowBluetooth` means
+    /// HFP — the hands-free phone-call channel, 8 kHz mono — and once a
+    /// car kit is on it, speech comes out stuttering and thin. That's what
+    /// made the built-in voice unusable while driving, and it would have
+    /// done the same to ElevenLabs audio. Recording needs HFP because A2DP
+    /// carries no microphone, so it's requested there and *only* there;
+    /// playback asks for A2DP alone, which is the stereo music route the
+    /// car already plays well.
     private func configureSession(forRecording: Bool) throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(forRecording ? .playAndRecord : .playback,
-                                mode: forRecording ? .measurement : .spokenAudio,
-                                options: [.duckOthers, .defaultToSpeaker, .allowBluetooth,
-                                          .allowBluetoothA2DP])
+        if forRecording {
+            try session.setCategory(.playAndRecord, mode: .measurement,
+                                    options: [.duckOthers, .defaultToSpeaker,
+                                              .allowBluetooth, .allowBluetoothA2DP])
+        } else {
+            try session.setCategory(.playback, mode: .spokenAudio,
+                                    options: [.duckOthers, .allowBluetoothA2DP])
+        }
         try session.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+
+    /// Hand the route back before playing. Without this the session can
+    /// still be sitting on the HFP link it took to record, and the first
+    /// reply plays down the call channel however good the audio is.
+    private func releaseRecordingRoute() {
+        guard !engine.isRunning else { return }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     func requestPermissions() async -> Bool {
@@ -157,6 +178,7 @@ final class Voice: NSObject, ObservableObject {
         guard !text.isEmpty else { return }
         stopSpeaking()
         voiceNotice = nil
+        releaseRecordingRoute()
         do { try configureSession(forRecording: false) } catch { }
 
         guard let config = settings.elevenConfig else {
@@ -192,6 +214,7 @@ final class Voice: NSObject, ObservableObject {
     /// silently succeeding in the wrong voice would be the one useless
     /// outcome.
     func preview(_ text: String) async -> String? {
+        releaseRecordingRoute()
         do { try configureSession(forRecording: false) } catch { }
         guard let config = settings.elevenConfig else {
             speakOnDevice(text)
