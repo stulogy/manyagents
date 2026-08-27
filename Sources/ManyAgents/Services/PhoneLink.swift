@@ -25,6 +25,12 @@ final class PhoneLink: NSObject, ObservableObject {
         static let room     = "manyagents.phonelink.room"
         static let secret   = "manyagents.phonelink.secret"
         static let relayURL = "manyagents.phonelink.relayURL"
+        /// Voice credentials for the phone app to read replies aloud with.
+        /// Kept here rather than on the phone so it's typed once, on a
+        /// keyboard, and travels inside the sealed envelope.
+        static let voiceKey       = "manyagents.voice.elevenKey"
+        static let voiceID        = "manyagents.voice.elevenVoiceID"
+        static let voiceName      = "manyagents.voice.elevenVoiceName"
     }
 
     /// No default, deliberately. This is an open-source app and a relay is
@@ -325,6 +331,17 @@ final class PhoneLink: NSObject, ObservableObject {
             s.respondToPermission(allow: (req["allow"] as? Bool) ?? false,
                                   message: req["message"] as? String)
             reply(["ok": true])
+
+        case "voice_config":
+            // Only ever answered over the sealed channel, to a phone that
+            // holds the pairing key. Empty when nothing is configured, and
+            // the phone falls back to its own built-in voice.
+            let d = UserDefaults.standard
+            reply(["ok": true,
+                   "provider": "elevenlabs",
+                   "key": d.string(forKey: Keys.voiceKey) ?? "",
+                   "voiceId": d.string(forKey: Keys.voiceID) ?? "",
+                   "voiceName": d.string(forKey: Keys.voiceName) ?? ""])
 
         case "answer_question":
             guard let s = tab(for: req["tab"], in: mgr),

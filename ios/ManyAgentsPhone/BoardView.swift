@@ -410,6 +410,16 @@ struct SettingsView: View {
                     }
                 }
                 Section {
+                    NavigationLink {
+                        VoiceSettingsView()
+                    } label: {
+                        LabeledContent("Voice") {
+                            Text(voiceSummary).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section {
                     Button {
                         justTapped = true
                         link.reconnect()
@@ -439,5 +449,11 @@ struct SettingsView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
         }
+    }
+
+    private var voiceSummary: String {
+        let settings = VoiceSettings.shared
+        guard settings.engine == .elevenLabs else { return "This iPhone" }
+        return settings.hasKey ? settings.voiceName : "Needs a key"
     }
 }

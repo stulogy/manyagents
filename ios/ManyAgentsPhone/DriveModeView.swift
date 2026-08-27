@@ -36,6 +36,16 @@ struct DriveModeView: View {
                     .textCase(.uppercase)
                     .tracking(1.2)
 
+                // Why it suddenly sounds like the phone rather than the
+                // voice you chose. Said once, quietly, never in the way.
+                if let notice = voice.voiceNotice {
+                    Text(notice)
+                        .font(.footnote)
+                        .foregroundStyle(Theme.dim)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                }
+
                 // What it heard, or what the agent last said — whichever is
                 // live right now. One thing on screen at a time.
                 ScrollView {

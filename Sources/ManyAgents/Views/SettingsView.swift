@@ -343,6 +343,8 @@ private struct PhoneSettingsTab: View {
     @EnvironmentObject private var phone: PhoneLink
     @AppStorage("manyagents.phonelink.relayToken") private var relayToken = ""
     @AppStorage("manyagents.phonelink.relayURL") private var relayURL = ""
+    @AppStorage("manyagents.voice.elevenKey") private var voiceKey = ""
+    @AppStorage("manyagents.voice.elevenVoiceID") private var voiceID = ""
 
     var body: some View {
         Form {
@@ -365,6 +367,19 @@ private struct PhoneSettingsTab: View {
             }
 
             if phone.isEnabled {
+                Section {
+                    SecureField("ElevenLabs API key", text: $voiceKey)
+                    TextField("Voice ID", text: $voiceID,
+                              prompt: Text("21m00Tcm4TlvDq8ikWAM"))
+                        .font(.system(size: 11, design: .monospaced))
+                } header: {
+                    Text("Voice")
+                } footer: {
+                    Text("Optional. With a key here, the phone app reads replies aloud in an ElevenLabs voice instead of the iPhone's built-in one. It's handed to your paired phone inside the same encrypted envelope as everything else, so there's nothing to type on a phone keyboard, and the phone falls back to its own voice whenever the key is missing or the network isn't there. Leave the voice ID blank for the default.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
                 Section {
                     HStack(alignment: .top, spacing: 14) {
                         QRCodeView(text: phone.pairingPayload)

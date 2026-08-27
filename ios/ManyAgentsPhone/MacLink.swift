@@ -202,11 +202,12 @@ final class MacLink: ObservableObject {
             connection = .connected
             identify()
             refreshBoard()
+            refreshVoiceConfig()
         case "peer":
             if obj["role"] as? String == "mac" {
                 let up = obj["present"] as? Bool == true
                 connection = up ? .connected : .macOffline
-                if up { refreshBoard() }
+                if up { refreshBoard(); refreshVoiceConfig() }
             }
         case "env":
             guard let sealed = obj["data"] as? String, let payload = open(sealed) else { return }
@@ -315,6 +316,26 @@ final class MacLink: ObservableObject {
         request("board") { [weak self] reply in
             guard let self, reply["ok"] as? Bool == true else { return }
             self.board = Self.decodeBoard(reply["board"])
+        }
+    }
+
+    /// Ask the Mac for its voice credentials.
+    ///
+    /// The alternative is typing a 51-character API key on a phone
+    /// keyboard. The Mac already holds it, and this channel is already
+    /// sealed with the pairing key, so it comes down the same pipe as
+    /// everything else. A key entered on the phone by hand wins over this
+    /// one — see `VoiceSettings.adoptFromMac`.
+    @discardableResult
+    func refreshVoiceConfig(then: ((Bool) -> Void)? = nil) -> Bool {
+        request("voice_config") { reply in
+            guard reply["ok"] as? Bool == true,
+                  let key = reply["key"] as? String, !key.isEmpty
+            else { then?(false); return }
+            VoiceSettings.shared.adoptFromMac(key: key,
+                                              voiceID: reply["voiceId"] as? String,
+                                              voiceName: reply["voiceName"] as? String)
+            then?(true)
         }
     }
 

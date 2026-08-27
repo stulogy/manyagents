@@ -2,14 +2,18 @@ import Foundation
 import AVFoundation
 import Speech
 
-/// Speech in and speech out, on-device.
+/// Speech in and speech out.
 ///
-/// Deliberately not Whisper or ElevenLabs: both need a network round trip
-/// per utterance, and the place you most want to talk to your agents — a
-/// car — is the place the signal drops. Apple's recogniser runs on the
-/// phone, starts instantly, costs nothing per word, and degrades to
-/// "didn't catch that" rather than a spinner. The interfaces here are
-/// small enough that a cloud voice can replace either half later.
+/// The two halves are split on purpose, because they have opposite
+/// tradeoffs. Listening stays on-device: Apple's recogniser starts
+/// instantly, costs nothing per word, works with no signal, and degrades
+/// to "didn't catch that" rather than a spinner. Speaking goes to
+/// ElevenLabs when a key is configured, because this is the half you
+/// actually sit and listen to and the difference is not subtle.
+///
+/// The on-device synthesiser stays as the floor underneath: no key, no
+/// signal, or an API that errors, and the reply is still read out — in a
+/// worse voice, which is a far better outcome than silence.
 @MainActor
 final class Voice: NSObject, ObservableObject {
 
@@ -19,6 +23,9 @@ final class Voice: NSObject, ObservableObject {
     @Published private(set) var permissionDenied = false
     /// Set when the recogniser decides you've stopped talking.
     @Published private(set) var finishedUtterance: String?
+    /// Last reason the cloud voice bailed, if it did. Shown quietly rather
+    /// than thrown as an alert — the reply still gets read out.
+    @Published private(set) var voiceNotice: String?
 
     private let engine = AVAudioEngine()
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-GB"))
@@ -26,6 +33,8 @@ final class Voice: NSObject, ObservableObject {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private let synth = AVSpeechSynthesizer()
+    private let eleven = ElevenLabsSpeaker()
+    private let settings = VoiceSettings.shared
     private var silenceTimer: Timer?
     /// How long a pause means "I'm done talking". Long enough to think
     /// mid-sentence, short enough not to feel broken.
@@ -146,7 +155,30 @@ final class Voice: NSObject, ObservableObject {
     func speak(_ raw: String) {
         let text = Self.speakable(raw)
         guard !text.isEmpty else { return }
+        stopSpeaking()
+        voiceNotice = nil
         do { try configureSession(forRecording: false) } catch { }
+
+        guard let config = settings.elevenConfig else {
+            speakOnDevice(text)
+            return
+        }
+        isSpeaking = true
+        eleven.speak(text, config: config,
+                     onFinish: { [weak self] in self?.isSpeaking = false },
+                     onFailure: { [weak self] remaining, error in
+                         guard let self else { return }
+                         // Say the rest in this phone's own voice. Told
+                         // about it afterwards, not interrupted by it.
+                         self.voiceNotice = error.localizedDescription
+                         self.speakOnDevice(remaining)
+                     })
+    }
+
+    /// The floor: Apple's synthesiser. Takes text that has already been
+    /// through `speakable`.
+    private func speakOnDevice(_ text: String) {
+        guard !text.isEmpty else { isSpeaking = false; return }
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = Self.bestVoice()
         utterance.rate = 0.52          // slightly quicker than default; still clear in a car
@@ -155,7 +187,34 @@ final class Voice: NSObject, ObservableObject {
         synth.speak(utterance)
     }
 
+    /// Say something right now with the current settings, ignoring the
+    /// fallback chain — used by the settings screen's test button, where
+    /// silently succeeding in the wrong voice would be the one useless
+    /// outcome.
+    func preview(_ text: String) async -> String? {
+        do { try configureSession(forRecording: false) } catch { }
+        guard let config = settings.elevenConfig else {
+            speakOnDevice(text)
+            return nil
+        }
+        stopSpeaking()
+        isSpeaking = true
+        return await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
+            var resumed = false
+            eleven.speak(text, config: config,
+                         onFinish: { [weak self] in
+                             self?.isSpeaking = false
+                             if !resumed { resumed = true; c.resume(returning: nil) }
+                         },
+                         onFailure: { [weak self] _, error in
+                             self?.isSpeaking = false
+                             if !resumed { resumed = true; c.resume(returning: error.localizedDescription) }
+                         })
+        }
+    }
+
     func stopSpeaking() {
+        eleven.stop()
         if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
         isSpeaking = false
     }
