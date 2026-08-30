@@ -24,6 +24,7 @@ enum VoiceDiagnostics {
                 case "key":   if let v = item.value, !v.isEmpty { s.setKeyManually(v) }
                 case "voice": if let v = item.value, !v.isEmpty { s.voiceID = v }
                 case "text":  if let v = item.value, !v.isEmpty { say = v }
+                case "chatkey": if let v = item.value, !v.isEmpty { s.setChatKey(v) }
                 default: break
                 }
             }
@@ -40,6 +41,36 @@ enum VoiceDiagnostics {
             } else {
                 log.info("diagnostics: spoke it")
             }
+        }
+    }
+
+    /// `manyagents://companiontest?text=…` — one full turn through the
+    /// on-phone companion: model, tools, the Mac, and speech. Reading the
+    /// board is free and touches nothing; asking an orchestrator sends a
+    /// real message, so keep test prompts read-only unless you mean it.
+    private static var companion: Companion?
+
+    static func runCompanion(url: URL?) {
+        let items = url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems } ?? []
+        for item in items where item.name == "chatkey" {
+            if let v = item.value, !v.isEmpty { VoiceSettings.shared.setChatKey(v) }
+        }
+        let text = items.first { $0.name == "text" }?.value ?? "What is everyone working on?"
+        let scope = items.first { $0.name == "scope" }?.value
+        let c = companion ?? Companion(link: .shared, voice: .shared)
+        companion = c
+        if let scope, !scope.isEmpty {
+            MacLink.shared.askForCompanion(scope: scope, create: true) { tab in
+                log.info("test scope \(scope, privacy: .public) -> tab \(tab ?? "none", privacy: .public)")
+            }
+        }
+        log.info("companion test: hasChatKey=\(VoiceSettings.shared.hasChatKey) board=\(MacLink.shared.board.count) tabs")
+        Task {
+            await c.say(text)
+            for turn in c.turns {
+                log.info("turn [\(String(describing: turn.who), privacy: .public)]: \(turn.text, privacy: .public)")
+            }
+            if let e = c.lastError { log.error("companion error: \(e, privacy: .public)") }
         }
     }
 }

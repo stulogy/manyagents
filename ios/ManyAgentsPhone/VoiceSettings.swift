@@ -37,6 +37,7 @@ final class VoiceSettings: ObservableObject {
         static let voiceName = "voice.elevenVoiceName"
         static let source    = "voice.keySource"
         static let account   = "elevenlabs.apiKey"      // Keychain account
+        static let chat      = "anthropic.apiKey"       // Keychain account
     }
 
     /// ElevenLabs' own default voice ("Rachel"), so a key alone is enough
@@ -72,6 +73,18 @@ final class VoiceSettings: ObservableObject {
 
     var apiKey: String { Keychain.string(Keys.account) ?? "" }
 
+    /// The key the on-phone companion thinks with. Same delivery as the
+    /// voice key: typed once on the Mac, handed over sealed, kept in the
+    /// Keychain here.
+    var chatKey: String { Keychain.string(Keys.chat) ?? "" }
+    @Published private(set) var hasChatKey: Bool = Keychain.string(Keys.chat)?.isEmpty == false
+
+    func setChatKey(_ key: String) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        Keychain.set(trimmed.isEmpty ? nil : trimmed, for: Keys.chat)
+        hasChatKey = !chatKey.isEmpty
+    }
+
     private static let log = Logger(subsystem: "co.ailogy.manyagents.phone", category: "voice")
 
     /// Everything the speaker needs, or nil when we should use the phone's
@@ -100,7 +113,13 @@ final class VoiceSettings: ObservableObject {
     /// The Mac pushed its configuration. Takes it only when there's nothing
     /// here or when what's here also came from a Mac, so this stays a
     /// convenience and never a surprise overwrite.
-    func adoptFromMac(key: String, voiceID id: String?, voiceName name: String?) {
+    func adoptFromMac(key: String, voiceID id: String?, voiceName name: String?,
+                      chatKey: String? = nil) {
+        if let chatKey, !chatKey.isEmpty, chatKey != self.chatKey {
+            Keychain.set(chatKey, for: Keys.chat)
+            hasChatKey = !self.chatKey.isEmpty
+            Self.log.info("chat key from Mac: stored=\(self.hasChatKey)")
+        }
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, keySource != .manual else { return }
         if trimmed != apiKey {

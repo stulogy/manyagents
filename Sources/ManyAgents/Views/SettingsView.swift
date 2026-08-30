@@ -345,6 +345,7 @@ private struct PhoneSettingsTab: View {
     @AppStorage("manyagents.phonelink.relayURL") private var relayURL = ""
     @AppStorage("manyagents.voice.elevenKey") private var voiceKey = ""
     @AppStorage("manyagents.voice.elevenVoiceID") private var voiceID = ""
+    @AppStorage("manyagents.phone.chatKey") private var chatKey = ""
 
     var body: some View {
         Form {
@@ -376,6 +377,16 @@ private struct PhoneSettingsTab: View {
                     Text("Voice")
                 } footer: {
                     Text("Optional. With a key here, the phone app reads replies aloud in an ElevenLabs voice instead of the iPhone's built-in one. It's handed to your paired phone inside the same encrypted envelope as everything else, so there's nothing to type on a phone keyboard, and the phone falls back to its own voice whenever the key is missing or the network isn't there. Leave the voice ID blank for the default.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    SecureField("Anthropic API key", text: $chatKey)
+                } header: {
+                    Text("Companion")
+                } footer: {
+                    Text("The phone app's own conversation layer — the thing you talk to hands-free. It runs on the iPhone using a small, fast model, asks your orchestrators the questions, and reads back what matters instead of a five-paragraph report. This Mac never spends this key; it's handed to your paired phone in the same encrypted envelope and used there.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }

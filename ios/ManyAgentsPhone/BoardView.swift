@@ -14,6 +14,7 @@ struct BoardView: View {
     @State private var driveTab: DriveTarget?
     @State private var appointing = false
     @State private var showCompanionPicker = false
+    @State private var showCompanion = false
 
     private var needsYou: [MacLink.Tab] {
         // Written out rather than as a tuple comparison: the tuple form
@@ -130,6 +131,11 @@ struct BoardView: View {
                 .environmentObject(link)
                 .presentationDetents([.medium])
             }
+            .fullScreenCover(isPresented: $showCompanion) {
+                CompanionView(link: link, voice: Voice.shared)
+                    .environmentObject(link)
+                    .environmentObject(Voice.shared)
+            }
             .fullScreenCover(item: $driveTab) { target in
                 DriveModeView(tabId: target.id)
                     .environmentObject(link)
@@ -150,15 +156,9 @@ struct BoardView: View {
     @ViewBuilder
     private var companionBar: some View {
         Button {
-            if let tab = link.companionTab {
-                driveTab = DriveTarget(id: tab)
-            } else {
-                appointing = true
-                link.askForCompanion(create: true) { tab in
-                    appointing = false
-                    driveTab = tab.map(DriveTarget.init)
-                }
-            }
+            // Straight in. The companion resolves an orchestrator itself
+            // when it needs one, so there's nothing to wait for here.
+            showCompanion = true
         } label: {
             HStack(spacing: 13) {
                 ZStack {
@@ -233,10 +233,12 @@ struct BoardView: View {
     @ViewBuilder
     private func groupTalkButton(_ group: Group) -> some View {
         Button {
+            // Point the companion at this project first, so "what's
+            // happening" means this board and not the last one.
             appointing = true
-            link.askForCompanion(scope: group.id, create: true) { tab in
+            link.askForCompanion(scope: group.id, create: true) { _ in
                 appointing = false
-                driveTab = tab.map(DriveTarget.init)
+                showCompanion = true
             }
         } label: {
             Image(systemName: "waveform")

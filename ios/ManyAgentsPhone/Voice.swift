@@ -156,6 +156,10 @@ final class Voice: NSObject, ObservableObject {
     /// own audio comes back while the agent thinks.
     fileprivate func finishedSpeaking() {
         isSpeaking = false
+        if !queue.isEmpty {
+            startSpeaking(queue.removeFirst())
+            return
+        }
         if keepAlive != nil { try? configureSession(.idle) }
         settled()
     }
@@ -271,10 +275,23 @@ final class Voice: NSObject, ObservableObject {
 
     // MARK: - Speaking
 
+    /// Things said while something else is still being said. The
+    /// companion often speaks twice in a turn — "I'll go and ask" and then
+    /// the answer — and having the second cut the first off mid-word made
+    /// it sound like it had crashed.
+    private var queue: [String] = []
+
     func speak(_ raw: String) {
         let text = Self.speakable(raw)
         guard !text.isEmpty else { return }
-        stopSpeaking()
+        guard !isSpeaking && !isBuffering else {
+            queue.append(text)
+            return
+        }
+        startSpeaking(text)
+    }
+
+    private func startSpeaking(_ text: String) {
         voiceNotice = nil
         do { try configureSession(.speaking) } catch { }
 
@@ -343,6 +360,7 @@ final class Voice: NSObject, ObservableObject {
     }
 
     func stopSpeaking() {
+        queue.removeAll()
         isBuffering = false
         eleven.stop()
         if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }

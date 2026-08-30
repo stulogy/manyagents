@@ -31,6 +31,9 @@ final class PhoneLink: NSObject, ObservableObject {
         static let voiceKey       = "manyagents.voice.elevenKey"
         static let voiceID        = "manyagents.voice.elevenVoiceID"
         static let voiceName      = "manyagents.voice.elevenVoiceName"
+        /// The model the phone's own companion layer thinks with. Not used
+        /// by the Mac at all — it's handed over and spent there.
+        static let chatKey        = "manyagents.phone.chatKey"
     }
 
     /// No default, deliberately. This is an open-source app and a relay is
@@ -393,7 +396,8 @@ final class PhoneLink: NSObject, ObservableObject {
                    "provider": "elevenlabs",
                    "key": d.string(forKey: Keys.voiceKey) ?? "",
                    "voiceId": d.string(forKey: Keys.voiceID) ?? "",
-                   "voiceName": d.string(forKey: Keys.voiceName) ?? ""])
+                   "voiceName": d.string(forKey: Keys.voiceName) ?? "",
+                   "chatKey": d.string(forKey: Keys.chatKey) ?? ""])
 
         case "answer_question":
             guard let s = tab(for: req["tab"], in: mgr),

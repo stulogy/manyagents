@@ -10,6 +10,10 @@ import UIKit
 @MainActor
 final class MacLink: ObservableObject {
 
+    /// One connection for the app. The socket, the board and the watched
+    /// transcripts are all app-lifetime state, not view state.
+    static let shared = MacLink()
+
     struct Pairing: Codable, Equatable {
         var relay: String
         var room: String
@@ -417,13 +421,16 @@ final class MacLink: ObservableObject {
     @discardableResult
     func refreshVoiceConfig(then: ((Bool) -> Void)? = nil) -> Bool {
         request("voice_config") { reply in
-            guard reply["ok"] as? Bool == true,
-                  let key = reply["key"] as? String, !key.isEmpty
-            else { then?(false); return }
+            guard reply["ok"] as? Bool == true else { then?(false); return }
+            // Two independent keys ride in here and either may be unset.
+            // Gating one on the other meant a Mac with only a companion
+            // key handed over nothing.
+            let key = reply["key"] as? String ?? ""
             VoiceSettings.shared.adoptFromMac(key: key,
                                               voiceID: reply["voiceId"] as? String,
-                                              voiceName: reply["voiceName"] as? String)
-            then?(true)
+                                              voiceName: reply["voiceName"] as? String,
+                                              chatKey: reply["chatKey"] as? String)
+            then?(!key.isEmpty)
         }
     }
 
@@ -439,6 +446,35 @@ final class MacLink: ObservableObject {
     /// to the end and is obviously not a confirmed message.
     private func pendingSeq(for tab: String) -> Int {
         ((messages[tab] ?? []).map(\.seq).max() ?? 0) + 1_000_000
+    }
+
+    /// Highest sequence currently known for a tab — the baseline you take
+    /// before sending, so "has it answered yet" has a definite meaning.
+    func highestSeq(in tab: String) -> Int {
+        (messages[tab] ?? []).filter { !$0.isPending }.map(\.seq).max() ?? 0
+    }
+
+    /// Wait for a tab to finish answering.
+    ///
+    /// No network polling: the Mac already pushes a watched tab's tail and
+    /// the board on every change, so this watches local state and costs
+    /// nothing. Waits for BOTH a new assistant message and the tab going
+    /// quiet — a message alone can arrive mid-turn, and reading half an
+    /// answer aloud is worse than waiting.
+    func awaitReply(tab: String, afterSeq: Int, timeout: TimeInterval) async -> String? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            if Task.isCancelled { return nil }
+            let busy = board.first { $0.id == tab }?.isBusy ?? false
+            if !busy,
+               let latest = (messages[tab] ?? []).last(where: {
+                   $0.role == "assistant" && $0.seq > afterSeq && !$0.text.isEmpty
+               }) {
+                return latest.text
+            }
+        }
+        return nil
     }
 
     func closeTab(_ id: String) {

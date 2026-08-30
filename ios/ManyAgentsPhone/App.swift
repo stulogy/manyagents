@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct ManyAgentsPhoneApp: App {
-    @StateObject private var link = MacLink()
+    @StateObject private var link = MacLink.shared
     @StateObject private var voice = Voice.shared
     @Environment(\.scenePhase) private var scenePhase
 
@@ -22,9 +22,8 @@ struct ManyAgentsPhoneApp: App {
                     // path headlessly. Voice bugs are silent by
                     // definition, and tapping through three screens to
                     // reproduce one is how they stay unfixed.
-                    if url.host == "voicetest" || url.path == "voicetest" {
-                        VoiceDiagnostics.run(url: url)
-                    }
+                    if url.host == "voicetest" { VoiceDiagnostics.run(url: url) }
+                    if url.host == "companiontest" { VoiceDiagnostics.runCompanion(url: url) }
                     #endif
                 }
                 .onChange(of: scenePhase) { _, phase in
