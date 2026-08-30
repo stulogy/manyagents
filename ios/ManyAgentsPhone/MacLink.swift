@@ -156,6 +156,10 @@ final class MacLink: ObservableObject {
     private var pending: [String: ([String: Any]) -> Void] = [:]
     private var reconnectAttempts = 0
     private var watchedTab: String?
+    /// Sealed frames we failed to open in a row. One could be a race with
+    /// a rotated key; a run of them is a mismatch.
+    private var undecryptable = 0
+    private var boardRetries = 0
 
     init() {
         companionScope = UserDefaults.standard.string(forKey: "companionScope")
@@ -257,7 +261,20 @@ final class MacLink: ObservableObject {
                 if up { refreshBoard(); refreshVoiceConfig() }
             }
         case "env":
-            guard let sealed = obj["data"] as? String, let payload = open(sealed) else { return }
+            guard let sealed = obj["data"] as? String else { return }
+            guard let payload = open(sealed) else {
+                // The Mac is there and talking, and we can't read a word
+                // of it: this phone's pairing key isn't the Mac's any
+                // more. Every symptom of this was invisible — connected
+                // dot, empty board, no error, nothing to retry — so say
+                // it plainly instead.
+                undecryptable += 1
+                if undecryptable >= 2 {
+                    connection = .failed("This phone's pairing code doesn't match your Mac any more. Unpair, then scan the code in ManyAgents → Settings → Phone.")
+                }
+                return
+            }
+            undecryptable = 0
             route(payload)
         default:
             break
@@ -273,7 +290,16 @@ final class MacLink: ObservableObject {
         // Or a push from the Mac.
         switch payload["ev"] as? String {
         case "board":
+            let wasEmpty = board.isEmpty
             board = Self.decodeBoard(payload["board"])
+            // A failure worked out against an empty board isn't news any
+            // more once the board turns up. Re-ask rather than leaving
+            // "no orchestrator, and no project to start one in" sitting
+            // over a list of seventeen tabs.
+            if !board.isEmpty, wasEmpty || companionTab == nil {
+                companionError = nil
+                askForCompanion()
+            }
         case "messages":
             if let tab = payload["tab"] as? String {
                 merge(Self.decodeMessages(payload["messages"]), into: tab)
@@ -350,6 +376,7 @@ final class MacLink: ObservableObject {
     /// didn't — either way the first thing you see is current.
     func appDidBecomeActive() {
         reconnectAttempts = 0
+        boardRetries = 0
         let socketAlive = task != nil && connection == .connected
         if socketAlive {
             refreshBoard()
@@ -362,7 +389,29 @@ final class MacLink: ObservableObject {
     func refreshBoard() {
         request("board") { [weak self] reply in
             guard let self, reply["ok"] as? Bool == true else { return }
+            self.boardRetries = 0
+            let wasEmpty = self.board.isEmpty
             self.board = Self.decodeBoard(reply["board"])
+            if !self.board.isEmpty, wasEmpty || self.companionTab == nil {
+                self.companionError = nil
+                self.askForCompanion()
+            }
+        }
+        scheduleBoardRetry()
+    }
+
+    /// One dropped reply used to mean a permanently empty board: nothing
+    /// asked again, and the empty state had no way to retry. An empty
+    /// board while connected is now something the app keeps chasing —
+    /// backing off, and giving up rather than hammering a Mac that
+    /// genuinely has nothing open.
+    private func scheduleBoardRetry() {
+        guard boardRetries < 5 else { return }
+        boardRetries += 1
+        let delay = Double(boardRetries) * 1.5
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.board.isEmpty, self.connection == .connected else { return }
+            self.refreshBoard()
         }
     }
 

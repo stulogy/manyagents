@@ -86,10 +86,22 @@ struct BoardView: View {
                     // emptiness — it appoints an orchestrator on the Mac,
                     // and after a Mac restart that's exactly the state
                     // you're in.
-                    VStack(spacing: 0) {
-                        companionBar.padding(.horizontal, 14).padding(.top, 12)
-                        EmptyBoard(connection: link.connection)
+                    // Scrollable so it can be pulled to refresh: with no
+                    // rows there was no gesture and no button, so a board
+                    // that failed to arrive left you with nothing to do
+                    // but kill the app.
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            companionBar.padding(.horizontal, 14).padding(.top, 12)
+                            EmptyBoard(connection: link.connection)
+                            Button("Ask my Mac again") { link.refreshBoard() }
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Theme.orange)
+                                .padding(.top, 4)
+                        }
+                        .frame(minHeight: 420)
                     }
+                    .refreshable { link.refreshBoard() }
                 } else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 18) {
@@ -497,7 +509,7 @@ struct EmptyBoard: View {
         switch connection {
         case .connected:  return "No tabs open"
         case .macOffline: return "Your Mac is offline"
-        case .failed:     return "Can't reach the relay"
+        case .failed:     return "Can't reach your Mac"
         default:          return "Connecting…"
         }
     }
@@ -505,7 +517,10 @@ struct EmptyBoard: View {
         switch connection {
         case .connected:  return "Open a session in ManyAgents and it shows up here."
         case .macOffline: return "ManyAgents isn't running, or the Mac is asleep. This reconnects on its own."
-        case .failed:     return "Check the relay is reachable, then pull to retry."
+        // The reason, verbatim — a pairing-key mismatch and an
+        // unreachable relay need opposite things from you, and one
+        // generic line told you neither.
+        case .failed(let why): return why
         default:          return "Reaching your Mac…"
         }
     }
