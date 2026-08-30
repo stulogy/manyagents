@@ -16,6 +16,11 @@ struct ManyAgentsPhoneApp: App {
                 // simulator, which has no camera to scan with.
                 .onOpenURL { url in
                     if let p = MacLink.Pairing.parse(url.absoluteString) { link.pairing = p }
+                    // manyagents://talk — straight into hands-free. Gives
+                    // Shortcuts and the Action button somewhere to point,
+                    // which is the difference between using this in a car
+                    // and fishing the phone out to find a button.
+                    if url.host == "talk" { NotificationCenter.default.post(name: .openCompanion, object: nil) }
                     #if DEBUG
                     // Debug builds only: `xcrun simctl openurl booted
                     // "manyagents://voicetest"` exercises the whole speech
@@ -33,6 +38,10 @@ struct ManyAgentsPhoneApp: App {
                 .preferredColorScheme(.dark)
         }
     }
+}
+
+extension Notification.Name {
+    static let openCompanion = Notification.Name("co.ailogy.manyagents.openCompanion")
 }
 
 struct RootView: View {

@@ -12,8 +12,6 @@ struct CompanionView: View {
     @StateObject private var companion: Companion
     @Environment(\.dismiss) private var dismiss
 
-    @State private var handsFree = true
-
     init(link: MacLink, voice: Voice) {
         _companion = StateObject(wrappedValue: Companion(link: link, voice: voice))
     }
@@ -40,24 +38,26 @@ struct CompanionView: View {
 
                 Spacer(minLength: 0)
 
-                micButton
-
-                Toggle(isOn: $handsFree) {
-                    Text("Keep listening after each reply")
-                        .font(.footnote)
-                        .foregroundStyle(Theme.dim)
+                // Only shown once the Mac is actually reachable. A mic
+                // that takes your words and has nowhere to send them is
+                // worse than no mic: you talk, and nothing happens.
+                if connected {
+                    micButton.padding(.bottom, 28)
+                } else {
+                    disconnected.padding(.bottom, 28)
                 }
-                .toggleStyle(.switch)
-                .tint(Theme.orange)
-                .padding(.horizontal, 40)
-                .padding(.bottom, 18)
             }
             .padding(.top, 12)
         }
         .navigationBarBackButtonHidden(true)
         .onAppear {
             voice.beginHandsFree()
-            Task { await companion.openingBrief() }
+            if connected { companion.openingBrief() }
+        }
+        // The board arrives a moment after the socket does. Greeting
+        // before it lands described a board we hadn't been sent yet.
+        .onChange(of: connected) { _, now in
+            if now { companion.openingBrief() }
         }
         .onDisappear { voice.leaveHandsFree() }
         .onChange(of: voice.finishedUtterance) { _, new in
@@ -65,12 +65,12 @@ struct CompanionView: View {
             _ = voice.consumeUtterance()
             Task { await companion.say(text) }
         }
+        // Finished reading a reply: take the next turn. Hands-free is the
+        // whole point of this screen, so it isn't a setting — it's on.
         .onChange(of: voice.isSpeaking) { was, now in
-            // Finished reading a reply: take the next turn.
-            if was && !now && handsFree && !companion.busy {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    if handsFree && !companion.busy { voice.startListening() }
-                }
+            guard was, !now, connected, !companion.busy else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                if !companion.busy && connected { voice.startListening() }
             }
         }
     }
@@ -138,6 +138,38 @@ struct CompanionView: View {
         }
     }
 
+    private var connected: Bool {
+        link.connection == .connected && !link.board.isEmpty
+    }
+
+    /// What you get instead of a microphone when there's no Mac on the
+    /// other end.
+    private var disconnected: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "iphone.slash")
+                .font(.system(size: 34, weight: .light))
+                .foregroundStyle(Theme.dim)
+            Text(disconnectedReason)
+                .font(.system(size: 15))
+                .foregroundStyle(Theme.dim)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+            Button("Try again") { link.reconnect() }
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.orange)
+        }
+    }
+
+    private var disconnectedReason: String {
+        switch link.connection {
+        case .connected:  return "Waiting for the board from your Mac…"
+        case .connecting: return "Connecting to your Mac…"
+        case .macOffline: return "ManyAgents isn't running on your Mac."
+        case .idle:       return "Not paired to a Mac."
+        case .failed(let why): return why
+        }
+    }
+
     private var micButton: some View {
         Button {
             if voice.isListening {
@@ -165,6 +197,7 @@ struct CompanionView: View {
     }
 
     private var status: String {
+        if !connected { return "not connected" }
         if voice.permissionDenied { return "microphone blocked" }
         if voice.isListening { return "listening" }
         if let doing = companion.activity, companion.busy { return doing }

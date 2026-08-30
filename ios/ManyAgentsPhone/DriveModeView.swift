@@ -12,7 +12,6 @@ struct DriveModeView: View {
     @EnvironmentObject private var voice: Voice
     @Environment(\.dismiss) private var dismiss
 
-    @State private var handsFree = true
     @State private var lastSpokenSeq: Int?
     @State private var awaitingReply = false
 
@@ -65,17 +64,18 @@ struct DriveModeView: View {
 
                 Spacer(minLength: 0)
 
-                micButton
-
-                Toggle(isOn: $handsFree) {
-                    Text("Keep listening after each reply")
-                        .font(.footnote)
-                        .foregroundStyle(Theme.dim)
+                if connected {
+                    micButton.padding(.bottom, 28)
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: "iphone.slash")
+                            .font(.system(size: 30, weight: .light))
+                        Text("Not connected to your Mac.")
+                            .font(.system(size: 15))
+                    }
+                    .foregroundStyle(Theme.dim)
+                    .padding(.bottom, 28)
                 }
-                .toggleStyle(.switch)
-                .tint(Theme.orange)
-                .padding(.horizontal, 40)
-                .padding(.bottom, 18)
             }
             .padding(.top, 12)
         }
@@ -104,12 +104,13 @@ struct DriveModeView: View {
             awaitingReply = false
             voice.speak(msg.text)
         }
+        // Finished speaking: take the next turn. Always — this screen is
+        // for when you can't touch the phone, so "keep listening" was
+        // never a real choice.
         .onChange(of: voice.isSpeaking) { was, now in
-            // Finished speaking and hands-free is on: take the next turn.
-            if was && !now && handsFree && !awaitingReply {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    if handsFree { voice.startListening() }
-                }
+            guard was, !now, connected, !awaitingReply else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                if connected { voice.startListening() }
             }
         }
     }
@@ -165,7 +166,10 @@ struct DriveModeView: View {
         .accessibilityLabel(voice.isListening ? "Stop listening" : "Start talking")
     }
 
+    private var connected: Bool { link.connection == .connected }
+
     private var bigStatus: String {
+        if !connected { return "not connected" }
         if voice.permissionDenied { return "microphone blocked" }
         if voice.isListening { return "listening" }
         // Fetching audio is not speaking. Saying "speaking" through the

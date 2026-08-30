@@ -123,6 +123,9 @@ struct BoardView: View {
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .onReceive(NotificationCenter.default.publisher(for: .openCompanion)) { _ in
+                showCompanion = true
+            }
             .sheet(isPresented: $showCompanionPicker) {
                 CompanionPicker { tab in
                     link.chooseCompanion(tab)
