@@ -56,12 +56,19 @@ struct CompanionView: View {
         // start.
         .onAppear {
             voice.beginHandsFree()
-            if connected { voice.startListening() }
+            resume()
         }
-        .onChange(of: connected) { _, now in
-            if now, !voice.isListening, !voice.isSpeaking, !companion.busy {
-                voice.startListening()
-            }
+        // The microphone coming back can't hang off one event. It used to
+        // depend solely on speech finishing, so a turn that spoke nothing
+        // — an error, an empty reply, a mic that heard nothing — left you
+        // sitting in front of a screen that had quietly stopped
+        // listening. Anything that could end a turn re-checks instead.
+        .onChange(of: connected) { _, _ in resume() }
+        .onChange(of: voice.isListening) { _, _ in resume() }
+        .onChange(of: voice.isBuffering) { _, _ in resume() }
+        .onChange(of: companion.busy) { _, _ in resume() }
+        .onChange(of: voice.deafened) { _, deaf in
+            if deaf { voice.clearDeafened(); resume() }
         }
         .onDisappear { voice.leaveHandsFree() }
         .onChange(of: voice.finishedUtterance) { _, new in
@@ -69,14 +76,7 @@ struct CompanionView: View {
             _ = voice.consumeUtterance()
             Task { await companion.say(text) }
         }
-        // Finished reading a reply: take the next turn. Hands-free is the
-        // whole point of this screen, so it isn't a setting — it's on.
-        .onChange(of: voice.isSpeaking) { was, now in
-            guard was, !now, connected, !companion.busy else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                if !companion.busy && connected { voice.startListening() }
-            }
-        }
+        .onChange(of: voice.isSpeaking) { _, _ in resume() }
     }
 
     private var header: some View {
@@ -143,6 +143,22 @@ struct CompanionView: View {
     }
 
     private var connected: Bool { link.reachable }
+
+    /// Listen again whenever there's nothing else going on. Hands-free is
+    /// the whole point of this screen, so the resting state is "the
+    /// microphone is open", and every path back to rest goes through here.
+    private func resume() {
+        guard connected, !companion.busy,
+              !voice.isSpeaking, !voice.isBuffering, !voice.isListening,
+              !voice.permissionDenied
+        else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            guard connected, !companion.busy,
+                  !voice.isSpeaking, !voice.isBuffering, !voice.isListening
+            else { return }
+            voice.startListening()
+        }
+    }
 
     /// What you get instead of a microphone when there's no Mac on the
     /// other end.

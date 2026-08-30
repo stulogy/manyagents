@@ -210,20 +210,36 @@ final class Voice: NSObject, ObservableObject {
                 request = req
 
                 let input = engine.inputNode
-                let format = input.outputFormat(forBus: 0)
+                // inputFormat, not outputFormat: after a route change —
+                // and switching from the keep-alive's playback session to
+                // playAndRecord is a route change — the output format can
+                // still describe the old route, and a tap installed with
+                // it delivers no buffers. No buffers means no partial
+                // results, no silence timer, and a microphone that sits
+                // there looking like it's listening to you and isn't.
                 input.removeTap(onBus: 0)
+                let format = input.inputFormat(forBus: 0)
+                guard format.sampleRate > 0, format.channelCount > 0 else {
+                    Self.log.error("listen: input format is \(format.sampleRate)Hz — no usable mic route")
+                    isListening = false
+                    return
+                }
                 input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
                     self?.request?.append(buffer)
                 }
                 engine.prepare()
                 try engine.start()
                 isListening = true
+                Self.log.info("listen: started at \(format.sampleRate, format: .fixed(precision: 0))Hz")
+                startHearingWatchdog()
 
                 recognitionTask = recognizer?.recognitionTask(with: req) { [weak self] result, error in
                     Task { @MainActor in
                         guard let self else { return }
                         if let result {
                             self.heard = result.bestTranscription.formattedString
+                            self.hearingWatchdog?.invalidate()
+                            self.hearingWatchdog = nil
                             self.resetSilenceTimer()
                         }
                         if error != nil || result?.isFinal == true {
@@ -232,10 +248,35 @@ final class Voice: NSObject, ObservableObject {
                     }
                 }
             } catch {
+                Self.log.error("listen: \(error.localizedDescription, privacy: .public)")
                 isListening = false
             }
         }
     }
+
+    /// A microphone that hears literally nothing is a broken microphone,
+    /// not a quiet room: the recogniser emits a partial result for any
+    /// speech at all. If nothing arrives for this long, stop pretending
+    /// and hand back so the caller can try again rather than leaving you
+    /// talking to a dead screen.
+    private var hearingWatchdog: Timer?
+
+    private func startHearingWatchdog() {
+        hearingWatchdog?.invalidate()
+        hearingWatchdog = Timer.scheduledTimer(withTimeInterval: 8, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isListening, self.heard.isEmpty else { return }
+                Self.log.error("listen: 8s with no audio — restarting the mic")
+                self.cancelListening()
+                self.deafened = true
+            }
+        }
+    }
+
+    /// Set when the watchdog fired: the last attempt heard nothing at all.
+    @Published private(set) var deafened = false
+
+    func clearDeafened() { deafened = false }
 
     /// Restarted on every partial result: when it fires, you've gone quiet
     /// long enough that we should send what we have. This is what makes
@@ -250,6 +291,8 @@ final class Voice: NSObject, ObservableObject {
     func finishListening() {
         silenceTimer?.invalidate()
         silenceTimer = nil
+        hearingWatchdog?.invalidate()
+        hearingWatchdog = nil
         guard isListening else { return }
         isListening = false
         engine.inputNode.removeTap(onBus: 0)
