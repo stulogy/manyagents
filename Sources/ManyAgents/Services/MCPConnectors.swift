@@ -70,6 +70,27 @@ final class MCPConnectors: ObservableObject {
 
     // MARK: - List
 
+    /// Just the names, and nothing else.
+    ///
+    /// `refresh()` is thorough and expensive: it verifies every server,
+    /// which for claude.ai connectors means logging them out first to
+    /// defeat a stale token cache. That's right when someone is looking
+    /// at the connectors pane and wrong as a background chore — and the
+    /// phone's companion only needs to know what exists, so it can stop
+    /// telling the user it has no way to reach their email.
+    @Published private(set) var names: [String] = []
+    private var namesFetchedAt: Date?
+
+    func refreshNames(force: Bool = false) {
+        if !force, let at = namesFetchedAt, Date().timeIntervalSince(at) < 300 { return }
+        namesFetchedAt = Date()
+        _ = runClaude(["mcp", "list"], timeout: 60) { [weak self] _, output in
+            guard let self else { return }
+            let found = Self.parseList(output).map(\.name)
+            if found != self.names { self.names = found }
+        }
+    }
+
     func refresh() {
         guard !refreshing else { return }
         refreshing = true

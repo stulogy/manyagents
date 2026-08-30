@@ -64,7 +64,7 @@ enum VoiceDiagnostics {
                 log.info("test scope \(scope, privacy: .public) -> tab \(tab ?? "none", privacy: .public)")
             }
         }
-        log.info("companion test: hasChatKey=\(VoiceSettings.shared.hasChatKey) board=\(MacLink.shared.board.count) tabs")
+        log.info("companion test: hasChatKey=\(VoiceSettings.shared.hasChatKey) board=\(MacLink.shared.board.count) tabs connectors=[\(MacLink.shared.connectors.joined(separator: ", "), privacy: .public)] facts=\(Companion.shared.facts.count)")
         Task {
             await c.say(text)
             for turn in c.turns {

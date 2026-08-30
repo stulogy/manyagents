@@ -109,6 +109,9 @@ final class MacLink: ObservableObject {
     /// back, which reads as the app breaking. This goes true the instant
     /// we're live and false only after we've genuinely been gone a while.
     @Published private(set) var reachable = false
+    /// What the agents can reach besides code — Gmail, Calendar, Drive.
+    /// Sent by the Mac, because the phone has no other way to know.
+    @Published private(set) var connectors: [String] = []
     @Published private(set) var messages: [String: [Msg]] = [:]   // tab id → transcript
     @Published private(set) var sending = false
     /// The tab hands-free mode talks to. See `askForCompanion`.
@@ -348,6 +351,7 @@ final class MacLink: ObservableObject {
         case "board":
             let wasEmpty = board.isEmpty
             board = Self.decodeBoard(payload["board"])
+            if let names = payload["connectors"] as? [String] { connectors = names }
             // A failure worked out against an empty board isn't news any
             // more once the board turns up. Re-ask rather than leaving
             // "no orchestrator, and no project to start one in" sitting
@@ -448,6 +452,7 @@ final class MacLink: ObservableObject {
             self.boardRetries = 0
             let wasEmpty = self.board.isEmpty
             self.board = Self.decodeBoard(reply["board"])
+            if let names = reply["connectors"] as? [String] { self.connectors = names }
             if !self.board.isEmpty, wasEmpty || self.companionTab == nil {
                 self.companionError = nil
                 self.askForCompanion()

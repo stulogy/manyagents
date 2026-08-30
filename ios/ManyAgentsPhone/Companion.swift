@@ -379,9 +379,17 @@ final class Companion: ObservableObject {
     /// The prompt plus whatever it has been told, so something explained
     /// once doesn't have to be explained again next week.
     private var systemPrompt: String {
-        guard !facts.isEmpty else { return Self.basePrompt }
-        return Self.basePrompt + "\n\nThings the user has told you before:\n"
-            + facts.map { "- " + $0 }.joined(separator: "\n")
+        var prompt = Self.basePrompt
+        if !link.connectors.isEmpty {
+            prompt += "\n\nBesides the code, the agents on this Mac are connected to: "
+                + link.connectors.joined(separator: ", ")
+                + ". So things like mail, calendars and documents are within reach — ask them."
+        }
+        if !facts.isEmpty {
+            prompt += "\n\nThings the user has told you before:\n"
+                + facts.map { "- " + $0 }.joined(separator: "\n")
+        }
+        return prompt
     }
 
     private static let basePrompt = """
@@ -430,6 +438,17 @@ final class Companion: ObservableObject {
     If the user asks you to find something out, go and find it out. Asking \
     the user "shall I ask?" when they have just told you to ask wastes the \
     only thing they're short of, which is attention on a road.
+
+    You do not know what the agents can do, and you must not assume the \
+    limit is your own. They run on a real computer with real tools — \
+    files, shell, the web, and whatever the user has connected, which \
+    often includes mail, calendars and documents. Never tell the user \
+    something can't be done, and never say you don't have access to \
+    something: pass the request to an orchestrator and let it answer. \
+    "I'll ask" is always available to you; "you can't" almost never is. \
+    If an orchestrator turns out to be able to do something worth \
+    remembering — it can reach the user's email, say — remember which \
+    project that was.
 
     When an orchestrator replies, it will often be long, structured, and \
     full of file paths and code. Do not read it out. Read it, and tell the \

@@ -143,6 +143,22 @@ final class PhoneLink: NSObject, ObservableObject {
 
     func attach(manager: AgentManager) {
         self.manager = manager
+        // Ask what's connected now, rather than when the phone first
+        // needs it: `claude mcp list` takes a few seconds, and a lazy
+        // fetch meant the first board reply went out saying the agents
+        // could reach nothing, which is what the phone then believed.
+        //
+        // Names only — the full refresh verifies each server by logging
+        // it out first, which is fine when you're looking at the
+        // connectors pane and not something to do to someone on launch.
+        MCPConnectors.shared.refreshNames()
+        // ...and push again when the answer lands, so a phone already
+        // looking at an empty list gets told.
+        MCPConnectors.shared.$names
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.pushBoardIfPaired() }
+            .store(in: &cancellables)
         // Board changes are pushed, not polled: the phone shows live status
         // without asking. Debounced because this fires per streamed token.
         manager.objectWillChange
@@ -305,7 +321,7 @@ final class PhoneLink: NSObject, ObservableObject {
             reply(["ok": true])
 
         case "board":
-            reply(["ok": true, "board": boardPayload()])
+            reply(["ok": true, "board": boardPayload(), "connectors": connectorNames()])
 
         case "transcript":
             guard let s = tab(for: req["tab"], in: mgr) else {
@@ -417,6 +433,18 @@ final class PhoneLink: NSObject, ObservableObject {
     }
 
     // MARK: - Payloads
+
+    /// What the agents can reach beyond code — Gmail, Calendar, Drive,
+    /// whatever else is connected.
+    ///
+    /// The phone's companion has no way to know this, and not knowing it
+    /// made it decline things the agents can plainly do ("I can't check
+    /// your email") instead of passing them on. The Mac already tracks it
+    /// for its own Settings pane; it just never told anyone.
+    private func connectorNames() -> [String] {
+        MCPConnectors.shared.refreshNames()
+        return MCPConnectors.shared.names
+    }
 
     private func boardPayload() -> [[String: Any]] {
         guard let mgr = manager else { return [] }
@@ -538,7 +566,7 @@ final class PhoneLink: NSObject, ObservableObject {
 
     private func pushBoardIfPaired() {
         guard state == .paired else { return }
-        send(["ev": "board", "board": boardPayload()])
+        send(["ev": "board", "board": boardPayload(), "connectors": connectorNames()])
         // A watched tab's transcript tail rides along so an open thread on
         // the phone updates without polling for it.
         guard let mgr = manager else { return }
