@@ -13,8 +13,10 @@ struct BoardView: View {
     struct DriveTarget: Identifiable { let id: String }
     @State private var driveTab: DriveTarget?
     @State private var appointing = false
-    @State private var showCompanionPicker = false
     @State private var showCompanion = false
+    /// Set only when you came in from a project's own button, and then
+    /// only as a preference — see CompanionView.scopeLine.
+    @State private var companionFocus: String?
 
     private var needsYou: [MacLink.Tab] {
         // Written out rather than as a tuple comparison: the tuple form
@@ -140,16 +142,8 @@ struct BoardView: View {
             .onReceive(NotificationCenter.default.publisher(for: .openCompanion)) { _ in
                 showCompanion = true
             }
-            .sheet(isPresented: $showCompanionPicker) {
-                CompanionPicker { tab in
-                    link.chooseCompanion(tab)
-                    showCompanionPicker = false
-                }
-                .environmentObject(link)
-                .presentationDetents([.medium])
-            }
             .fullScreenCover(isPresented: $showCompanion) {
-                CompanionView(link: link, voice: Voice.shared)
+                CompanionView(link: link, voice: Voice.shared, focus: companionFocus)
                     .environmentObject(link)
                     .environmentObject(Voice.shared)
             }
@@ -182,8 +176,9 @@ struct BoardView: View {
     @ViewBuilder
     private var companionButton: some View {
         Button {
-            // Straight in. The companion resolves an orchestrator itself
-            // when it needs one, so there's nothing to wait for here.
+            // Straight in, across everything. The companion picks the
+            // project from what you say, and asks if it can't tell.
+            companionFocus = nil
             showCompanion = true
         } label: {
             HStack(spacing: 13) {
@@ -222,36 +217,22 @@ struct BoardView: View {
     /// leaving that implicit meant you couldn't tell whose work you were
     /// asking about.
     private var companionSubtitle: String {
-        if appointing { return "Starting one on your Mac…" }
-        if let error = link.companionError, link.companionTab == nil { return error }
-        guard let id = link.companionTab,
-              let tab = link.board.first(where: { $0.id == id })
-        else { return "Hands-free, across a project's tabs" }
-        let count = link.tabCount(inScopeOf: tab)
-        let where_ = link.scopeName(of: tab)
-        if tab.isBusy { return "\(where_) · working" }
-        return "\(where_) · \(count) tab\(count == 1 ? "" : "s")"
+        let projects = Set(link.board.map { link.scope(of: $0) }).count
+        let tabs = link.board.count
+        guard projects > 1 else { return "Hands-free, across \(tabs) tabs" }
+        return "Hands-free, across \(tabs) tabs in \(projects) projects"
     }
 
-    /// Switching boards is a first-class action, not a hidden one — with
-    /// more than one orchestrator the top button is otherwise a coin toss
-    /// the user never sees being flipped.
+    /// No project switcher. It picked which orchestrator got asked by
+    /// default, while the label made it look like a boundary — and there
+    /// isn't one: the companion reads the whole board and can reach any
+    /// project by name. A control whose only job is to be misread is
+    /// worse than no control.
     @ViewBuilder
     private var companionSwitcher: some View {
-        if link.orchestrators.count > 1 {
-            Button { showCompanionPicker = true } label: {
-                Image(systemName: "arrow.triangle.swap")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.orange)
-                    .padding(8)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Switch which project you're talking to")
-        } else {
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Theme.dim)
-        }
+        Image(systemName: "chevron.right")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Theme.dim)
     }
 
     /// Talk to *this* project. One tap from the board, so the answer to
@@ -266,13 +247,10 @@ struct BoardView: View {
     @ViewBuilder
     private func groupTalkControl(_ group: Group) -> some View {
         Button {
-            // Point the companion at this project first, so "what's
-            // happening" means this board and not the last one.
-            appointing = true
-            link.askForCompanion(scope: group.id, create: true) { _ in
-                appointing = false
-                showCompanion = true
-            }
+            // Same conversation, just started pointed at this project so
+            // you don't have to name it in the first sentence.
+            companionFocus = group.name
+            showCompanion = true
         } label: {
             Image(systemName: "waveform")
                 .font(.system(size: 12, weight: .semibold))
@@ -595,6 +573,13 @@ struct SettingsView: View {
                             Text(voiceSummary).foregroundStyle(.secondary)
                         }
                     }
+                    NavigationLink {
+                        CompanionMemoryView()
+                    } label: {
+                        LabeledContent("What it remembers") {
+                            Text(memorySummary).foregroundStyle(.secondary)
+                        }
+                    }
                 }
 
                 Section {
@@ -627,6 +612,11 @@ struct SettingsView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
         }
+    }
+
+    private var memorySummary: String {
+        let n = Companion.shared.facts.count
+        return n == 0 ? "Nothing yet" : "\(n) thing\(n == 1 ? "" : "s")"
     }
 
     private var voiceSummary: String {

@@ -12,8 +12,12 @@ struct CompanionView: View {
     @StateObject private var companion: Companion
     @Environment(\.dismiss) private var dismiss
 
-    init(link: MacLink, voice: Voice) {
-        _companion = StateObject(wrappedValue: Companion(link: link, voice: voice))
+    private let focus: String?
+
+    init(link: MacLink, voice: Voice, focus: String? = nil) {
+        self.focus = focus
+        // The shared one: the conversation outlives this screen.
+        _companion = StateObject(wrappedValue: Companion.shared)
     }
 
     var body: some View {
@@ -55,6 +59,7 @@ struct CompanionView: View {
         // ask for is the thing you have to sit through before you can
         // start.
         .onAppear {
+            companion.focus = focus
             voice.beginHandsFree()
             resume()
         }
@@ -224,10 +229,13 @@ struct CompanionView: View {
         return "tap to talk"
     }
 
+    /// Says what it can actually reach. Naming one project here implied
+    /// a boundary that doesn't exist — it can see and talk to all of
+    /// them, and only prefers one when you came in from that project.
     private var scopeLine: String {
-        guard let id = link.companionTab,
-              let tab = link.board.first(where: { $0.id == id })
-        else { return "\(link.board.count) tabs" }
-        return link.scopeName(of: tab)
+        if let focus { return "starting with \(focus)" }
+        let projects = Set(link.board.map { link.scope(of: $0) }).count
+        guard projects > 1 else { return "\(link.board.count) tabs" }
+        return "\(link.board.count) tabs · \(projects) projects"
     }
 }

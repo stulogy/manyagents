@@ -57,7 +57,7 @@ enum VoiceDiagnostics {
         }
         let text = items.first { $0.name == "text" }?.value ?? "What is everyone working on?"
         let scope = items.first { $0.name == "scope" }?.value
-        let c = companion ?? Companion(link: .shared, voice: .shared)
+        let c = Companion.shared
         companion = c
         if let scope, !scope.isEmpty {
             MacLink.shared.askForCompanion(scope: scope, create: true) { tab in

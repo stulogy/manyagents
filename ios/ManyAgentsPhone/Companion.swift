@@ -40,9 +40,79 @@ final class Companion: ObservableObject {
     /// it carries tool calls and raw agent output the user never sees.
     private var history: [Anthropic.Message] = []
 
-    init(link: MacLink, voice: Voice) {
+    /// Things it has been told that are in no codebase and on no board —
+    /// who Danny is, which project the staging box belongs to. Without
+    /// these it asks the same disambiguating question every drive, which
+    /// is the quickest way to make a companion not worth talking to.
+    @Published private(set) var facts: [String] = []
+
+    private enum Store {
+        static let facts = "companion.facts"
+        static let turns = "companion.turns"
+        static let stamp = "companion.turnsAt"
+    }
+    /// Long enough to cover a drive and a stop. A week later it isn't the
+    /// same conversation, and picking it up mid-thread would confuse.
+    private static let historyLifetime: TimeInterval = 12 * 3600
+
+    /// A project to prefer when the user doesn't name one — set when you
+    /// open this from a project's own talk button. Not a boundary: the
+    /// companion can see and reach every project either way, which is the
+    /// whole point of it sitting above them.
+    var focus: String?
+
+    /// One conversation, not one per time you open the screen. You stop at
+    /// lights, glance at something, come back — and carrying on where you
+    /// were is most of the difference between a companion and a search box.
+    static let shared = Companion(link: .shared, voice: .shared)
+
+    init(link: MacLink, voice: Voice, focus: String? = nil) {
         self.link = link
         self.voice = voice
+        self.focus = focus
+        restore()
+    }
+
+    // MARK: - Memory
+
+    private func restore() {
+        let d = UserDefaults.standard
+        facts = d.stringArray(forKey: Store.facts) ?? []
+        let stamp = d.object(forKey: Store.stamp) as? Date ?? .distantPast
+        guard Date().timeIntervalSince(stamp) < Self.historyLifetime,
+              let rows = d.array(forKey: Store.turns) as? [[String: String]]
+        else { return }
+        // Rebuilt from what was said rather than from the raw API history:
+        // tool calls needn't survive a restart, and half-restored tool
+        // state is a reliable way to make the next request fail.
+        for row in rows {
+            guard let who = row["who"], let text = row["text"], !text.isEmpty else { continue }
+            let mine = who != "you"
+            turns.append(Turn(who: mine ? .companion : .you, text: text))
+            history.append(.text(mine ? "assistant" : "user", text))
+        }
+    }
+
+    private func persist() {
+        let d = UserDefaults.standard
+        d.set(turns.suffix(20).map { ["who": $0.who == .you ? "you" : "companion",
+                                      "text": $0.text] }, forKey: Store.turns)
+        d.set(Date(), forKey: Store.stamp)
+        d.set(facts, forKey: Store.facts)
+    }
+
+    /// Start the conversation again. Deliberately does not touch what it
+    /// has learned — forgetting who Danny is because you changed the
+    /// subject would be its own bug.
+    func clearConversation() {
+        turns = []
+        history = []
+        persist()
+    }
+
+    func forget(_ fact: String) {
+        facts.removeAll { $0 == fact }
+        persist()
     }
 
     // MARK: - The loop
@@ -55,6 +125,7 @@ final class Companion: ObservableObject {
         turns.append(Turn(who: .you, text: text))
         history.append(.text("user", text))
         await run()
+        persist()
     }
 
     private func run() async {
@@ -76,7 +147,7 @@ final class Companion: ObservableObject {
         for _ in 0..<4 {
             activity = activity ?? "thinking"
             do {
-                let reply = try await Anthropic.send(system: Self.systemPrompt,
+                let reply = try await Anthropic.send(system: systemPrompt,
                                                      messages: history,
                                                      tools: Self.tools,
                                                      apiKey: key)
@@ -121,6 +192,15 @@ final class Companion: ObservableObject {
                              wait: call.input["wait_seconds"] as? Int ?? 25)
         case "check_agents":
             return checkBack(project: call.input["project"] as? String)
+        case "remember":
+            guard let fact = (call.input["fact"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !fact.isEmpty
+            else { return "Nothing to remember." }
+            facts.removeAll { $0.caseInsensitiveCompare(fact) == .orderedSame }
+            facts.append(fact)
+            if facts.count > 30 { facts.removeFirst(facts.count - 30) }
+            persist()
+            return "Noted."
         default:
             return "No such tool."
         }
@@ -170,13 +250,27 @@ final class Companion: ObservableObject {
     /// truncating here would hide the part worth saying.
     private func ask(project: String?, question: String, wait: Int) async -> String {
         guard !question.isEmpty else { return "No question given." }
-        let scope = project.flatMap { name in
+        let named = project ?? focus
+        let match = named.flatMap { name in
             link.orchestrators.first {
                 link.scopeName(of: $0).localizedCaseInsensitiveContains(name)
-            }.map { link.scope(of: $0) }
+            }
         }
 
-        activity = "asking \(project ?? "the orchestrator")"
+        // Don't guess whose codebase to send an instruction into. If it
+        // isn't clear, hand the options back and let the model ask.
+        if match == nil {
+            let options = link.orchestrators.map { link.scopeName(of: $0) }
+            if let named, !options.isEmpty {
+                return "No project called \"\(named)\". Ask the user which of these: \(options.joined(separator: ", "))."
+            }
+            if options.count > 1 {
+                return "Which project? Ask the user, then call this again with one of: \(options.joined(separator: ", "))."
+            }
+        }
+        let scope = match.map { link.scope(of: $0) }
+
+        activity = "asking \(named ?? "the agents")"
         let tab: String? = await withCheckedContinuation { c in
             link.askForCompanion(scope: scope, create: true) { c.resume(returning: $0) }
         }
@@ -214,7 +308,15 @@ final class Companion: ObservableObject {
 
     // MARK: - Prompt
 
-    private static let systemPrompt = """
+    /// The prompt plus whatever it has been told, so something explained
+    /// once doesn't have to be explained again next week.
+    private var systemPrompt: String {
+        guard !facts.isEmpty else { return Self.basePrompt }
+        return Self.basePrompt + "\n\nThings the user has told you before:\n"
+            + facts.map { "- " + $0 }.joined(separator: "\n")
+    }
+
+    private static let basePrompt = """
     You are the ManyAgents companion. You run on the user's iPhone and you \
     talk to them out loud, usually while they are driving. Everything you \
     say is read aloud by a speech synthesiser.
@@ -245,8 +347,17 @@ final class Companion: ObservableObject {
     tabs look quiet; quiet is their normal state.
     - ask_agents: put a question or instruction to a project's \
     orchestrator, and wait for its reply. Use this for anything that needs \
-    real knowledge of the code, or any instruction to be carried out.
+    real knowledge of the code, or any instruction to be carried out. You \
+    can reach every project, not just one — name the project you mean. If \
+    it's genuinely ambiguous which one the user means, ask them; never \
+    guess whose codebase to send an instruction into.
     - check_agents: see whether an earlier question has been answered yet.
+    - remember: store a fact you will want on another day. Use it whenever \
+    the user tells you something you could not have known and will need \
+    again — who a person is and which project they belong to, what they \
+    call a thing, how they like something done. If you had to ask which \
+    project someone meant and they told you, remember it so you never have \
+    to ask again.
 
     If the user asks you to find something out, go and find it out. Asking \
     the user "shall I ask?" when they have just told you to ask wastes the \
@@ -278,7 +389,7 @@ final class Companion: ObservableObject {
                 ],
               ]),
         .init(name: "ask_agents",
-              description: "Ask a project's orchestrator a question, or tell it to do something. It can see and drive every tab in its project. Waits for the reply and returns it verbatim. Use for anything needing real knowledge of the code or any instruction to carry out.",
+              description: "Ask any project's orchestrator a question, or tell it to do something. It can see and drive every tab in its project. Waits for the reply and returns it verbatim. Use for anything needing real knowledge of the code or any instruction to carry out.",
               schema: [
                 "type": "object",
                 "properties": [
@@ -290,6 +401,16 @@ final class Companion: ObservableObject {
                                      "description": "How long to wait for a reply before returning. Default 25, max 60."],
                 ],
                 "required": ["question"],
+              ]),
+        .init(name: "remember",
+              description: "Store one short fact for future conversations — a person and their project, a nickname, a preference. Use it whenever the user tells you something you will need on another day, especially the answer to a question you had to ask them.",
+              schema: [
+                "type": "object",
+                "properties": [
+                    "fact": ["type": "string",
+                             "description": "One self-contained sentence, e.g. 'Danny is the tech lead on adapther.'"],
+                ],
+                "required": ["fact"],
               ]),
         .init(name: "check_agents",
               description: "Check whether the last thing you asked has been answered yet. Use when a previous ask_agents came back as still working.",
