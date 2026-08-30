@@ -50,14 +50,18 @@ struct CompanionView: View {
             .padding(.top, 12)
         }
         .navigationBarBackButtonHidden(true)
+        // Opens silent and listening. It has nothing to say until you've
+        // said something, and being greeted by a status report you didn't
+        // ask for is the thing you have to sit through before you can
+        // start.
         .onAppear {
             voice.beginHandsFree()
-            if connected { companion.openingBrief() }
+            if connected { voice.startListening() }
         }
-        // The board arrives a moment after the socket does. Greeting
-        // before it lands described a board we hadn't been sent yet.
         .onChange(of: connected) { _, now in
-            if now { companion.openingBrief() }
+            if now, !voice.isListening, !voice.isSpeaking, !companion.busy {
+                voice.startListening()
+            }
         }
         .onDisappear { voice.leaveHandsFree() }
         .onChange(of: voice.finishedUtterance) { _, new in

@@ -57,49 +57,6 @@ final class Companion: ObservableObject {
         await run()
     }
 
-    /// The opening line, composed here rather than by the model.
-    ///
-    /// Asking Haiku to greet you cost a round trip before you could speak,
-    /// and it answered every time with a variation on "nothing needs you"
-    /// — true, since a blocked tab is rare, and useless, since it said the
-    /// same thing whether one tab was running or fifteen. This is exact,
-    /// instant, and different when the board is different.
-    ///
-    /// It's seeded into the model's history so the conversation carries on
-    /// from something the model knows it said.
-    func openingBrief() {
-        guard turns.isEmpty else { return }
-        let line = Self.brief(link.board)
-        turns.append(Turn(who: .companion, text: line))
-        history = [.text("user", "[Voice mode opened. You greeted the user with the line below; carry on from it.]"),
-                   .text("assistant", line)]
-        voice.speak(line)
-    }
-
-    static func brief(_ board: [MacLink.Tab]) -> String {
-        guard !board.isEmpty else { return "No tabs open on your Mac. What do you want to start?" }
-
-        let blocked = board.filter { $0.blocked != nil }
-        if !blocked.isEmpty {
-            let names = blocked.prefix(2).map(\.title).joined(separator: " and ")
-            let rest = blocked.count - min(2, blocked.count)
-            let tail = rest > 0 ? ", and \(rest) more" : ""
-            return blocked.count == 1
-                ? "\(names) is waiting on you."
-                : "\(names)\(tail) are waiting on you."
-        }
-
-        let working = board.filter(\.isBusy)
-        switch working.count {
-        case 0:
-            return "All quiet. \(board.count) tabs, nothing running. What do you need?"
-        case 1:
-            return "\(working[0].title) is working. Everything else is quiet."
-        default:
-            return "\(working.count) tabs working, \(board.count - working.count) quiet. Nothing's blocked."
-        }
-    }
-
     private func run() async {
         guard !busy else { return }
         busy = true
