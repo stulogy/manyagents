@@ -100,8 +100,15 @@ final class MacLink: ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var connection: Connection = .idle
-    @Published private(set) var board: [Tab] = []
+    @Published private(set) var connection: Connection = .idle { didSet { updateReachability() } }
+    @Published private(set) var board: [Tab] = [] { didSet { updateReachability() } }
+    /// "The Mac is there" as a thing you can build UI on.
+    ///
+    /// Not the raw connection: a socket that blinks for two seconds is
+    /// invisible to a person but made the talk button vanish and come
+    /// back, which reads as the app breaking. This goes true the instant
+    /// we're live and false only after we've genuinely been gone a while.
+    @Published private(set) var reachable = false
     @Published private(set) var messages: [String: [Msg]] = [:]   // tab id → transcript
     @Published private(set) var sending = false
     /// The tab hands-free mode talks to. See `askForCompanion`.
@@ -160,6 +167,8 @@ final class MacLink: ObservableObject {
     /// a rotated key; a run of them is a mismatch.
     private var undecryptable = 0
     private var boardRetries = 0
+    private var pingTimer: Timer?
+    private var dropTimer: Timer?
 
     init() {
         companionScope = UserDefaults.standard.string(forKey: "companionScope")
@@ -180,6 +189,8 @@ final class MacLink: ObservableObject {
     }
 
     func unpair() {
+        pingTimer?.invalidate()
+        pingTimer = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         board = []
@@ -214,6 +225,47 @@ final class MacLink: ObservableObject {
         task = t
         t.resume()
         receive()
+        startHeartbeat()
+    }
+
+    /// Keep the socket warm.
+    ///
+    /// The Mac has always done this; the phone never did, and the phone is
+    /// the side that goes through someone else's edge proxy. Those reap a
+    /// websocket that has been silent for a minute or so, which showed up
+    /// as the connection dot blinking green-grey-green forever, a board
+    /// request that got no reply because the socket died under it, and a
+    /// conversation you couldn't actually have.
+    ///
+    /// Application-level rather than a protocol ping: proxies count bytes,
+    /// and the relay already answers `{t:"ping"}` with a pong.
+    private func updateReachability() {
+        let live = connection == .connected && !board.isEmpty
+        if live {
+            dropTimer?.invalidate()
+            dropTimer = nil
+            if !reachable { reachable = true }
+        } else if reachable, dropTimer == nil {
+            dropTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.dropTimer = nil
+                    if !(self.connection == .connected && !self.board.isEmpty) {
+                        self.reachable = false
+                    }
+                }
+            }
+        }
+    }
+
+    private func startHeartbeat() {
+        pingTimer?.invalidate()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let task = self.task else { return }
+                task.send(.string("{\"t\":\"ping\"}")) { _ in }
+            }
+        }
     }
 
     private func receive() {
@@ -222,6 +274,8 @@ final class MacLink: ObservableObject {
                 guard let self else { return }
                 switch result {
                 case .failure:
+                    // Deliberately not clearing the board. A blip used to
+                    // empty the screen and take the talk button with it.
                     self.connection = .connecting
                     self.scheduleReconnect()
                 case .success(let msg):
@@ -248,6 +302,8 @@ final class MacLink: ObservableObject {
         else { return }
 
         switch t {
+        case "pong":
+            break
         case "hello":
             connection = .connected
             identify()

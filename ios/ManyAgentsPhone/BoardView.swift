@@ -90,9 +90,11 @@ struct BoardView: View {
                     // rows there was no gesture and no button, so a board
                     // that failed to arrive left you with nothing to do
                     // but kill the app.
+                    // No talk bar here on purpose. Offering to start a
+                    // conversation with a Mac we can't reach is a button
+                    // that can only disappoint.
                     ScrollView {
                         VStack(spacing: 0) {
-                            companionBar.padding(.horizontal, 14).padding(.top, 12)
                             EmptyBoard(connection: link.connection)
                             Button("Ask my Mac again") { link.refreshBoard() }
                                 .font(.system(size: 14, weight: .semibold))
@@ -168,8 +170,17 @@ struct BoardView: View {
     /// both land somewhere that can actually answer. Kept at the top, big,
     /// and reachable with a thumb, because the moment you want it you are
     /// usually driving.
+    /// Rows on screen don't mean the Mac is there — the board stays in
+    /// memory after the socket drops. Talking needs a live connection.
+    private var canTalk: Bool { link.reachable }
+
     @ViewBuilder
     private var companionBar: some View {
+        if canTalk { companionButton }
+    }
+
+    @ViewBuilder
+    private var companionButton: some View {
         Button {
             // Straight in. The companion resolves an orchestrator itself
             // when it needs one, so there's nothing to wait for here.
@@ -247,6 +258,13 @@ struct BoardView: View {
     /// "which one is it referring to" is "the one you tapped".
     @ViewBuilder
     private func groupTalkButton(_ group: Group) -> some View {
+        if canTalk {
+            groupTalkControl(group)
+        }
+    }
+
+    @ViewBuilder
+    private func groupTalkControl(_ group: Group) -> some View {
         Button {
             // Point the companion at this project first, so "what's
             // happening" means this board and not the last one.

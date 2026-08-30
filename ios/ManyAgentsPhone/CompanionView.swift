@@ -138,9 +138,7 @@ struct CompanionView: View {
         }
     }
 
-    private var connected: Bool {
-        link.connection == .connected && !link.board.isEmpty
-    }
+    private var connected: Bool { link.reachable }
 
     /// What you get instead of a microphone when there's no Mac on the
     /// other end.
