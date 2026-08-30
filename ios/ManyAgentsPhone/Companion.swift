@@ -169,6 +169,7 @@ final class Companion: ObservableObject {
                     ])
                 }
                 history.append(Anthropic.Message(role: "user", content: results))
+                compact()
             } catch {
                 Self.log.error("companion failed: \(error.localizedDescription, privacy: .public)")
                 lastError = error.localizedDescription
@@ -176,6 +177,67 @@ final class Companion: ObservableObject {
                 turns.append(Turn(who: .note, text: spoken))
                 voice.speak(spoken)
                 return
+            }
+        }
+    }
+
+    // MARK: - Keeping the prompt small
+
+    /// Roughly 4 characters to a token, so this is about 3k tokens of
+    /// conversation. Enough to hold a real thread; small enough that the
+    /// hundredth turn of a drive costs what the second one did.
+    private static let historyBudget = 12_000
+    /// A raw agent report is worth its full length exactly once — on the
+    /// turn the model reads it and says what it means. After that the
+    /// summary is in the conversation and the report is dead weight.
+    private static let staleToolResult = 400
+
+    /// Trim the conversation before it becomes the cost.
+    ///
+    /// Two things grow without this. Every raw orchestrator reply — five
+    /// paragraphs of prose and code — enters history as a tool result and
+    /// gets resent on every turn afterwards. And the thread itself just
+    /// gets longer. Left alone, an hour's driving turns a cheap fast layer
+    /// into a slow expensive one, which is the opposite of why it's Haiku.
+    private func compact() {
+        // Shrink tool results that aren't the current one. What the model
+        // concluded from them is already in its own reply.
+        if history.count > 2 {
+            for i in 0..<(history.count - 2) where isToolResult(history[i]) {
+                history[i] = Anthropic.Message(role: "user", content: history[i].content.map { block in
+                    guard var text = block["content"] as? String,
+                          text.count > Self.staleToolResult else { return block }
+                    text = String(text.prefix(Self.staleToolResult)) + "… [older reply, trimmed]"
+                    var out = block
+                    out["content"] = text
+                    return out
+                })
+            }
+        }
+
+        // Then drop whole rounds off the front until we're inside budget.
+        while size() > Self.historyBudget, history.count > 4 {
+            history.removeFirst()
+            // The first message must be a user message, and must not be
+            // a tool result whose tool_use we just dropped. The API
+            // rejects both, and a rejected request is a companion that
+            // stops talking to you.
+            while let first = history.first, first.role != "user" || isToolResult(first) {
+                history.removeFirst()
+            }
+        }
+    }
+
+    private func isToolResult(_ m: Anthropic.Message) -> Bool {
+        m.role == "user" && m.content.first?["type"] as? String == "tool_result"
+    }
+
+    private func size() -> Int {
+        history.reduce(0) { total, m in
+            total + m.content.reduce(0) { inner, block in
+                inner + ((block["text"] as? String)?.count ?? 0)
+                      + ((block["content"] as? String)?.count ?? 0)
+                      + 40
             }
         }
     }
@@ -196,6 +258,12 @@ final class Companion: ObservableObject {
             guard let fact = (call.input["fact"] as? String)?
                 .trimmingCharacters(in: .whitespacesAndNewlines), !fact.isEmpty
             else { return "Nothing to remember." }
+            // One line each, thirty at most, oldest dropped. This rides
+            // in the system prompt on every single turn, so it has to stay
+            // a page of notes and never become a diary.
+            guard fact.count <= 160 else {
+                return "Too long to keep. Say it in one short sentence."
+            }
             facts.removeAll { $0.caseInsensitiveCompare(fact) == .orderedSame }
             facts.append(fact)
             if facts.count > 30 { facts.removeFirst(facts.count - 30) }
@@ -403,7 +471,7 @@ final class Companion: ObservableObject {
                 "required": ["question"],
               ]),
         .init(name: "remember",
-              description: "Store one short fact for future conversations — a person and their project, a nickname, a preference. Use it whenever the user tells you something you will need on another day, especially the answer to a question you had to ask them.",
+              description: "Store one short fact for future conversations — a person and their project, a nickname, a preference. Use it whenever the user tells you something you will need on another day, especially the answer to a question you had to ask them. Only durable facts: never what is happening right now, never anything you could get from list_agents, and never more than one sentence. There is room for about thirty, and the oldest fall off.",
               schema: [
                 "type": "object",
                 "properties": [
