@@ -265,7 +265,8 @@ final class ClaudeBridge {
         // why "never write comprehensive reports" kept producing them.
         var appended = [Self.waitingCueSystemPrompt,
                         Self.brevitySystemPrompt,
-                        Self.shellCwdSystemPrompt]
+                        Self.shellCwdSystemPrompt,
+                        Self.fileToolsSystemPrompt]
         if mcpConfigPath != nil {
             appended.append(Self.manyAgentsToolsSystemPrompt)
             // Nudge the orchestrator to use the user's open tabs (left to
@@ -853,6 +854,30 @@ final class ClaudeBridge {
     project: run one-off commands elsewhere in a subshell — `(cd /tmp/scratch && \
     …)` — or with absolute paths, so the working directory is unchanged when the \
     command returns.
+    """
+
+    /// Counters the CLI's own "auto mode", which tells sessions to prefer
+    /// Bash over Read/Edit/Write. That rule exists to dodge permission
+    /// prompts, and there are none here — these sessions run with
+    /// --permission-mode bypassPermissions — so it was pure cost: file
+    /// changes arrived as `sed` and python heredocs, which this app can
+    /// only render as an opaque shell command. The user could not see
+    /// which files were being edited or created, or where.
+    ///
+    /// Reading is left alone: grepping the ten lines you need really is
+    /// cheaper than reading the whole file.
+    private static let fileToolsSystemPrompt = """
+    Use the Edit and Write tools to change files, not shell commands. Do \
+    not modify files with sed, awk, perl, python heredocs, or `cat >` \
+    redirection. There are no permission prompts in this environment, so \
+    those buy you nothing, and they cost: the app shows the user each Edit \
+    and Write with its path and what changed, while a shell command is \
+    just an opaque blob to them. Edit also refuses when its target is \
+    ambiguous, where a regex silently changes the wrong line.
+
+    Reading and searching are the opposite — keep using Bash for those. \
+    `grep`, `sed -n '120,160p'` and friends pull the few lines you need \
+    instead of a whole file.
     """
 
     private static let brevitySystemPrompt = """
