@@ -355,6 +355,20 @@ final class AgentManager: ObservableObject {
         return sessions.first { $0.isCoordinator && $0.boardScope == workspace }
     }
 
+    /// The orchestrator ABOVE this one: for a repo lead, the workspace
+    /// orchestrator that delegated its hat. nil for the workspace
+    /// orchestrator itself, which has nobody above it.
+    ///
+    /// `orchestrator(for:)` can't answer this — asked from inside a repo
+    /// lead it finds the lead itself, which is why a lead's ping used to
+    /// come back "you are the orchestrator" with no way up.
+    func parentOrchestrator(of session: AgentSession) -> AgentSession? {
+        guard session.isRepoLead else { return nil }
+        return sessions.first { $0.isCoordinator
+            && $0.id != session.id
+            && $0.boardScope == session.projectRoot }
+    }
+
     /// Who a dispatched tab reports back to: the orchestrator that actually
     /// dispatched it (recorded on the tab at dispatch time), falling back to
     /// whichever orchestrator owns its project. The recorded id is what makes

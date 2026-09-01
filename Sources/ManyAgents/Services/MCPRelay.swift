@@ -254,10 +254,20 @@ final class MCPRelay {
         guard let sender = sourceUUID.flatMap({ uid in mgr.sessions.first { $0.id == uid } }) else {
             return ["id": id, "ok": false, "error": "unknown source session"]
         }
-        guard let orch = mgr.reportTarget(for: sender) else {
+        // A repo lead reports UP: to whoever delegated it, else the
+        // workspace orchestrator above it. Without this the ordinary lookup
+        // found the lead itself (it IS its repo's orchestrator) and the
+        // ping died with "you are the orchestrator" — a sub-orchestrator in
+        // a worktree had no way to reach the tab that put it there.
+        let resolved = mgr.reportTarget(for: sender)
+        guard let orch = (resolved?.id == sender.id ? nil : resolved)
+                ?? mgr.parentOrchestrator(of: sender) else {
+            if sender.isCoordinator {
+                return ["id": id, "ok": false,
+                        "error": "you are the top orchestrator — there's nobody above you to report to. Answer the user directly."]
+            }
             return ["id": id, "ok": false, "error": "no orchestrator to report to — nobody dispatched this tab and no orchestrator is designated in its project"]
         }
-        // Don't let the orchestrator ping itself.
         if sender.id == orch.id {
             return ["id": id, "ok": false, "error": "you are the orchestrator"]
         }
@@ -598,6 +608,10 @@ final class MCPRelay {
                     "error": "that tab shares your board scope — delegating to it would just take your hat. Leads are for tabs in a nested repo."]
         }
         mgr.designateOrchestrator(target)
+        // Remember who handed over the hat, so the new lead's pings come
+        // back HERE rather than hunting for an orchestrator in its own repo
+        // and finding only itself.
+        target.reportToOrchestratorId = source.id
         return ["id": id, "ok": true, "revoked": false, "repo": repo]
     }
 

@@ -135,6 +135,8 @@ final class ClaudeBridge {
     private var activeProcessMCPPath: String? = nil
     /// Whether the active process was launched with the orchestrator prompt.
     private var activeProcessCoordinator = false
+    /// Whether the active process was launched with the repo-lead prompt.
+    private var activeProcessRepoLead = false
     /// Held open for the duration of a turn: the initial user payload is
     /// written here, and it's closed in handleResult so claude exits cleanly.
     private var activeStdin: FileHandle?
@@ -159,6 +161,11 @@ final class ClaudeBridge {
     /// tab must never be told it's the orchestrator. A change respawns the
     /// process so the prompt matches the role.
     var isCoordinator: Bool = false
+    /// Set per-turn alongside `isCoordinator`: this session runs a NESTED
+    /// repo's board under a workspace orchestrator. It still gets the full
+    /// coordinator prompt; this only adds the half it can't infer — that
+    /// there's somebody above it, and how to reach them.
+    var isRepoLead: Bool = false
     /// Set per-turn by the owning AgentSession: the model THIS session
     /// should run, already resolved (Optimize Mode's subagent downgrade
     /// applied or not — the bridge just runs whatever it's told). Empty
@@ -192,6 +199,7 @@ final class ClaudeBridge {
             let modelChanged = preferredModel != activeProcessModel
             let mcpChanged   = mcpConfigPath != activeProcessMCPPath
             let roleChanged  = isCoordinator != activeProcessCoordinator
+                            || isRepoLead != activeProcessRepoLead
             guard modelChanged || mcpChanged || roleChanged else { return }
             // Model, MCP config, or orchestrator role changed — kill so the
             // next send respawns with the right flags. --resume preserves
@@ -275,6 +283,9 @@ final class ClaudeBridge {
             // orchestrator, or workers claim the hat and poke the board.
             appended.append(isCoordinator ? Self.coordinatorSystemPrompt
                                           : Self.workerSystemPrompt)
+            if isCoordinator && isRepoLead {
+                appended.append(Self.repoLeadSystemPrompt)
+            }
         }
         args.append(contentsOf: ["--append-system-prompt",
                                  appended.joined(separator: "\n\n")])
@@ -282,6 +293,7 @@ final class ClaudeBridge {
         activeProcessModel = preferredModel
         activeProcessMCPPath = mcpConfigPath
         activeProcessCoordinator = isCoordinator
+        activeProcessRepoLead = isRepoLead
         let process = Process()
         let stdin = Pipe()
         let stdout = Pipe()
@@ -1015,6 +1027,27 @@ final class ClaudeBridge {
     orchestrator wakes, acts, and reaches you back via a tagged \
     "[Message from orchestrator ...]" turn. If that call errors because no \
     orchestrator is designated, tell the user instead of improvising.
+    """
+
+    /// Appended on top of the coordinator prompt for a repo lead. It runs a
+    /// nested repo's board, but it isn't the top of the tree, and nothing
+    /// else in its context says so — its board lists only its own repo's
+    /// tabs, so the workspace orchestrator that delegated the hat is
+    /// invisible to it. Left to infer, a lead treats a workspace-level
+    /// question as its own to answer, or sends the answer sideways to a
+    /// worker because the worker is the only tab it can see.
+    private static let repoLeadSystemPrompt = """
+    You are a REPO LEAD, not the top orchestrator. You run the board for your \
+    own repo; above you sits the workspace orchestrator that delegated this \
+    hat, and it coordinates every repo in the workspace. It is deliberately \
+    NOT on your board — list_agents shows only your repo's tabs, and \
+    send_to_agent reaches only those, so you cannot mistake a worker for your \
+    parent. To reach the workspace orchestrator — you're blocked, you need a \
+    cross-repo decision, you have a result it's waiting on, or the user asks \
+    you to tell it something — call mcp__manyagents__notify_orchestrator; that \
+    is the one channel that goes UP, and it routes to whoever delegated you. \
+    Never answer a question that spans other repos yourself: pass it up. \
+    Anything scoped to your own repo, just do — that's the point of the hat.
     """
 
     // MARK: - Binary resolution

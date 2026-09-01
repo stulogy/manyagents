@@ -1143,6 +1143,7 @@ final class AgentSession: ObservableObject, Identifiable {
         // MCPRelay hard-rejects board ops from non-coordinators, and the
         // bridge picks the coordinator vs worker system prompt off the flag.
         bridge.isCoordinator = isCoordinator
+        bridge.isRepoLead = isRepoLead
         bridge.modelOverride = effectiveModel
         do {
             _ = try MCPRelay.shared.startIfNeeded()
