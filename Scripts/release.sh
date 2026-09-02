@@ -272,7 +272,12 @@ EOF
         SIGN_ARGS+=(--ed-key-file "$SPARKLE_KEY_FILE")
         ok "signing appcast with key file $SPARKLE_KEY_FILE"
     fi
-    SIG_ATTRS="$("$SIGN_UPDATE" "${SIGN_ARGS[@]}" "$DMG_PATH")"   # -> sparkle:edSignature="…" length="…"
+    # `${arr[@]+...}`: macOS ships bash 3.2, where expanding an EMPTY array
+    # under `set -u` is an "unbound variable" error. That's the no-key-file
+    # path — i.e. the normal one — so 0.14.0 got as far as a published
+    # GitHub Release and then died before writing the appcast, leaving the
+    # release real but undeliverable to anyone.
+    SIG_ATTRS="$("$SIGN_UPDATE" ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} "$DMG_PATH")"   # -> sparkle:edSignature="…" length="…"
     BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP_PATH/Contents/Info.plist")"
     PUBDATE="$(date -u +'%a, %d %b %Y %H:%M:%S +0000')"
     DL_URL="https://github.com/stulogy/manyagents/releases/download/$TAG/$SCHEME-$VERSION.dmg"
