@@ -54,7 +54,7 @@ struct ToolUseCard: View {
             Image(systemName: iconName)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(toolTint)
-            Text(toolName)
+            Text(ToolNaming.cardTitle(for: toolName))
                 .font(.system(size: 11.5, weight: .semibold))
                 .foregroundStyle(toolTint)
             Spacer(minLength: 0)
@@ -78,7 +78,12 @@ struct ToolUseCard: View {
         case "WebFetch", "WebSearch": return "globe"
         case "Task", "Agent": return "sparkles"
         case "ToolSearch": return "magnifyingglass.circle"
-        default: return "wrench.and.screwdriver"
+        default:
+            // ManyAgents' own tools are the app, not an add-on: same brain
+            // the orchestrator wears everywhere else, rather than the
+            // generic wrench every unknown MCP tool gets.
+            return ToolNaming.isManyAgents(toolName) ? "brain.head.profile"
+                                                     : "wrench.and.screwdriver"
         }
     }
 
@@ -88,7 +93,7 @@ struct ToolUseCard: View {
         case "Edit", "MultiEdit", "Write": return .orange
         case "Read", "Grep", "Glob": return .cyan
         case "Task": return .purple
-        default: return .gray
+        default: return ToolNaming.isManyAgents(toolName) ? .brandOrange : .gray
         }
     }
 

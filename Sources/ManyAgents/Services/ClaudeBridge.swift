@@ -27,6 +27,10 @@ enum BridgeEvent {
     /// "Preparing Bash") even when no completed assistant event has
     /// landed yet, so long extended-thinking sequences don't look stuck.
     case partialBlockKind(String)
+    /// The wire name of the tool that block belongs to, so the UI can badge
+    /// ManyAgents' own tools as the app's machinery rather than as a
+    /// third-party integration. Empty string when the block isn't a tool.
+    case partialToolName(String)
     /// claude called the AskUserQuestion tool. The owning session renders a
     /// native picker; the chosen answer is delivered as a new user turn
     /// (headless `--print` auto-denies the tool and ends the turn, so there's
@@ -530,11 +534,17 @@ final class ClaudeBridge {
             switch kind {
             case "thinking":
                 emit(.partialBlockKind("thinking"))
+                emit(.partialToolName(""))
             case "text":
                 emit(.partialBlockKind("writing"))
+                emit(.partialToolName(""))
             case "tool_use":
                 let toolName = block["name"] as? String ?? "tool"
-                emit(.partialBlockKind("preparing \(toolName)"))
+                // The wire name would read "preparing
+                // mcp__manyagents__new_agent" here, which is the app's own
+                // plumbing shown as if it were someone else's plugin.
+                emit(.partialBlockKind(ToolNaming.phase(for: toolName)))
+                emit(.partialToolName(toolName))
             default:
                 break
             }

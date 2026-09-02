@@ -272,6 +272,10 @@ final class AgentSession: ObservableObject, Identifiable {
     /// What claude is doing right now — "thinking", "writing", "running Bash",
     /// etc. Derived from the most recent stream event.
     @Published var currentPhase: String = "thinking"
+    /// Wire name of the tool running right now, "" when none. Drives the
+    /// live indicator's badge — ManyAgents' own tools read as the app doing
+    /// something, not as an outside plugin with a machine-shaped name.
+    @Published var currentTool: String = ""
     /// Prompts the user has queued while the current turn is in flight.
     /// Sent one-by-one in FIFO order once the current turn lands. Matches
     /// the queued-messages UX in the Claude Code TUI.
@@ -736,6 +740,7 @@ final class AgentSession: ObservableObject, Identifiable {
         currentTurnOutputTokens = 0
         inflightTokenEstimate = 0
         currentPhase = "thinking"
+        currentTool = ""
         lastError = nil
 
         // Seed the new session with the summary. The model receives
@@ -948,6 +953,7 @@ final class AgentSession: ObservableObject, Identifiable {
         currentTurnOutputTokens = 0
         inflightTokenEstimate = 0
         currentPhase = "thinking"
+        currentTool = ""
 
         // UNLIKE manual compact: `messages` is untouched. Every prior line
         // stays exactly where it is — scrollable, searchable — and this
@@ -1126,6 +1132,7 @@ final class AgentSession: ObservableObject, Identifiable {
         currentTurnOutputTokens = 0
         inflightTokenEstimate = 0
         currentPhase = "thinking"
+        currentTool = ""
         turnProducedOutput = false
         // A stale empty-response verdict must not fire into this new turn,
         // and neither flag may leak across a turn boundary — a suppressed
@@ -1415,15 +1422,14 @@ final class AgentSession: ObservableObject, Identifiable {
             for block in blocks.reversed() {
                 switch block {
                 case .toolUse(_, _, let name, _, _):
-                    currentPhase = name == "Bash" ? "running Bash"
-                                 : (name == "Edit" || name == "MultiEdit" || name == "Write") ? "editing"
-                                 : (name == "Read") ? "reading"
-                                 : (name == "Grep" || name == "Glob") ? "searching"
-                                 : "running \(name)"
+                    currentPhase = ToolNaming.phase(for: name)
+                    currentTool = name
                 case .text:
                     currentPhase = "writing"
+                    currentTool = ""
                 case .thinking:
                     currentPhase = "thinking"
+                    currentTool = ""
                 case .toolResult, .image:
                     continue
                 }
@@ -1571,6 +1577,8 @@ final class AgentSession: ObservableObject, Identifiable {
             // during long extended-thinking stretches that never produce
             // a completed assistant message.
             currentPhase = kind
+        case .partialToolName(let name):
+            currentTool = name
         case .partialOutputChars(let chars):
             // Live ticker — count incoming chars as ~tokens/4 so the
             // gauge moves smoothly inside a single long message instead
@@ -1670,6 +1678,7 @@ final class AgentSession: ObservableObject, Identifiable {
                 turnProducedOutput = false
                 status = .running
                 currentPhase = "thinking"
+        currentTool = ""
                 if currentTurnStartedAt == nil {
                     currentTurnStartedAt = Date()
                 }

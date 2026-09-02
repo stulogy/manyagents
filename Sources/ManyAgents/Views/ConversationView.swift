@@ -1315,26 +1315,46 @@ struct ConversationView: View {
                 // 1-second cadence TimelineView for the status text —
                 // SwiftUI clock-driven, can't be starved by state churn.
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(statusLine(now: context.date))
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(.secondary)
+                    let e = elapsed(now: context.date)
+                    HStack(spacing: 7) {
+                        // ManyAgents' own tools get the app's badge — the
+                        // same brain and capsule the finished call gets in
+                        // the transcript, instead of the raw wire name.
+                        if ToolNaming.isManyAgents(session.currentTool) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "brain.head.profile")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text(capitalizedPhase(session.currentPhase))
+                                    .font(.system(size: 11.5, weight: .medium))
+                            }
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.primary.opacity(0.05)))
+                        } else {
+                            Text("\(verb(elapsed: e))…")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        if let meta = metaLabel(e) {
+                            Text(meta)
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
             .padding(.vertical, 4)
         }
 
-        private func statusLine(now: Date) -> String {
-            // Per-turn only: verb + this turn's elapsed + this turn's tokens.
-            // The timer is preserved across a force-send (see AgentSession),
-            // so interrupting a thinking turn doesn't snap it back to 0.
-            let e = elapsed(now: now)
-            var parts: [String] = ["\(verb(elapsed: e))…"]
-            if e >= 1 {
-                var meta: [String] = [elapsedLabel(e)]
-                if let t = tokenLabel { meta.append(t) }
-                parts.append("(\(meta.joined(separator: " · ")))")
-            }
-            return parts.joined(separator: " ")
+        /// Per-turn only: this turn's elapsed + this turn's tokens. The
+        /// timer is preserved across a force-send (see AgentSession), so
+        /// interrupting a thinking turn doesn't snap it back to 0.
+        private func metaLabel(_ e: TimeInterval) -> String? {
+            guard e >= 1 else { return nil }
+            var meta: [String] = [elapsedLabel(e)]
+            if let t = tokenLabel { meta.append(t) }
+            return "(\(meta.joined(separator: " · ")))"
         }
     }
 
