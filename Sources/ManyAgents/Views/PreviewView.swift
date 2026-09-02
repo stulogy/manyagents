@@ -42,8 +42,23 @@ struct PreviewView: View {
             toolbar
             Divider().opacity(0.4)
             if hasLoaded {
-                BrowserView(browser: browser, navAction: $navAction) { newURL in
-                    urlText = newURL
+                // Constrained to the device's LOGICAL size, on a dim ground
+                // so the edges of the viewport are visible. The width is
+                // what CSS media queries see; the user agent (set on the
+                // browser) is what the server and the page's own JS see.
+                // Both have to agree or you are testing a narrow desktop
+                // page, which is exactly the bug this is meant to catch.
+                ZStack {
+                    if browser.device != .desktop {
+                        Color.black.opacity(0.25)
+                    }
+                    BrowserView(browser: browser, navAction: $navAction) { newURL in
+                        urlText = newURL
+                    }
+                    .frame(maxWidth: browser.device.width ?? .infinity,
+                           maxHeight: browser.device.height ?? .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: browser.device == .desktop ? 0 : 10,
+                                                style: .continuous))
                 }
             } else {
                 emptyState
@@ -127,10 +142,42 @@ struct PreviewView: View {
                         .fill(Color.primary.opacity(0.06))
                 )
                 .onSubmit { navigate() }
+
+            devicePicker
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .foregroundStyle(.secondary)
+    }
+
+    /// Desktop / iPhone / iPad. Same hand-rolled pill as the sidebar's view
+    /// switcher, so the app has one shape for "pick one of these".
+    private var devicePicker: some View {
+        HStack(spacing: 3) {
+            ForEach(PreviewDevice.allCases) { d in
+                let on = browser.device == d
+                Button {
+                    browser.device = d
+                } label: {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(on ? Color.brandOrange : Color.clear)
+                        .frame(width: 28, height: 22)
+                        .overlay(
+                            Image(systemName: d.icon)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(on ? Color.white : .secondary)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(d.label)
+            }
+        }
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primary.opacity(0.08))
+        )
     }
 
     private func navigate() {
@@ -142,7 +189,7 @@ struct PreviewView: View {
         }
         guard let url = URL(string: raw) else { return }
         if let s = manager.activeSession {
-            manager.previewURLs[s.repoRoot] = url
+            manager.previewURLs[s.previewScope] = url
         }
         hasLoaded = true
         navAction = .load(url)

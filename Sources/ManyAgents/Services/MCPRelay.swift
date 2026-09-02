@@ -351,7 +351,8 @@ final class MCPRelay {
         var result: [String: Any] = [
             "id": id, "ok": true,
             "url": browser.currentURL?.absoluteString ?? "",
-            "title": await browser.title()
+            "title": await browser.title(),
+            "device": browser.device.describedForAgent
         ]
         if (req["text"] as? Bool) ?? true {
             do { result["text"] = try await browser.visibleText(selector: selector, limit: limit) }
@@ -386,6 +387,14 @@ final class MCPRelay {
         guard action == "navigate" || browser.hasPage else {
             return ["id": id, "ok": false, "error": PreviewBrowser.Failure.noPage.localizedDescription]
         }
+        // Switching device is orthogonal to the action, so it can ride
+        // along with any of them: `{action: "reload", device: "iphone"}`
+        // re-fetches the page as a phone in one call.
+        if let want = (req["device"] as? String)?.lowercased(),
+           let device = PreviewDevice.allCases.first(where: { $0.rawValue.lowercased() == want }) {
+            browser.device = device
+            await browser.settle(timeout: 10)
+        }
         do {
             switch action {
             case "navigate":
@@ -419,7 +428,8 @@ final class MCPRelay {
         }
         return ["id": id, "ok": true,
                 "url": browser.currentURL?.absoluteString ?? "",
-                "title": await browser.title()]
+                "title": await browser.title(),
+                "device": browser.device.describedForAgent]
     }
 
     // MARK: - Permission prompt

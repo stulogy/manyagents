@@ -46,6 +46,18 @@ final class PreviewBrowser: NSObject, ObservableObject {
     /// login page. Published so the toolbar tracks agent-driven navigation.
     @Published private(set) var currentURL: URL?
 
+    /// What the browser is pretending to be. Changing it re-applies the
+    /// user agent and reloads, because a page decides its layout on the
+    /// request — swapping the string without reloading leaves the desktop
+    /// HTML on screen at phone width, which looks like a broken site.
+    @Published var device: PreviewDevice = .desktop {
+        didSet {
+            guard oldValue != device else { return }
+            webView?.customUserAgent = device.userAgent
+            if webView?.url != nil { Task { await reload() } }
+        }
+    }
+
     /// True while a navigation is in flight, so `settle()` knows to wait.
     private var loading = false
     private var loadWaiters: [CheckedContinuation<Void, Never>] = []
@@ -96,8 +108,9 @@ final class PreviewBrowser: NSObject, ObservableObject {
         wv.navigationDelegate = self
         // A real user agent. Some apps serve a stripped or "unsupported
         // browser" page to WebKit clients that don't look like Safari, and
-        // an agent then reports the app is broken when it isn't.
-        wv.customUserAgent = nil
+        // an agent then reports the app is broken when it isn't. nil is
+        // WebKit's default, which already identifies as Safari on macOS.
+        wv.customUserAgent = device.userAgent
         webView = wv
         return wv
     }

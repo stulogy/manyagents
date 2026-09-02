@@ -583,7 +583,7 @@ private final class ServerState: @unchecked Sendable {
             ],
             [
                 "name": "preview_look",
-                "description": "Read the page currently in the preview browser: its real URL (after any redirect), its title, and the text a person would see. Ask for screenshot:true when you need to judge layout, styling or anything visual — you get the rendered page as an image. Call this after open_preview or preview_do to find out what actually happened, rather than assuming the page you asked for is the page you got.",
+                "description": "Read the page currently in the preview browser: its real URL (after any redirect), its title, the device it is being viewed as, and the text a person would see. Ask for screenshot:true when you need to judge layout, styling or anything visual — you get the rendered page as an image. Call this after open_preview or preview_do to find out what actually happened, rather than assuming the page you asked for is the page you got.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -607,7 +607,8 @@ private final class ServerState: @unchecked Sendable {
                             "description": "What to do. navigate/click/fill/press/scroll/back/forward/reload/wait."
                         ],
                         "selector": ["type": "string", "description": "CSS selector for click and fill (e.g. 'button[type=submit]', '#search'). For press, the element to send the key to; omit to use whatever is focused."],
-                        "value": ["type": "string", "description": "navigate: the URL. fill: the text to type. press: the key name, e.g. 'Enter'. scroll: 'top', 'bottom', or a number of pixels. wait: seconds, max 10."]
+                        "value": ["type": "string", "description": "navigate: the URL. fill: the text to type. press: the key name, e.g. 'Enter'. scroll: 'top', 'bottom', or a number of pixels. wait: seconds, max 10."],
+                        "device": ["type": "string", "enum": ["desktop", "iphone", "ipad"], "description": "Switch the preview to this device first — sets the viewport width AND the mobile Safari user agent, then reloads, so responsive layouts and server-side device detection both behave as they would on the real thing. Use it with action 'reload' to re-check the current page at a different size."]
                     ],
                     "required": ["action"],
                     "additionalProperties": false
@@ -842,6 +843,11 @@ private final class ServerState: @unchecked Sendable {
                 if let title = res["title"] as? String, !title.isEmpty {
                     head += "\nTitle: \(title)"
                 }
+                // Say the device, or a phone screenshot reads as a desktop
+                // layout that has gone badly wrong.
+                if let device = res["device"] as? String, device != "desktop" {
+                    head += "\nViewing as: \(device)"
+                }
                 if let why = res["screenshot_error"] as? String {
                     head += "\n(no screenshot: \(why))"
                 }
@@ -865,8 +871,9 @@ private final class ServerState: @unchecked Sendable {
                     return
                 }
                 let title = res["title"] as? String ?? ""
+                let device = res["device"] as? String ?? "desktop"
                 respondToolResult(id: id, text: """
-                    Did \(action). Now on \(res["url"] as? String ?? "?")\(title.isEmpty ? "" : " — \(title)")
+                    Did \(action). Now on \(res["url"] as? String ?? "?")\(title.isEmpty ? "" : " — \(title)")\(device == "desktop" ? "" : "\nViewing as: \(device)")
                     """)
             case "remove_worktree":
                 guard let agentId = (arguments["agent_id"] ?? arguments["id"]) as? String else {
