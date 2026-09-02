@@ -164,11 +164,15 @@ struct ProjectsSidebar: View {
 
     /// Compact row/card switcher pinned to the right of the header. Same
     /// hand-rolled pill ClaudeDeck uses.
+    ///
+    /// These switch how AGENTS are shown, nothing else. A browser toggle
+    /// used to sit here as a third state, from when one preview was shared
+    /// by the whole app — the preview belongs to a checkout now, so its
+    /// toggle lives with that project's tabs instead.
     private var viewModeToggle: some View {
         HStack(spacing: 3) {
             toggleButton(.row, icon: "list.bullet")
             toggleButton(.card, icon: "square.grid.2x2")
-            browserToggle
         }
         .padding(3)
         .background(
@@ -176,31 +180,6 @@ struct ProjectsSidebar: View {
                 .fill(Color.primary.opacity(0.08))
         )
         .help(viewMode == .row ? "Switch to card overview" : "Switch to row view")
-    }
-
-    /// Icon-only Browser toggle, living with the view-mode switcher.
-    /// Exclusive third state: the browser renders in the row-mode pane,
-    /// so entering it forces row mode (cards ignores previewActive).
-    private var browserToggle: some View {
-        Button {
-            manager.previewActive.toggle()
-            if manager.previewActive && viewMode == .card {
-                viewMode = .row
-            }
-        } label: {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(manager.previewActive ? Color.brandOrange : Color.clear)
-                .frame(width: 32, height: 24)
-                .overlay(
-                    Image(systemName: "globe")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(manager.previewActive ? .white : .secondary)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .help("Browser — shared session across all agents (⌘⇧P)")
-        .keyboardShortcut("p", modifiers: [.command, .shift])
     }
 
     private func toggleButton(_ mode: WorkspaceMode, icon: String) -> some View {

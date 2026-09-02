@@ -246,37 +246,52 @@ struct WorkspaceView: View {
         }
     }
 
+    /// Tabs scroll; the two controls don't. They used to live inside the
+    /// scroll view, so a project with a dozen tabs pushed "new tab" and the
+    /// browser toggle off the right-hand edge — the two things you always
+    /// want reachable were the first to disappear.
     private func tabStrip(for project: ProjectEntry) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(project.sessions) { s in
-                    AgentTab(session: s,
-                             isActive: !manager.previewActive && manager.activeSessionId == s.id,
-                             onSelect: {
-                                 manager.activeSessionId = s.id
-                                 manager.previewActive = false
-                             },
-                             onClose: { manager.close(s) })
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(project.sessions) { s in
+                        AgentTab(session: s,
+                                 isActive: !manager.previewActive && manager.activeSessionId == s.id,
+                                 onSelect: {
+                                     manager.activeSessionId = s.id
+                                     manager.previewActive = false
+                                 },
+                                 onClose: { manager.close(s) })
+                    }
                 }
-                Button {
-                    manager.spawn(cwd: project.cwd)
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 10, weight: .bold))
-                        .frame(width: 24, height: 24)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color.primary.opacity(0.05))
-                        )
-                }
-                .buttonStyle(.plain)
-                .help("New tab in this project")
+                .padding(.leading, 14)
+                .padding(.trailing, 4)
+            }
+            HStack(spacing: 4) {
+                newTabButton(for: project)
                 previewToggle
             }
-            .padding(.leading, 14)
             .padding(.trailing, 14)
         }
         .padding(.vertical, 8)
+    }
+
+    private func newTabButton(for project: ProjectEntry) -> some View {
+        Button {
+            manager.spawn(cwd: project.cwd)
+        } label: {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.primary.opacity(0.05))
+                .frame(width: 28, height: 24)
+                .overlay(
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.secondary)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("New tab in this project")
     }
 
     /// Browser toggle, at the end of the tab strip — the preview belongs to
@@ -290,24 +305,27 @@ struct WorkspaceView: View {
         Button {
             manager.previewActive.toggle()
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "globe")
-                    .font(.system(size: 10, weight: .bold))
-                if let port = url?.port {
-                    Text(":\(port)")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                }
-            }
-            .padding(.horizontal, url?.port == nil ? 0 : 7)
-            .frame(minWidth: 24, minHeight: 24)
-            .foregroundStyle(on ? Color.black : (url == nil ? .secondary : Color.brandOrange))
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(on ? Color.brandOrange : Color.primary.opacity(0.05))
-            )
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(on ? Color.brandOrange : Color.primary.opacity(0.05))
+                .frame(width: url?.port == nil ? 28 : 54, height: 24)
+                .overlay(
+                    HStack(spacing: 3) {
+                        Image(systemName: "globe")
+                            .font(.system(size: 11, weight: .semibold))
+                        if let port = url?.port {
+                            Text(":\(port)")
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        }
+                    }
+                    // White on the solid orange, matching the sidebar's
+                    // switcher — black read as a different control.
+                    .foregroundStyle(on ? Color.white : (url == nil ? .secondary : Color.brandOrange))
+                )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(url == nil && !on)
+        .keyboardShortcut("p", modifiers: [.command, .shift])
         .help(url == nil ? "No preview for this project yet"
                          : (on ? "Back to the conversation" : "Show \(url!.absoluteString)"))
     }
