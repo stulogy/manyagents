@@ -834,9 +834,24 @@ final class AgentSession: ObservableObject, Identifiable {
         // net compacts a worker late to keep it alive. Either one being in
         // play is reason enough to look.
         guard OptimizeMode.enabled || !isCoordinator else { return }
-        let work = DispatchWorkItem { [weak self] in self?.rollingCompactIfNeeded() }
+        // Waiting for a quiet moment is right for housekeeping and wrong for
+        // a rescue. A tab an orchestrator is driving never HAS a quiet
+        // moment — each turn ends with the next one already queued — so the
+        // polite version skipped it every time and it climbed to 95%, where
+        // the CLI's own compaction takes over mid-turn. Past the ceiling,
+        // go now and let the queue wait.
+        let urgent = contextFraction >= OptimizeMode.workerCeilingThreshold
+        let work = DispatchWorkItem { [weak self] in self?.rollingCompactIfNeeded(urgent: urgent) }
         rollingCompactDelay = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (urgent ? 0.2 : 5), execute: work)
+    }
+
+    /// How full the model's context was at the end of the last turn, 0 when
+    /// nothing has been measured yet.
+    var contextFraction: Double {
+        guard lastTurnContextWindow != nil, lastTurnContextTokens > 0,
+              contextWindowTokens > 0 else { return 0 }
+        return Double(lastTurnContextTokens) / Double(contextWindowTokens)
     }
 
     /// What fraction of the window triggers a background compact for THIS
@@ -850,18 +865,26 @@ final class AgentSession: ObservableObject, Identifiable {
         return isCoordinator ? nil : OptimizeMode.workerCeilingThreshold
     }
 
+    /// `urgent`: past the ceiling, where queued work is no longer a reason
+    /// to defer — it's the reason the tab got here. The summarize turn is
+    /// dispatched ahead of the queue and the queue drains behind it, so
+    /// nothing is lost, it just runs against a fresh context.
+    ///
+    /// Everything else still has to hold. A prompt waiting on the USER —
+    /// a question, a permission, an MCP sign-in — means the tab is stopped
+    /// for a person, and compacting under them would answer a different
+    /// conversation than the one they're looking at.
     @discardableResult
-    private func rollingCompactIfNeeded() -> Bool {
+    private func rollingCompactIfNeeded(urgent: Bool = false) -> Bool {
         guard let threshold = backgroundCompactThreshold,
-              pendingPrompts.isEmpty,
+              urgent || pendingPrompts.isEmpty,
               !isCompacting, !isRollingCompacting,
               pendingAskUserQuestion == nil, pendingPermission == nil,
               pendingMCPAuthServer == nil, !awaitingNetworkResume,
               status != .running, !bridge.isBusy,
               lastTurnContextWindow != nil, lastTurnContextTokens > 0
         else { return false }
-        let pct = Double(lastTurnContextTokens) / Double(contextWindowTokens)
-        guard pct >= threshold else { return false }
+        let pct = contextFraction
         startRollingCompact()
         return true
     }
