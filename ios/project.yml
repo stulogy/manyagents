@@ -31,6 +31,13 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: ManyAgentsPhone
+      # Shared with the Mac app rather than copied. Both render the same
+      # tool calls, and a second copy of these names would drift the first
+      # time a tool is added — which is exactly what happened when the Mac
+      # learned to say "Read preview" and the phone kept showing
+      # mcp__manyagents__preview_look. Pure Foundation, no AppKit.
+      - path: ../Sources/ManyAgents/Models/ToolNaming.swift
+        group: Shared
     info:
       path: ManyAgentsPhone/Info.plist
       properties:

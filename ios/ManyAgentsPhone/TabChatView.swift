@@ -10,6 +10,7 @@ struct TabChatView: View {
 
     private var tab: MacLink.Tab? { link.board.first { $0.id == tabId } }
     private var messages: [MacLink.Msg] { link.messages[tabId] ?? [] }
+    private var previewRuns: PreviewRuns { PreviewRuns.build(messages) }
 
     @State private var driveMode = false
 
@@ -25,7 +26,7 @@ struct TabChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         ForEach(messages) { m in
-                            MessageBubble(message: m).id(m.id)
+                            MessageBubble(message: m, preview: previewRuns).id(m.id)
                         }
                         if tab?.isBusy == true {
                             WorkingRow().id("working")
@@ -152,8 +153,53 @@ struct BlockedBanner: View {
     }
 }
 
+/// Which preview blocks to hide, and how many steps the survivor stands
+/// for. Keyed "<seq>-<blockIndex>" because the phone's blocks carry no
+/// tool_use id — position is the only handle there is.
+struct PreviewRuns {
+    var hidden: Set<String> = []
+    var steps: [String: Int] = [:]
+
+    static func key(_ seq: Int, _ index: Int) -> String { "\(seq)-\(index)" }
+
+    /// Driving a browser is a look-act-look loop: one "check this page" is a
+    /// dozen calls. On a phone that filled the screen with the mechanics of
+    /// looking, and away from the Mac the only question is whether anything
+    /// is happening at all — so the run collapses to its last call.
+    static func build(_ messages: [MacLink.Msg]) -> PreviewRuns {
+        var out = PreviewRuns()
+        var run: [String] = []
+
+        func close() {
+            guard let last = run.last else { return }
+            out.steps[last] = run.count
+            for k in run.dropLast() { out.hidden.insert(k) }
+            run = []
+        }
+
+        for m in messages {
+            guard m.role != "user" else { close(); continue }
+            for (i, block) in m.blocks.enumerated() {
+                let key = Self.key(m.seq, i)
+                switch block {
+                case .tool(let name, _) where ToolNaming.isPreviewTool(name):
+                    run.append(key)
+                case .toolError where !run.isEmpty:
+                    // A failed step inside a run — part of the same action.
+                    out.hidden.insert(key)
+                default:
+                    close()
+                }
+            }
+        }
+        close()
+        return out
+    }
+}
+
 struct MessageBubble: View {
     let message: MacLink.Msg
+    var preview = PreviewRuns()
 
     var body: some View {
         switch message.role {
@@ -173,12 +219,22 @@ struct MessageBubble: View {
                 .frame(maxWidth: .infinity, alignment: .center)
         default:
             VStack(alignment: .leading, spacing: 9) {
-                ForEach(Array(message.blocks.enumerated()), id: \.offset) { _, block in
+                ForEach(Array(message.blocks.enumerated()), id: \.offset) { i, block in
+                    let key = PreviewRuns.key(message.seq, i)
+                    if preview.hidden.contains(key) {
+                        EmptyView()
+                    } else {
                     switch block {
                     case .text(let t):
                         Markdown(raw: t)
                     case .tool(let name, let detail):
-                        ToolChip(name: name, detail: detail)
+                        // A collapsed run shows its step count and drops the
+                        // selector — which selector was tried is the least
+                        // interesting thing about it.
+                        let steps = preview.steps[key] ?? 1
+                        ToolChip(name: name,
+                                 detail: steps > 1 ? "" : detail,
+                                 steps: steps)
                     case .toolError(let t):
                         Text(t)
                             .font(.system(size: 12, design: .monospaced))
@@ -188,6 +244,7 @@ struct MessageBubble: View {
                         Label("image", systemImage: "photo")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
                     }
                 }
             }
@@ -201,12 +258,15 @@ struct MessageBubble: View {
 struct ToolChip: View {
     let name: String
     let detail: String
+    /// Steps folded into this chip when it stands for a run of preview
+    /// calls. 1 means it is just itself.
+    var steps: Int = 1
 
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: icon)
                 .font(.system(size: 10, weight: .semibold))
-            Text(name)
+            Text(title)
                 .font(.system(size: 11, weight: .semibold))
             if !detail.isEmpty {
                 Text(detail)
@@ -222,7 +282,17 @@ struct ToolChip: View {
         .background(Capsule().fill(Theme.raised))
     }
 
+    /// Read as words, never as the wire name. The phone showed a column of
+    /// `mcp__manyagents__preview_look` with no way to tell whether anything
+    /// was happening — which, away from the Mac, is the only question.
+    private var title: String {
+        if steps > 1 { return "Drove the preview · \(steps) steps" }
+        return ToolNaming.cardTitle(for: name)
+    }
+
     private var icon: String {
+        if ToolNaming.isPreviewTool(name) { return "globe" }
+        if ToolNaming.isManyAgents(name) { return "brain.head.profile" }
         switch name {
         case "Bash":                     return "terminal"
         case "Read", "Glob", "Grep":     return "doc.text.magnifyingglass"

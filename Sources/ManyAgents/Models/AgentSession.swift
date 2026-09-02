@@ -282,6 +282,15 @@ final class AgentSession: ObservableObject, Identifiable {
     /// What claude is doing right now — "thinking", "writing", "running Bash",
     /// etc. Derived from the most recent stream event.
     @Published var currentPhase: String = "thinking"
+    /// True when the last turn's context figure came from the CLI's
+    /// per-iteration totals, which are exact. False when it fell back to
+    /// summing the turn's aggregates — that adds cache_read across EVERY
+    /// iteration of the turn, so a tool-heavy turn counts the same cached
+    /// prefix ten times and can read as a full window while the model is a
+    /// fifth full. Fine for a gauge that twitches; not something to throw
+    /// away a tab's context over.
+    private var lastTurnContextExact = false
+
     /// Wire name of the tool running right now, "" when none. Drives the
     /// live indicator's badge — ManyAgents' own tools read as the app doing
     /// something, not as an outside plugin with a machine-shaped name.
@@ -900,6 +909,12 @@ final class AgentSession: ObservableObject, Identifiable {
         // Never straight after another one, whatever the numbers say.
         if let last = lastRollingCompactAt,
            Date().timeIntervalSince(last) < Self.rollingCompactCooldown { return false }
+        // A tab spawned minutes ago cannot need this, whatever the
+        // arithmetic says — and compacting it throws away the only context
+        // it has in exchange for a summary of almost nothing. When the
+        // reading is the inexact kind, demand a lot more corroboration
+        // before believing a full window.
+        guard messages.count >= (lastTurnContextExact ? 12 : 40) else { return false }
         guard let threshold = backgroundCompactThreshold,
               urgent || pendingPrompts.isEmpty,
               !isCompacting, !isRollingCompacting,
@@ -1535,6 +1550,7 @@ final class AgentSession: ObservableObject, Identifiable {
                 totalOutputTokens += u.outputTokens
                 currentTurnOutputTokens = u.outputTokens
                 lastTurnContextTokens = u.totalContextTokens
+                lastTurnContextExact = u.lastIterationContextTokens != nil
                 if let cw = u.canonicalContextWindow, cw > 0 {
                     lastTurnContextWindow = cw
                 }

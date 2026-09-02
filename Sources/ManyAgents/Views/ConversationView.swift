@@ -795,12 +795,79 @@ struct ConversationView: View {
         for msg in session.messages {
             for block in msg.blocks {
                 if case .toolUse(_, let id, let name, _, _) = block,
-                   MessageView.housekeepingLabel(name) != nil {
+                   MessageView.housekeepingLabel(name) != nil
+                    || ToolNaming.isPreviewTool(name) {
                     ids.insert(id)
                 }
             }
         }
         return ids
+    }
+
+    /// Collapses each RUN of consecutive preview calls to its last one.
+    ///
+    /// Driving a browser is a look-act-look loop, so "check this page" is a
+    /// dozen tool calls that are one action. Rendered individually they bury
+    /// whatever the agent actually found. A run ends when something that
+    /// isn't a preview call (or its result) appears.
+    private var previewRunGrouping: (runs: [String: (steps: Int, landed: String)],
+                                     superseded: Set<String>) {
+        var runs: [String: (steps: Int, landed: String)] = [:]
+        var superseded: Set<String> = []
+        var current: [String] = []          // tool_use ids, in order
+        var landed = ""
+        var previewIds: Set<String> = []
+
+        func close() {
+            guard let last = current.last else { return }
+            runs[last] = (current.count, landed)
+            for id in current.dropLast() { superseded.insert(id) }
+            current = []
+            landed = ""
+        }
+
+        for msg in session.messages {
+            for block in msg.blocks {
+                switch block {
+                case .toolUse(_, let id, let name, _, _):
+                    if ToolNaming.isPreviewTool(name) {
+                        previewIds.insert(id)
+                        current.append(id)
+                    } else {
+                        close()
+                    }
+                case .toolResult(_, let id, let content, _, _):
+                    // A preview call's own result keeps the run open; it's
+                    // also where the landing URL comes from.
+                    if previewIds.contains(id) {
+                        if let line = content.split(separator: "\n").first(where: {
+                            $0.hasPrefix("URL: ") || $0.hasPrefix("Did ")
+                        }) {
+                            landed = Self.shortHost(String(line))
+                        }
+                    } else {
+                        close()
+                    }
+                case .text, .thinking, .image:
+                    close()
+                }
+            }
+        }
+        close()
+        return (runs, superseded)
+    }
+
+    /// "URL: https://play.google.com/console/u/0/developers/55219…/app-list"
+    /// → "play.google.com/…/app-list". The host and the last path segment
+    /// are what tell you where it got to; the rest is noise on one line.
+    private static func shortHost(_ line: String) -> String {
+        guard let range = line.range(of: "https://") ?? line.range(of: "http://"),
+              let url = URL(string: String(line[range.lowerBound...])
+                                .split(separator: " ").first.map(String.init) ?? ""),
+              let host = url.host
+        else { return "" }
+        let tail = url.pathComponents.last.flatMap { $0 == "/" ? nil : $0 } ?? ""
+        return tail.isEmpty ? host : "\(host)/…/\(tail)"
     }
 
     private var fileEditOutcomes: [String: Bool] {
@@ -833,6 +900,8 @@ struct ConversationView: View {
     @State private var cachedSubagentIds: Set<String> = []
     @State private var cachedEditOutcomes: [String: Bool] = [:]
     @State private var cachedHousekeepingIds: Set<String> = []
+    @State private var cachedPreviewRuns: [String: (steps: Int, landed: String)] = [:]
+    @State private var cachedSupersededPreviewIds: Set<String> = []
 
     // Windowed rendering. Only the trailing `visibleTopCount` top-level
     // messages are fed to SwiftUI. LazyVStack skips DRAWING off-screen
@@ -900,6 +969,9 @@ struct ConversationView: View {
         cachedSubagentIds = subagentToolUseIds
         cachedEditOutcomes = fileEditOutcomes
         cachedHousekeepingIds = housekeepingIds
+        let preview = previewRunGrouping
+        cachedPreviewRuns = preview.runs
+        cachedSupersededPreviewIds = preview.superseded
     }
 
     private var conversationScroll: some View {
@@ -934,6 +1006,8 @@ struct ConversationView: View {
                                     subagentToolUseIds: cachedSubagentIds,
                                     fileEditOutcomes: cachedEditOutcomes,
                                     housekeepingToolUseIds: cachedHousekeepingIds,
+                                    previewRuns: cachedPreviewRuns,
+                                    supersededPreviewIds: cachedSupersededPreviewIds,
                                     answeredQuestions: answered,
                                     sessionCwd: session.cwd,
                                     sessionId: session.id,

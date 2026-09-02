@@ -17,6 +17,17 @@ enum ToolNaming {
         name.hasPrefix(manyAgentsPrefix)
     }
 
+    /// The preview tools. Driving a browser is a look-act-look loop, so a
+    /// single "check this page" is a dozen calls whose individual selectors
+    /// and URLs are of no interest — the whole run is one action. Both apps
+    /// collapse a run to one line, which is why this lives here rather than
+    /// in either one's view code.
+    static func isPreviewTool(_ name: String) -> Bool {
+        name == "\(manyAgentsPrefix)preview_look"
+            || name == "\(manyAgentsPrefix)preview_do"
+            || name == "\(manyAgentsPrefix)open_preview"
+    }
+
     /// The bare tool name for a ManyAgents tool, e.g. "new_agent".
     static func manyAgentsAction(_ name: String) -> String? {
         guard isManyAgents(name) else { return nil }

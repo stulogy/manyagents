@@ -29,6 +29,12 @@ struct MessageView: View {
     /// reads…). Their tool_use renders as a grey marker; their results
     /// are suppressed entirely.
     var housekeepingToolUseIds: Set<String> = []
+    /// Keyed by the tool_use id of the LAST preview call in a run: how many
+    /// calls that run contained, and where the browser ended up. Only that
+    /// call renders; the rest of the run is in `supersededPreviewIds`.
+    var previewRuns: [String: (steps: Int, landed: String)] = [:]
+    /// Preview calls swallowed by a later one in the same run.
+    var supersededPreviewIds: Set<String> = []
     /// AskUserQuestion answers the user has given this session, keyed by the
     /// question's tool_use id. Lets us render a permanent "you chose X" card
     /// where the (otherwise skipped) AskUserQuestion tool_use sits, so the
@@ -187,6 +193,7 @@ struct MessageView: View {
                 // An unanswered AskUserQuestion renders nothing (the live
                 // picker owns it), so a message holding only one is empty.
                 // Every other tool_use renders a card → never empty.
+                if ToolNaming.isPreviewTool(name) { return supersededPreviewIds.contains(id) }
                 return name == "AskUserQuestion" && answeredQuestions[id] == nil
             case .toolResult(_, let id, let c, _, _):
                 // Suppressed edit-success results render nothing, so a
@@ -324,8 +331,8 @@ struct MessageView: View {
         "This session is being continued from a previous conversation"
 
     /// Grey-marker label for orchestrator housekeeping tools; nil for
-    /// tools that keep their full card (send_to_agent, new_agent,
-    /// open_preview — real actions worth auditing).
+    /// tools that keep their full card (send_to_agent, new_agent —
+    /// real actions worth auditing).
     static func housekeepingLabel(_ name: String) -> String? {
         switch name {
         case "mcp__manyagents__set_notes":     return "Orchestrator updated its notes"
@@ -447,6 +454,34 @@ struct MessageView: View {
                 }
             }
         case .toolUse(_, let toolUseId, let name, let input, _):
+            // A whole browsing run as one line. Every step used to get its
+            // own card — selector, result, URL, "57 more lines" — so asking
+            // an agent to check one page filled the screen with the
+            // mechanics of looking rather than what it found.
+            if ToolNaming.isPreviewTool(name) {
+                if let run = previewRuns[toolUseId] {
+                    HStack(spacing: 6) {
+                        Image(systemName: "globe")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(run.steps <= 1 ? "Used the preview"
+                                            : "Drove the preview · \(run.steps) steps")
+                            .font(.system(size: 11.5, weight: .medium))
+                        if !run.landed.isEmpty {
+                            Text(run.landed)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(Color.primary.opacity(0.05)))
+                } else {
+                    EmptyView()
+                }
+            }
             // Orchestrator housekeeping renders as a one-line grey marker —
             // the user wants to SEE that an event happened without the
             // under-the-hood payload. Works for live and restored
