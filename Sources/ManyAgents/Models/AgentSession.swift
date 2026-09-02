@@ -73,7 +73,13 @@ final class AgentSession: ObservableObject, Identifiable {
             // (running → idle/waiting/error). Same-state writes during a
             // turn (running → running) don't qualify. Drives finish
             // notifications. didSet never fires on the initial value.
-            if oldValue == .running && status != .running {
+            // A background compaction is two turns the user never asked
+            // for — summarize, then reseed. Both used to ring the finish
+            // notification and wake the orchestrator, so housekeeping that
+            // is supposed to be invisible announced itself twice, every
+            // time. `isBackgroundTurn` is still true here: it's cleared
+            // later in the same .result pass.
+            if oldValue == .running && status != .running, !isBackgroundTurn {
                 finishedWorking.send(status)
                 emitTurnEnded()
             }
@@ -825,6 +831,14 @@ final class AgentSession: ObservableObject, Identifiable {
     /// context those refer to would erase what they're about.
     /// Pending "is this tab quiet enough to compact yet?" check.
     private var rollingCompactDelay: DispatchWorkItem?
+    /// When the last background compaction finished. A compaction is two
+    /// turns, and each turn END schedules another check — so anything that
+    /// leaves the context reading full (a summary that came back short, a
+    /// turn whose usage never landed) compacts again immediately, and again,
+    /// which is how one tab stacked five markers in a row and pinged the
+    /// user for every one. Nothing may compact twice inside this window.
+    private var lastRollingCompactAt: Date?
+    private static let rollingCompactCooldown: TimeInterval = 120
 
     /// Wait for the tab to actually go quiet before compacting it.
     ///
@@ -834,6 +848,9 @@ final class AgentSession: ObservableObject, Identifiable {
     /// idle first, and anything the user does meanwhile cancels it.
     private func scheduleRollingCompactCheck() {
         rollingCompactDelay?.cancel()
+        // The summarize turn ends by definition with a full context — it
+        // just read everything. Measuring there says "compact again".
+        guard !isBackgroundTurn, !isRollingCompacting else { return }
         // Optimize Mode compacts every tab early to save money; the ceiling
         // net compacts a worker late to keep it alive. Either one being in
         // play is reason enough to look.
@@ -880,6 +897,9 @@ final class AgentSession: ObservableObject, Identifiable {
     /// conversation than the one they're looking at.
     @discardableResult
     private func rollingCompactIfNeeded(urgent: Bool = false) -> Bool {
+        // Never straight after another one, whatever the numbers say.
+        if let last = lastRollingCompactAt,
+           Date().timeIntervalSince(last) < Self.rollingCompactCooldown { return false }
         guard let threshold = backgroundCompactThreshold,
               urgent || pendingPrompts.isEmpty,
               !isCompacting, !isRollingCompacting,
@@ -895,6 +915,7 @@ final class AgentSession: ObservableObject, Identifiable {
 
     private func startRollingCompact() {
         isRollingCompacting = true
+        lastRollingCompactAt = Date()
         rollingCompactSummaryBuffer = ""
         // Same safety net as manual compact: nothing can hang forever.
         let work = DispatchWorkItem { [weak self] in
@@ -1000,7 +1021,15 @@ final class AgentSession: ObservableObject, Identifiable {
         // stays exactly where it is — scrollable, searchable — and this
         // marker just records that the model's working context reset here.
         let marker = "Context compacted in the background — scrollback above is unaffected."
-        messages.append(Message(role: .system, blocks: [.text(id: UUID(), text: marker)]))
+        // Never two in a row. A stack of identical markers is the symptom
+        // of a compaction loop, and printing it five times tells the user
+        // nothing the first one didn't.
+        let lastIsMarker = messages.last.map {
+            $0.role == .system && $0.flatText.hasPrefix("Context compacted in the background")
+        } ?? false
+        if !lastIsMarker {
+            messages.append(Message(role: .system, blocks: [.text(id: UUID(), text: marker)]))
+        }
 
         isRollingCompacting = false
         rollingCompactCancellable = nil
