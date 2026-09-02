@@ -297,7 +297,14 @@ struct WorkspaceView: View {
     /// Browser toggle, at the end of the tab strip — the preview belongs to
     /// the checkout the active tab is in, so it sits with that project's
     /// tabs rather than being an app-wide mode. Shows the port when there's
-    /// a page, which is what tells two worktrees apart at a glance.
+    /// a page: orange glyph when one is waiting, solid orange when it's on
+    /// screen, grey when this project has nothing to show.
+    ///
+    /// It briefly carried the port, to tell two worktrees apart. Wrong on
+    /// two counts: the address bar sits directly under it showing the same
+    /// URL, and `Text(":\(port)")` interpolates an Int through the locale
+    /// formatter — port 3015 rendered as ":3,015". The URL belongs in the
+    /// tooltip, which is where it is.
     @ViewBuilder
     private var previewToggle: some View {
         let url = manager.activePreviewURL
@@ -307,19 +314,14 @@ struct WorkspaceView: View {
         } label: {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(on ? Color.brandOrange : Color.primary.opacity(0.05))
-                .frame(width: url?.port == nil ? 28 : 54, height: 24)
+                .frame(width: 28, height: 24)
                 .overlay(
-                    HStack(spacing: 3) {
-                        Image(systemName: "globe")
-                            .font(.system(size: 11, weight: .semibold))
-                        if let port = url?.port {
-                            Text(":\(port)")
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        }
-                    }
-                    // White on the solid orange, matching the sidebar's
-                    // switcher — black read as a different control.
-                    .foregroundStyle(on ? Color.white : (url == nil ? .secondary : Color.brandOrange))
+                    Image(systemName: "globe")
+                        .font(.system(size: 11, weight: .semibold))
+                        // White on the solid orange, matching the sidebar's
+                        // switcher — black read as a different control.
+                        .foregroundStyle(on ? Color.white
+                                            : (url == nil ? .secondary : Color.brandOrange))
                 )
                 .contentShape(Rectangle())
         }
