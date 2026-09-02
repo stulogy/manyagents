@@ -24,6 +24,9 @@ enum WebNavAction {
 
 struct PreviewView: View {
     @EnvironmentObject var manager: AgentManager
+    /// The shared browser, so the address bar follows agent-driven
+    /// navigation and redirects, not just what the user typed.
+    @ObservedObject private var browser = PreviewBrowser.shared
     @State private var urlText = ""
     @State private var navAction: WebNavAction? = nil
     @State private var hasLoaded = false
@@ -48,8 +51,19 @@ struct PreviewView: View {
             navAction = .load(url)
             hasLoaded = true
         }
+        // An agent navigating (or the site redirecting to /login) moves the
+        // address bar too — otherwise it reads as the URL that was asked
+        // for while the panel shows something else entirely.
+        .onChange(of: browser.currentURL) { _, url in
+            if let url { urlText = url.absoluteString }
+        }
         .onAppear {
-            if let url = manager.activePreviewURL {
+            // A page an agent already set up outlives the panel: show that
+            // rather than yanking it back to the session's stored URL.
+            if let live = browser.currentURL {
+                urlText = live.absoluteString
+                hasLoaded = true
+            } else if let url = manager.activePreviewURL {
                 urlText = url.absoluteString
                 navAction = .load(url)
                 hasLoaded = true
@@ -139,12 +153,11 @@ struct BrowserView: NSViewRepresentable {
         Coordinator(onURLChange: onURLChange)
     }
 
+    /// The panel renders PreviewBrowser's web view rather than one of its
+    /// own. Same browser the agents drive, so what you see here is what
+    /// they see, and a page an agent set up survives you closing the panel.
     func makeNSView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .manyAgentsPreview
-        let wv = WKWebView(frame: .zero, configuration: config)
-        wv.navigationDelegate = context.coordinator
-        return wv
+        PreviewBrowser.shared.view()
     }
 
     func updateNSView(_ wv: WKWebView, context: Context) {
@@ -162,17 +175,14 @@ struct BrowserView: NSViewRepresentable {
 
     // MARK: Coordinator
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    /// Only mirrors the address bar now — PreviewBrowser is the web view's
+    /// navigation delegate, since it has to know about redirects whether or
+    /// not this panel is on screen.
+    final class Coordinator: NSObject {
         var onURLChange: (String) -> Void
 
         init(onURLChange: @escaping (String) -> Void) {
             self.onURLChange = onURLChange
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            if let url = webView.url {
-                onURLChange(url.absoluteString)
-            }
         }
     }
 }

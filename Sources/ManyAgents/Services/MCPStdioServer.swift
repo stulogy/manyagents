@@ -227,6 +227,11 @@ private final class ServerState: @unchecked Sendable {
             return (payload["wait_for_result"] as? Bool ?? false) ? 660 : 20
         case "permission_prompt":
             return 1500
+        case "open_preview", "preview_do", "preview_look":
+            // These wait on a real page: a navigation settles for up to 12s
+            // before the snapshot is even taken. The 20s default cut a slow
+            // dev server off mid-load and reported the app hadn't replied.
+            return 45
         default:
             return 20
         }
@@ -322,10 +327,10 @@ private final class ServerState: @unchecked Sendable {
                 // workers are told plainly they are not the orchestrator.
                 "instructions": args.isCoordinator
                 ? """
-                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server. This session is an ORCHESTRATOR: the board tools (list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent) let you coordinate the user's other tabs. Your board covers your own scope — the whole workspace if you sit at its root, otherwise just your repo. When a repo nested inside your workspace grows its own multi-tab workstream, delegate_orchestrator makes one of its tabs that repo's lead; you keep seeing its tabs, it runs them. If the user runs Optimize Mode, tabs you spawn default to a cheaper model — pass model:"full" to new_agent when the work you're handing over genuinely needs the stronger one. Refer to the app as "ManyAgents".
+                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server — and preview_look / preview_do let you read and drive that same page (it keeps the user's cookies, so use it instead of your own headless browser; never type credentials into it). This session is an ORCHESTRATOR: the board tools (list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent) let you coordinate the user's other tabs. Your board covers your own scope — the whole workspace if you sit at its root, otherwise just your repo. When a repo nested inside your workspace grows its own multi-tab workstream, delegate_orchestrator makes one of its tabs that repo's lead; you keep seeing its tabs, it runs them. If the user runs Optimize Mode, tabs you spawn default to a cheaper model — pass model:"full" to new_agent when the work you're handing over genuinely needs the stronger one. Refer to the app as "ManyAgents".
                 """
                 : """
-                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server. This session is NOT the orchestrator — a separate dedicated tab may hold that role. To reach it (you're blocked, need a cross-tab decision, or finished a long task it's waiting on), call notify_orchestrator. Refer to the app as "ManyAgents".
+                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server — and preview_look / preview_do let you read and drive that same page (it keeps the user's cookies, so use it instead of your own headless browser; never type credentials into it). This session is NOT the orchestrator — a separate dedicated tab may hold that role. To reach it (you're blocked, need a cross-tab decision, or finished a long task it's waiting on), call notify_orchestrator. Refer to the app as "ManyAgents".
                 """
             ])
         case "initialized", "notifications/initialized":
@@ -554,7 +559,7 @@ private final class ServerState: @unchecked Sendable {
         [
             [
                 "name": "open_preview",
-                "description": "Open a URL in ManyAgents' shared browser preview panel. Use this to show the user what you just built (e.g. a localhost dev server page). All preview panels share cookies/sessions so the user only needs to log in once.",
+                "description": "Open a URL in ManyAgents' shared browser preview panel — the browser the user is looking at. Use it to show them what you just built (e.g. a localhost dev server page), and as the starting point for driving the page with preview_look / preview_do. Returns the URL it actually LANDED on, so a redirect to a login page is visible to you. The preview keeps cookies between calls and across sessions, so once the user has signed in by hand you stay signed in.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -573,6 +578,38 @@ private final class ServerState: @unchecked Sendable {
                         "message": ["type": "string", "description": "What to tell the orchestrator — be specific (e.g. 'Playwright suite done: 3 failures in checkout.spec.ts' or 'Blocked: need your call on whether to migrate the schema')."]
                     ],
                     "required": ["message"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "preview_look",
+                "description": "Read the page currently in the preview browser: its real URL (after any redirect), its title, and the text a person would see. Ask for screenshot:true when you need to judge layout, styling or anything visual — you get the rendered page as an image. Call this after open_preview or preview_do to find out what actually happened, rather than assuming the page you asked for is the page you got.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "screenshot": ["type": "boolean", "description": "Include a PNG of the rendered page. Default false. Use it for anything visual; skip it when the text alone answers your question, since the image costs tokens."],
+                        "text": ["type": "boolean", "description": "Include the page's visible text. Default true."],
+                        "selector": ["type": "string", "description": "Optional CSS selector to read just one part of the page, e.g. '.dashboard-header'. Omit for the whole page."],
+                        "limit": ["type": "integer", "description": "Max characters of text to return. Default 4000."]
+                    ],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "preview_do",
+                "description": "Interact with the page in the preview browser: click things, fill fields, navigate. One action per call; each returns the URL and title the page ended up on, so a click that triggers a redirect tells you straight away. NEVER type passwords or other credentials with this — the preview keeps the user's cookies, so if a login page appears, say so and let the user sign in by hand once; every later call inherits that session.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "action": [
+                            "type": "string",
+                            "enum": ["navigate", "click", "fill", "press", "scroll", "back", "forward", "reload", "wait"],
+                            "description": "What to do. navigate/click/fill/press/scroll/back/forward/reload/wait."
+                        ],
+                        "selector": ["type": "string", "description": "CSS selector for click and fill (e.g. 'button[type=submit]', '#search'). For press, the element to send the key to; omit to use whatever is focused."],
+                        "value": ["type": "string", "description": "navigate: the URL. fill: the text to type. press: the key name, e.g. 'Enter'. scroll: 'top', 'bottom', or a number of pixels. wait: seconds, max 10."]
+                    ],
+                    "required": ["action"],
                     "additionalProperties": false
                 ]
             ]
@@ -769,9 +806,66 @@ private final class ServerState: @unchecked Sendable {
                 let res = try await awaitRelay(["op": "open_preview",
                                                 "source_session_id": args.sourceSessionId as Any,
                                                 "url": url])
-                respondToolResult(id: id,
-                                  text: (res["ok"] as? Bool) == true ? "Preview opened: \(url)" : "Error: \(res["error"] as? String ?? "failed")",
-                                  isError: (res["ok"] as? Bool) != true)
+                guard (res["ok"] as? Bool) == true else {
+                    respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "failed")", isError: true)
+                    return
+                }
+                let landed = res["url"] as? String ?? url
+                // Say plainly when the page moved. An agent that thinks it
+                // opened the dashboard, and is actually looking at a login
+                // form, tells the user the feature is broken.
+                if let from = res["redirected_from"] as? String {
+                    respondToolResult(id: id, text: """
+                        Preview opened \(from) but the page REDIRECTED to \(landed).
+                        Call preview_look to see what's there — if it's a sign-in \
+                        page, ask the user to log in once in the preview panel; the \
+                        session is remembered from then on.
+                        """)
+                } else {
+                    respondToolResult(id: id, text: "Preview opened: \(landed)")
+                }
+            case "preview_look":
+                var payload: [String: Any] = ["op": "preview_look",
+                                              "source_session_id": args.sourceSessionId as Any]
+                if let s = arguments["screenshot"] as? Bool { payload["screenshot"] = s }
+                if let t = arguments["text"] as? Bool { payload["text"] = t }
+                if let sel = arguments["selector"] as? String { payload["selector"] = sel }
+                if let l = arguments["limit"] as? Int { payload["limit"] = l }
+                let res = try await awaitRelay(payload)
+                guard (res["ok"] as? Bool) == true else {
+                    respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "look failed")", isError: true)
+                    return
+                }
+                var head = "URL: \(res["url"] as? String ?? "?")"
+                if let title = res["title"] as? String, !title.isEmpty {
+                    head += "\nTitle: \(title)"
+                }
+                if let why = res["screenshot_error"] as? String {
+                    head += "\n(no screenshot: \(why))"
+                }
+                if let text = res["text"] as? String {
+                    head += text.isEmpty ? "\n\n(the page has no visible text)" : "\n\n\(text)"
+                }
+                respondToolResult(id: id, text: head, imageBase64: res["screenshot"] as? String)
+            case "preview_do":
+                guard let action = arguments["action"] as? String else {
+                    respondToolResult(id: id, text: "Error: missing action.", isError: true)
+                    return
+                }
+                var payload: [String: Any] = ["op": "preview_do",
+                                              "source_session_id": args.sourceSessionId as Any,
+                                              "action": action]
+                if let sel = arguments["selector"] as? String { payload["selector"] = sel }
+                if let v = arguments["value"] as? String { payload["value"] = v }
+                let res = try await awaitRelay(payload)
+                guard (res["ok"] as? Bool) == true else {
+                    respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "action failed")", isError: true)
+                    return
+                }
+                let title = res["title"] as? String ?? ""
+                respondToolResult(id: id, text: """
+                    Did \(action). Now on \(res["url"] as? String ?? "?")\(title.isEmpty ? "" : " — \(title)")
+                    """)
             case "remove_worktree":
                 guard let agentId = (arguments["agent_id"] ?? arguments["id"]) as? String else {
                     respondToolResult(id: id, text: "Error: missing agent_id.", isError: true)
@@ -868,11 +962,21 @@ private final class ServerState: @unchecked Sendable {
         writeRPC(msg)
     }
 
-    private func respondToolResult(id: Any?, text: String, isError: Bool = false) {
+    /// `imageBase64` rides along as a second content block — how MCP hands a
+    /// model a picture. Used by preview_look, so an agent judging layout or
+    /// styling sees the rendered page instead of a description of it.
+    private func respondToolResult(id: Any?, text: String, isError: Bool = false,
+                                   imageBase64: String? = nil) {
+        var content: [[String: Any]] = [["type": "text", "text": text]]
+        if let imageBase64, !imageBase64.isEmpty {
+            content.append([
+                "type": "image",
+                "data": imageBase64,
+                "mimeType": "image/png"
+            ])
+        }
         respond(id: id, result: [
-            "content": [
-                ["type": "text", "text": text]
-            ],
+            "content": content,
             "isError": isError
         ])
     }

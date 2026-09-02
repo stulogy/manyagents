@@ -154,6 +154,10 @@ final class MCPRelay {
             return await permissionPrompt(req: req, id: id)
         case "open_preview":
             return await openPreview(req: req, id: id)
+        case "preview_look":
+            return await previewLook(req: req, id: id)
+        case "preview_do":
+            return await previewDo(req: req, id: id)
         case "notify_orchestrator":
             return await notifyOrchestrator(req: req, id: id)
         case "rename_agent":
@@ -301,7 +305,101 @@ final class MCPRelay {
         if targetId == mgr.activeSessionId {
             mgr.previewActive = true
         }
-        return ["id": id, "ok": true, "url": urlStr]
+        // Actually load it, and answer with where it LANDED. This used to
+        // return the URL that was asked for, so an app that bounced the
+        // agent to /login reported success and the agent moved on showing
+        // the user a login screen.
+        await PreviewBrowser.shared.load(url)
+        let landed = PreviewBrowser.shared.currentURL?.absoluteString ?? urlStr
+        var result: [String: Any] = ["id": id, "ok": true, "url": landed]
+        if landed != urlStr {
+            result["redirected_from"] = urlStr
+        }
+        return result
+    }
+
+    /// Read the page the preview is on: where it actually is, and what it
+    /// says. The screenshot is opt-in — it's worth real tokens, and half
+    /// the time the question is only "am I logged in or not".
+    @MainActor
+    private func previewLook(req: [String: Any], id: String) async -> [String: Any] {
+        let browser = PreviewBrowser.shared
+        guard browser.hasPage else {
+            return ["id": id, "ok": false, "error": PreviewBrowser.Failure.noPage.localizedDescription]
+        }
+        await browser.settle(timeout: 6)
+        let selector = req["selector"] as? String
+        let limit = (req["limit"] as? Int) ?? 4000
+        var result: [String: Any] = [
+            "id": id, "ok": true,
+            "url": browser.currentURL?.absoluteString ?? "",
+            "title": await browser.title()
+        ]
+        if (req["text"] as? Bool) ?? true {
+            do { result["text"] = try await browser.visibleText(selector: selector, limit: limit) }
+            catch { return ["id": id, "ok": false, "error": error.localizedDescription] }
+        }
+        if (req["screenshot"] as? Bool) ?? false {
+            do {
+                let png = try await browser.snapshot()
+                result["screenshot"] = png.base64EncodedString()
+            } catch {
+                // A failed capture must not lose the text we already have —
+                // it's usually the more useful half anyway.
+                result["screenshot_error"] = error.localizedDescription
+            }
+        }
+        return result
+    }
+
+    /// One interaction per call, then report where the page ended up, so a
+    /// click that triggers a redirect tells the agent immediately instead
+    /// of it having to guess and look again.
+    @MainActor
+    private func previewDo(req: [String: Any], id: String) async -> [String: Any] {
+        let browser = PreviewBrowser.shared
+        let action = (req["action"] as? String)?.lowercased() ?? ""
+        let selector = req["selector"] as? String
+        let value = req["value"] as? String
+
+        // navigate is the one action that works from a cold browser.
+        guard action == "navigate" || browser.hasPage else {
+            return ["id": id, "ok": false, "error": PreviewBrowser.Failure.noPage.localizedDescription]
+        }
+        do {
+            switch action {
+            case "navigate":
+                guard let value, let url = URL(string: value), url.scheme != nil else {
+                    throw PreviewBrowser.Failure.badURL(value ?? "(none)")
+                }
+                await browser.load(url)
+            case "click":
+                guard let selector else { throw PreviewBrowser.Failure.notFound("(no selector given)") }
+                try await browser.click(selector: selector)
+            case "fill":
+                guard let selector else { throw PreviewBrowser.Failure.notFound("(no selector given)") }
+                try await browser.fill(selector: selector, value: value ?? "")
+            case "press":
+                try await browser.press(key: value ?? "Enter", selector: selector)
+            case "scroll":
+                try await browser.scroll(to: value ?? "bottom")
+            case "back":    await browser.goBack()
+            case "forward": await browser.goForward()
+            case "reload":  await browser.reload()
+            case "wait":
+                let seconds = min(Double(value ?? "") ?? 2, 10)
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                await browser.settle(timeout: 8)
+            default:
+                return ["id": id, "ok": false,
+                        "error": "unknown action \"\(action)\" — use navigate, click, fill, press, scroll, back, forward, reload or wait"]
+            }
+        } catch {
+            return ["id": id, "ok": false, "error": error.localizedDescription]
+        }
+        return ["id": id, "ok": true,
+                "url": browser.currentURL?.absoluteString ?? "",
+                "title": await browser.title()]
     }
 
     // MARK: - Permission prompt
