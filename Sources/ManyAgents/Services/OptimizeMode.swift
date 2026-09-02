@@ -30,6 +30,19 @@ enum OptimizeMode {
         static let autoCompactThreshold = 0.25
     }
 
+    /// Ceiling safety net for WORKER tabs, applied whether or not Optimize
+    /// Mode is on. Optimize Mode's 25% is a cost decision the user opts
+    /// into; this is a different thing — a tab that fills its window gets
+    /// compacted by the CLI itself, mid-turn, in the middle of whatever it
+    /// was doing. Doing it here instead means it happens between turns,
+    /// while the tab is idle, with the transcript left intact.
+    ///
+    /// Orchestrators are deliberately excluded: their context IS the
+    /// coordination state, and summarizing it unasked loses the thread of
+    /// what every tab is doing. They still compact on the Optimize Mode
+    /// path, or when the user asks.
+    static let workerCeilingThreshold = 0.90
+
     static var enabled: Bool {
         UserDefaults.standard.bool(forKey: Keys.enabled)
     }

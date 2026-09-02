@@ -807,7 +807,7 @@ final class AgentSession: ObservableObject, Identifiable {
         bridge.cancel()
     }
 
-    // MARK: - Rolling auto-compact (Optimize Mode)
+    // MARK: - Rolling auto-compact (Optimize Mode + worker ceiling)
 
     /// Called at the same "a turn just ended cleanly" checkpoint that
     /// otherwise drains the queue. Starts a rolling compact when Optimize
@@ -830,15 +830,29 @@ final class AgentSession: ObservableObject, Identifiable {
     /// idle first, and anything the user does meanwhile cancels it.
     private func scheduleRollingCompactCheck() {
         rollingCompactDelay?.cancel()
-        guard OptimizeMode.enabled else { return }
+        // Optimize Mode compacts every tab early to save money; the ceiling
+        // net compacts a worker late to keep it alive. Either one being in
+        // play is reason enough to look.
+        guard OptimizeMode.enabled || !isCoordinator else { return }
         let work = DispatchWorkItem { [weak self] in self?.rollingCompactIfNeeded() }
         rollingCompactDelay = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
     }
 
+    /// What fraction of the window triggers a background compact for THIS
+    /// tab, or nil when it shouldn't compact on its own at all.
+    ///
+    /// Optimize Mode's threshold wins when it's on, since it's both lower
+    /// and the setting the user chose. With it off, a worker still gets the
+    /// ceiling net so it never hits the CLI's own mid-turn compaction.
+    private var backgroundCompactThreshold: Double? {
+        if OptimizeMode.enabled { return OptimizeMode.autoCompactThreshold }
+        return isCoordinator ? nil : OptimizeMode.workerCeilingThreshold
+    }
+
     @discardableResult
     private func rollingCompactIfNeeded() -> Bool {
-        guard OptimizeMode.enabled,
+        guard let threshold = backgroundCompactThreshold,
               pendingPrompts.isEmpty,
               !isCompacting, !isRollingCompacting,
               pendingAskUserQuestion == nil, pendingPermission == nil,
@@ -847,7 +861,7 @@ final class AgentSession: ObservableObject, Identifiable {
               lastTurnContextWindow != nil, lastTurnContextTokens > 0
         else { return false }
         let pct = Double(lastTurnContextTokens) / Double(contextWindowTokens)
-        guard pct >= OptimizeMode.autoCompactThreshold else { return false }
+        guard pct >= threshold else { return false }
         startRollingCompact()
         return true
     }
