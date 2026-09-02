@@ -60,7 +60,21 @@ final class PreviewBrowser: NSObject, ObservableObject {
 
     /// True while a navigation is in flight, so `settle()` knows to wait.
     private var loading = false
-    private var loadWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Callbacks to fire when the navigation ends. Closures, not
+    /// continuations: each one has to be safe to call twice, because the
+    /// load finishing and the timeout firing race each other.
+    private var loadWaiters: [() -> Void] = []
+
+    /// Resumes its continuation exactly once, whoever calls first.
+    /// Main-actor only — both callers are.
+    private final class ResumeOnce: @unchecked Sendable {
+        private var cont: CheckedContinuation<Void, Never>?
+        init(_ cont: CheckedContinuation<Void, Never>) { self.cont = cont }
+        func fire() {
+            cont?.resume()
+            cont = nil
+        }
+    }
 
     enum Failure: LocalizedError {
         case noPage
@@ -134,22 +148,29 @@ final class PreviewBrowser: NSObject, ObservableObject {
 
     /// Wait for the current navigation to finish, then give the page a beat
     /// to render. Capped: a page that never stops loading (a dev server
-    /// holding a websocket open, an endless spinner) must not hang the
-    /// agent's tool call until the relay times out — better to hand back
-    /// whatever is on screen and let it look again.
+    /// holding a socket open, an endless spinner) must not hang the agent's
+    /// tool call — better to hand back whatever is on screen and let it
+    /// look again.
+    ///
+    /// The cap has to be built this way. The first version raced the waiter
+    /// against a sleeping task in a TaskGroup, which cannot work:
+    /// `withTaskGroup` implicitly awaits every child task when its body
+    /// returns, and `cancelAll()` does not unblock a
+    /// `withCheckedContinuation` — continuations ignore cancellation. So a
+    /// page that never fired didFinish hung here forever and the tool call
+    /// died at the relay's own 45-second timeout, which is precisely the
+    /// failure the cap existed to prevent.
     func settle(timeout: Double = 12) async {
         if loading {
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { @MainActor in
-                    await withCheckedContinuation { cont in
-                        self.loadWaiters.append(cont)
-                    }
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                let once = ResumeOnce(cont)
+                loadWaiters.append { once.fire() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                    // Treat it as settled, or every later call pays the full
+                    // timeout again against the same stuck page.
+                    self?.loading = false
+                    once.fire()
                 }
-                group.addTask {
-                    try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                }
-                await group.next()
-                group.cancelAll()
             }
         }
         // Client-rendered pages paint after load fires; without this an
@@ -161,7 +182,7 @@ final class PreviewBrowser: NSObject, ObservableObject {
         loading = false
         let waiters = loadWaiters
         loadWaiters.removeAll()
-        for w in waiters { w.resume() }
+        for w in waiters { w() }
     }
 
     // MARK: - Reading
