@@ -327,10 +327,10 @@ private final class ServerState: @unchecked Sendable {
                 // workers are told plainly they are not the orchestrator.
                 "instructions": args.isCoordinator
                 ? """
-                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server — and preview_look / preview_do let you read and drive that same page (it keeps the user's cookies, so use it instead of your own headless browser; never type credentials into it). This session is an ORCHESTRATOR: the board tools (list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent) let you coordinate the user's other tabs. Your board covers your own scope — the whole workspace if you sit at its root, otherwise just your repo. When a repo nested inside your workspace grows its own multi-tab workstream, delegate_orchestrator makes one of its tabs that repo's lead; you keep seeing its tabs, it runs them. If the user runs Optimize Mode, tabs you spawn default to a cheaper model — pass model:"full" to new_agent when the work you're handing over genuinely needs the stronger one. Refer to the app as "ManyAgents".
+                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server — and preview_look / preview_do let you read and drive that same page (it keeps the user's cookies, so use it instead of your own headless browser; sign in yourself only with local development credentials you were given or that come from the project's own config, never to a real, staging or production account). This session is an ORCHESTRATOR: the board tools (list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent) let you coordinate the user's other tabs. Your board covers your own scope — the whole workspace if you sit at its root, otherwise just your repo. When a repo nested inside your workspace grows its own multi-tab workstream, delegate_orchestrator makes one of its tabs that repo's lead; you keep seeing its tabs, it runs them. If the user runs Optimize Mode, tabs you spawn default to a cheaper model — pass model:"full" to new_agent when the work you're handing over genuinely needs the stronger one. Refer to the app as "ManyAgents".
                 """
                 : """
-                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server — and preview_look / preview_do let you read and drive that same page (it keeps the user's cookies, so use it instead of your own headless browser; never type credentials into it). This session is NOT the orchestrator — a separate dedicated tab may hold that role. To reach it (you're blocked, need a cross-tab decision, or finished a long task it's waiting on), call notify_orchestrator. Refer to the app as "ManyAgents".
+                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server — and preview_look / preview_do let you read and drive that same page (it keeps the user's cookies, so use it instead of your own headless browser; sign in yourself only with local development credentials you were given or that come from the project's own config, never to a real, staging or production account). This session is NOT the orchestrator — a separate dedicated tab may hold that role. To reach it (you're blocked, need a cross-tab decision, or finished a long task it's waiting on), call notify_orchestrator. Refer to the app as "ManyAgents".
                 """
             ])
         case "initialized", "notifications/initialized":
@@ -597,7 +597,7 @@ private final class ServerState: @unchecked Sendable {
             ],
             [
                 "name": "preview_do",
-                "description": "Interact with the page in the preview browser: click things, fill fields, navigate. One action per call; each returns the URL and title the page ended up on, so a click that triggers a redirect tells you straight away. NEVER type passwords or other credentials with this — the preview keeps the user's cookies, so if a login page appears, say so and let the user sign in by hand once; every later call inherits that session.",
+                "description": "Interact with the page in the preview browser: click things, fill fields, navigate. One action per call; each returns the URL and title the page ended up on, so a click that triggers a redirect tells you straight away. On a login page: go ahead and sign in when these are LOCAL DEV credentials you were given or that come from the project's own .env, fixtures or seed data (a seeded test account on localhost or a dev container) — that is normal development. For anything else — a real account, staging, production, a third-party service — do not type the credentials; say you have hit a sign-in page and ask the user to sign in once in the panel. The preview keeps cookies, so one sign-in covers every later call.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -817,9 +817,11 @@ private final class ServerState: @unchecked Sendable {
                 if let from = res["redirected_from"] as? String {
                     respondToolResult(id: id, text: """
                         Preview opened \(from) but the page REDIRECTED to \(landed).
-                        Call preview_look to see what's there — if it's a sign-in \
-                        page, ask the user to log in once in the preview panel; the \
-                        session is remembered from then on.
+                        Call preview_look to see what's there. If it's a sign-in page: \
+                        sign in with preview_do when these are local dev credentials \
+                        you were given or that come from the project's own config, \
+                        otherwise ask the user to sign in once in the panel. Either \
+                        way the session is remembered from then on.
                         """)
                 } else {
                     respondToolResult(id: id, text: "Preview opened: \(landed)")
