@@ -27,14 +27,32 @@ final class AgentManager: ObservableObject {
     /// tab in the same repo showed an empty panel. Set by the open_preview
     /// MCP tool, by the localhost pill in a message, and by the URL bar.
     @Published var previewURLs: [String: URL] = [:]
-    /// Whether the preview panel is currently shown instead of the conversation.
-    @Published var previewActive: Bool = false
+    /// Checkouts whose preview panel is showing instead of the
+    /// conversation. Was a single app-wide flag, which meant opening the
+    /// browser for one project blanked the transcript in every other.
+    @Published var previewScopes: Set<String> = []
 
-    /// The preview URL for the active tab's repo, if any.
+    /// Whether the preview is showing for the tab on screen right now.
+    var previewActive: Bool {
+        get { activePreviewScope.map { previewScopes.contains($0) } ?? false }
+        set {
+            guard let scope = activePreviewScope else { return }
+            if newValue { previewScopes.insert(scope) } else { previewScopes.remove(scope) }
+        }
+    }
+
+    /// The preview URL for the active tab's checkout, if any. Keyed by
+    /// checkout rather than repo so two worktrees, each with its own dev
+    /// server on its own port, don't overwrite each other's page.
     var activePreviewURL: URL? {
         guard let s = activeSession else { return nil }
-        return previewURLs[s.repoRoot]
+        return previewURLs[s.previewScope]
     }
+
+    /// Which checkouts currently have the preview showing instead of the
+    /// conversation. Per-scope, so opening the browser in one project
+    /// doesn't hide the transcript in another.
+    var activePreviewScope: String? { activeSession?.previewScope }
 
     private static let snapshotKey = "manyagents.snapshot.v1"
     /// Bundle ids we'll look under when restoring. The first entry is the

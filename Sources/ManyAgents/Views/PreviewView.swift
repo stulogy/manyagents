@@ -24,19 +24,25 @@ enum WebNavAction {
 
 struct PreviewView: View {
     @EnvironmentObject var manager: AgentManager
-    /// The shared browser, so the address bar follows agent-driven
-    /// navigation and redirects, not just what the user typed.
-    @ObservedObject private var browser = PreviewBrowser.shared
+    /// This checkout's browser, so the address bar follows agent-driven
+    /// navigation and redirects, not just what the user typed. The view is
+    /// re-created per scope (see `.id` at the call site), so this stays the
+    /// right one.
+    @ObservedObject private var browser: PreviewBrowser
     @State private var urlText = ""
     @State private var navAction: WebNavAction? = nil
     @State private var hasLoaded = false
+
+    init(scope: String) {
+        _browser = ObservedObject(wrappedValue: PreviewBrowser.forScope(scope))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider().opacity(0.4)
             if hasLoaded {
-                BrowserView(navAction: $navAction) { newURL in
+                BrowserView(browser: browser, navAction: $navAction) { newURL in
                     urlText = newURL
                 }
             } else {
@@ -146,6 +152,7 @@ struct PreviewView: View {
 // MARK: - BrowserView (NSViewRepresentable)
 
 struct BrowserView: NSViewRepresentable {
+    let browser: PreviewBrowser
     @Binding var navAction: WebNavAction?
     var onURLChange: (String) -> Void
 
@@ -157,7 +164,7 @@ struct BrowserView: NSViewRepresentable {
     /// own. Same browser the agents drive, so what you see here is what
     /// they see, and a page an agent set up survives you closing the panel.
     func makeNSView(context: Context) -> WKWebView {
-        PreviewBrowser.shared.view()
+        browser.view()
     }
 
     func updateNSView(_ wv: WKWebView, context: Context) {

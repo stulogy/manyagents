@@ -52,6 +52,10 @@ final class AgentSession: ObservableObject, Identifiable {
         boardScope == projectRoot ? other.projectRoot == boardScope
                                   : other.repoRoot == boardScope
     }
+    /// Which browser preview this tab uses: its own checkout. A worktree
+    /// keeps its own, because it runs its own dev server on its own port —
+    /// keying this by repo made two worktrees fight over one panel.
+    var previewScope: String { ProjectNaming.checkoutRoot(forCwd: cwd) }
     /// True when this tab sits in a worktree rather than the main repo.
     var isWorktree: Bool { projectRoot != cwd }
     /// True once the tab's directory has been deleted underneath it — a

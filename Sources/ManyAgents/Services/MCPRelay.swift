@@ -290,13 +290,15 @@ final class MCPRelay {
               let urlStr = req["url"] as? String,
               let url = URL(string: urlStr)
         else { return ["id": id, "ok": false, "error": "missing or invalid url"] }
-        // Store against the calling tab's REPO: one repo, one dev server, so
-        // every tab working in it sees the same page — including the ones
-        // that didn't start the server.
+        // Store against the calling tab's CHECKOUT: every tab working in
+        // that directory sees the same page, including ones that didn't
+        // start the server — but a sibling worktree, with its own server on
+        // its own port, keeps its own.
         let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:))
         let targetId = sourceUUID ?? mgr.activeSessionId
-        if let target = targetId.flatMap({ uid in mgr.sessions.first { $0.id == uid } }) {
-            mgr.previewURLs[target.repoRoot] = url
+        let target = targetId.flatMap { uid in mgr.sessions.first { $0.id == uid } }
+        if let target {
+            mgr.previewURLs[target.previewScope] = url
         }
         // Only steal focus into the browser when the ACTIVE tab is the one
         // that called it — a background agent stores its URL silently and
@@ -309,8 +311,10 @@ final class MCPRelay {
         // return the URL that was asked for, so an app that bounced the
         // agent to /login reported success and the agent moved on showing
         // the user a login screen.
-        await PreviewBrowser.shared.load(url)
-        let landed = PreviewBrowser.shared.currentURL?.absoluteString ?? urlStr
+        let browser = PreviewBrowser.forScope(
+            target?.previewScope ?? ProjectNaming.checkoutRoot(forCwd: mgr.activeSession?.cwd ?? ""))
+        await browser.load(url)
+        let landed = browser.currentURL?.absoluteString ?? urlStr
         var result: [String: Any] = ["id": id, "ok": true, "url": landed]
         if landed != urlStr {
             result["redirected_from"] = urlStr
@@ -318,12 +322,26 @@ final class MCPRelay {
         return result
     }
 
+    /// The preview browser belonging to the tab that called. Each checkout
+    /// has its own, so a tab drives the page for the dev server IT is
+    /// working against, not whichever one the window happened to show.
+    @MainActor
+    private func callerBrowser(_ req: [String: Any]) -> PreviewBrowser? {
+        guard let mgr = manager,
+              let uuid = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:)),
+              let session = mgr.sessions.first(where: { $0.id == uuid })
+        else { return nil }
+        return PreviewBrowser.forScope(session.previewScope)
+    }
+
     /// Read the page the preview is on: where it actually is, and what it
     /// says. The screenshot is opt-in — it's worth real tokens, and half
     /// the time the question is only "am I logged in or not".
     @MainActor
     private func previewLook(req: [String: Any], id: String) async -> [String: Any] {
-        let browser = PreviewBrowser.shared
+        guard let browser = callerBrowser(req) else {
+            return ["id": id, "ok": false, "error": "unknown source session"]
+        }
         guard browser.hasPage else {
             return ["id": id, "ok": false, "error": PreviewBrowser.Failure.noPage.localizedDescription]
         }
@@ -357,7 +375,9 @@ final class MCPRelay {
     /// of it having to guess and look again.
     @MainActor
     private func previewDo(req: [String: Any], id: String) async -> [String: Any] {
-        let browser = PreviewBrowser.shared
+        guard let browser = callerBrowser(req) else {
+            return ["id": id, "ok": false, "error": "unknown source session"]
+        }
         let action = (req["action"] as? String)?.lowercased() ?? ""
         let selector = req["selector"] as? String
         let value = req["value"] as? String

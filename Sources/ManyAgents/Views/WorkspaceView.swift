@@ -207,14 +207,12 @@ struct WorkspaceView: View {
                         .buttonStyle(.plain)
                         .help("Show sidebar")
                     }
-                    // The browser is one shared surface for all tabs — the
-                    // tab strip only confuses there (tabs looked clickable
-                    // over a view that isn't per-tab).
-                    if manager.previewActive {
-                        Spacer(minLength: 0)
-                    } else {
-                        tabStrip(for: project)
-                    }
+                    // The strip stays visible over the preview now. It used
+                    // to be replaced by a Spacer, on the reasoning that one
+                    // shared browser wasn't per-tab — but the preview is per
+                    // checkout, and the toggle lives in the strip, so hiding
+                    // it hid the way back.
+                    tabStrip(for: project)
                 }
                 // Contained "panel" — same shape as ClaudeDeck's right pane,
                 // so the conversation reads as a distinct surface inside the
@@ -223,8 +221,12 @@ struct WorkspaceView: View {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(Color(nsColor: .windowBackgroundColor).opacity(0.75))
                         .shadow(color: Color.black.opacity(0.35), radius: 14, x: 0, y: 4)
-                    if manager.previewActive {
-                        PreviewView()
+                    if manager.previewActive, let scope = manager.activePreviewScope {
+                        // Keyed by scope so switching projects rebuilds
+                        // against that checkout's browser instead of
+                        // rendering the previous one's page.
+                        PreviewView(scope: scope)
+                            .id(scope)
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     } else if let session = manager.activeSession {
                         // CRITICAL: tie the ConversationView's identity to
@@ -269,11 +271,45 @@ struct WorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .help("New tab in this project")
+                previewToggle
             }
             .padding(.leading, 14)
             .padding(.trailing, 14)
         }
         .padding(.vertical, 8)
+    }
+
+    /// Browser toggle, at the end of the tab strip — the preview belongs to
+    /// the checkout the active tab is in, so it sits with that project's
+    /// tabs rather than being an app-wide mode. Shows the port when there's
+    /// a page, which is what tells two worktrees apart at a glance.
+    @ViewBuilder
+    private var previewToggle: some View {
+        let url = manager.activePreviewURL
+        let on = manager.previewActive
+        Button {
+            manager.previewActive.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "globe")
+                    .font(.system(size: 10, weight: .bold))
+                if let port = url?.port {
+                    Text(":\(port)")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                }
+            }
+            .padding(.horizontal, url?.port == nil ? 0 : 7)
+            .frame(minWidth: 24, minHeight: 24)
+            .foregroundStyle(on ? Color.black : (url == nil ? .secondary : Color.brandOrange))
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(on ? Color.brandOrange : Color.primary.opacity(0.05))
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(url == nil && !on)
+        .help(url == nil ? "No preview for this project yet"
+                         : (on ? "Back to the conversation" : "Show \(url!.absoluteString)"))
     }
 
     private var emptyState: some View {

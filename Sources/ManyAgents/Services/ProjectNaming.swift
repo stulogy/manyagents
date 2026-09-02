@@ -156,6 +156,46 @@ enum ProjectNaming {
     ///
     /// The walk stops AT the home directory — a dotfiles repo at `~` would
     /// otherwise adopt every project on the machine as one giant "home".
+    /// The CHECKOUT a directory sits in: a worktree's own root, or the repo
+    /// root when it isn't one. Unlike `repoRoot`, this does NOT collapse a
+    /// worktree into the repo it was cut from.
+    ///
+    /// This is the unit a dev server belongs to. Two worktrees of one repo
+    /// run two servers on two ports — `:3015` and `:3020` — and keying the
+    /// preview by repo made them fight over a single panel, each one
+    /// navigating it away from the other.
+    static func checkoutRoot(forCwd cwd: String) -> String {
+        let key = cwd.hasSuffix("/") ? String(cwd.dropLast()) : cwd
+        checkoutLock.lock()
+        if let hit = checkoutCache[key] { checkoutLock.unlock(); return hit }
+        checkoutLock.unlock()
+        let resolved = nearestCheckout(from: key) ?? repoRoot(forCwd: key)
+        checkoutLock.lock()
+        checkoutCache[key] = resolved
+        checkoutLock.unlock()
+        return resolved
+    }
+
+    private static var checkoutCache: [String: String] = [:]
+    private static let checkoutLock = NSLock()
+
+    /// Nearest directory holding a `.git` of either kind — stopping at the
+    /// worktree rather than following its pointer home.
+    private static func nearestCheckout(from dir: String) -> String? {
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        var d = dir
+        while d != "/" && d != home && !d.isEmpty {
+            if fm.fileExists(atPath: (d as NSString).appendingPathComponent(".git")) {
+                return d
+            }
+            let parent = (d as NSString).deletingLastPathComponent
+            if parent == d { break }
+            d = parent
+        }
+        return nil
+    }
+
     private static func nearestRepo(from dir: String) -> String? {
         let fm = FileManager.default
         let home = NSHomeDirectory()

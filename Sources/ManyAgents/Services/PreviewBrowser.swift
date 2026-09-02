@@ -18,7 +18,23 @@ import AppKit
 /// browser, they never type credentials into it.
 @MainActor
 final class PreviewBrowser: NSObject, ObservableObject {
-    static let shared = PreviewBrowser()
+    /// One browser per CHECKOUT, not one for the app. Two worktrees of a
+    /// repo run two dev servers on two ports, and a single shared panel
+    /// meant each one navigated the other away — you'd switch tabs and find
+    /// the other project's page, or an agent would drive a page that had
+    /// moved under it. Cookies are still shared (one data store), so a
+    /// sign-in in one carries to the rest.
+    private static var browsers: [String: PreviewBrowser] = [:]
+
+    static func forScope(_ scope: String) -> PreviewBrowser {
+        if let existing = browsers[scope] { return existing }
+        let made = PreviewBrowser()
+        browsers[scope] = made
+        return made
+    }
+
+    /// Every live browser, for the rare caller that needs to sweep them.
+    static var all: [PreviewBrowser] { Array(browsers.values) }
 
     /// Nil until something first needs a browser. Created here, handed to
     /// `BrowserView` on demand, and outlives the panel being closed, so a
