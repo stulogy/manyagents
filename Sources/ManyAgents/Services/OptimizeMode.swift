@@ -41,7 +41,12 @@ enum OptimizeMode {
     /// coordination state, and summarizing it unasked loses the thread of
     /// what every tab is doing. They still compact on the Optimize Mode
     /// path, or when the user asks.
-    static let workerCeilingThreshold = 0.90
+    /// 85%, not 90%: this is checked at TURN END, which is the only moment
+    /// the context number lands. At 90% a tab sitting on 88% wouldn't
+    /// compact, and its next turn — which could be a large one — would run
+    /// straight into the ceiling anyway. The extra 5% is the headroom for
+    /// that turn.
+    static let workerCeilingThreshold = 0.85
 
     static var enabled: Bool {
         UserDefaults.standard.bool(forKey: Keys.enabled)

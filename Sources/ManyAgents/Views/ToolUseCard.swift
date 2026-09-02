@@ -14,10 +14,24 @@ struct ToolUseCard: View {
     /// non-edit tools, which keep their own result row).
     var succeeded: Bool? = nil
 
+    /// A shell script that writes files is put away by default: the point
+    /// of the card is which files changed, not the mechanism.
+    @State private var showScript = false
+
+    /// Set when this Bash call is really a file edit.
+    private var shellEdit: ShellEdit.Summary? {
+        guard toolName == "Bash",
+              let command = input["command"]?.stringValue
+        else { return nil }
+        return ShellEdit.summarize(command)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             header
-            if !brief.isEmpty {
+            if let edit = shellEdit {
+                shellEditBody(edit)
+            } else if !brief.isEmpty {
                 Text(brief)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.primary.opacity(0.85))
@@ -49,12 +63,50 @@ struct ToolUseCard: View {
         )
     }
 
+    /// A shell script that edits files, shown as the edit it is: the files
+    /// it touched, home-relative, one per line — with the script itself
+    /// behind a toggle for when you want to check what it actually did.
+    @ViewBuilder
+    private func shellEditBody(_ edit: ShellEdit.Summary) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(edit.paths, id: \.self) { path in
+                Text(ProjectNaming.prettyCwd(path))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .textSelection(.enabled)
+            }
+            Button {
+                showScript.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: showScript ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                    Text(showScript ? "Hide the \(edit.via) script"
+                                    : "via \(edit.via)")
+                        .font(.system(size: 11))
+                }
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 2)
+
+            if showScript {
+                Text(input["command"]?.stringValue ?? "")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(.top, 2)
+            }
+        }
+    }
+
     private var header: some View {
         HStack(spacing: 6) {
             Image(systemName: iconName)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(toolTint)
-            Text(ToolNaming.cardTitle(for: toolName))
+            Text(shellEdit == nil ? ToolNaming.cardTitle(for: toolName)
+                                  : "Edited \(shellEdit!.paths.count) file\(shellEdit!.paths.count == 1 ? "" : "s")")
                 .font(.system(size: 11.5, weight: .semibold))
                 .foregroundStyle(toolTint)
             Spacer(minLength: 0)
@@ -68,6 +120,7 @@ struct ToolUseCard: View {
     }
 
     private var iconName: String {
+        if shellEdit != nil { return "pencil.line" }
         switch toolName {
         case "Bash": return "terminal"
         case "Read": return "doc.text"
@@ -89,7 +142,7 @@ struct ToolUseCard: View {
 
     private var toolTint: Color {
         switch toolName {
-        case "Bash": return .blue
+        case "Bash": return shellEdit == nil ? .blue : .orange
         case "Edit", "MultiEdit", "Write": return .orange
         case "Read", "Grep", "Glob": return .cyan
         case "Task": return .purple
