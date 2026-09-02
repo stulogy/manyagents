@@ -394,10 +394,10 @@ final class MCPRelay {
                 }
                 await browser.load(url)
             case "click":
-                guard let selector else { throw PreviewBrowser.Failure.notFound("(no selector given)") }
+                guard let selector else { throw PreviewBrowser.Failure.needsSelector("click") }
                 try await browser.click(selector: selector)
             case "fill":
-                guard let selector else { throw PreviewBrowser.Failure.notFound("(no selector given)") }
+                guard let selector else { throw PreviewBrowser.Failure.needsSelector("fill") }
                 try await browser.fill(selector: selector, value: value ?? "")
             case "press":
                 try await browser.press(key: value ?? "Enter", selector: selector)

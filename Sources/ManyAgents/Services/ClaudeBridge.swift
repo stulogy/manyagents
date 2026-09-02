@@ -391,8 +391,10 @@ final class ClaudeBridge {
         askUserQuestionIds.removeAll()              // per-turn, not per-process
         turnInFlight = true
         var content: [[String: Any]] = []
-        if !text.isEmpty {
-            content.append(["type": "text", "text": text])
+        let saved = Self.persistAttachments(imagesPng)
+        let body = Self.textWithAttachmentPaths(text, saved)
+        if !body.isEmpty {
+            content.append(["type": "text", "text": body])
         }
         for png in imagesPng {
             content.append([
@@ -410,6 +412,74 @@ final class ClaudeBridge {
         ])
     }
 
+    /// Where a pasted screenshot is kept on disk.
+    ///
+    /// An image only exists inside the conversation, and a long conversation
+    /// loses the early ones — the model stops being able to see a screenshot
+    /// it was looking at an hour ago, which is why compacting "fixes" it.
+    /// Writing them out costs nothing and turns an image into something that
+    /// can be re-read on demand for the rest of the session.
+    private static var attachmentsDir: URL? {
+        guard let base = try? FileManager.default.url(for: .applicationSupportDirectory,
+                                                      in: .userDomainMask,
+                                                      appropriateFor: nil, create: true)
+        else { return nil }
+        let dir = base.appendingPathComponent("ManyAgents/attachments", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Writes each attachment out and returns the paths, in order. Failures
+    /// are silent: the inline image still goes through, this is only the
+    /// fallback for when it later ages out.
+    private static func persistAttachments(_ images: [Data]) -> [String] {
+        guard !images.isEmpty, let dir = attachmentsDir else { return [] }
+        pruneAttachments(in: dir)
+        let stamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        var paths: [String] = []
+        for (i, png) in images.enumerated() {
+            let url = dir.appendingPathComponent("\(stamp)-\(i + 1)-\(UUID().uuidString.prefix(6)).png")
+            guard (try? png.write(to: url)) != nil else { continue }
+            paths.append(url.path)
+        }
+        return paths
+    }
+
+    /// Two weeks is long past the life of any conversation these belong to,
+    /// and screenshots are large enough that keeping them forever would be a
+    /// slow leak in Application Support.
+    private static func pruneAttachments(in dir: URL) {
+        let cutoff = Date().addingTimeInterval(-14 * 24 * 3600)
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.contentModificationDateKey])
+        else { return }
+        for f in files {
+            let modified = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? Date()
+            if modified < cutoff { try? FileManager.default.removeItem(at: f) }
+        }
+    }
+
+    /// Names the files alongside the inline images, so the model can get an
+    /// image back with Read once the original has aged out of the window.
+    /// Added to what CLAUDE receives only — the visible transcript keeps the
+    /// user's own words.
+    private static func textWithAttachmentPaths(_ text: String, _ paths: [String]) -> String {
+        guard !paths.isEmpty else { return text }
+        let list = paths.enumerated()
+            .map { "  Image \($0.offset + 1): \($0.element)" }
+            .joined(separator: "\n")
+        return """
+        \(text)
+
+        [The attached image\(paths.count == 1 ? " is" : "s are") also saved on disk:
+        \(list)
+        If you can no longer see \(paths.count == 1 ? "it" : "them") later in this conversation, \
+        Read the path to bring \(paths.count == 1 ? "it" : "them") back rather than asking the user to re-send.]
+        """
+    }
+
     /// Inject a user message into the RUNNING turn without cancelling it —
     /// Claude Code-style steering. The CLI buffers the message and the model
     /// sees it at its next boundary, deciding itself how much attention to
@@ -419,8 +489,11 @@ final class ClaudeBridge {
         guard turnInFlight, activeStdin != nil,
               let p = activeProcess, p.isRunning else { return false }
         var content: [[String: Any]] = []
-        if !text.isEmpty {
-            content.append(["type": "text", "text": text])
+        // Same durability as a normal send — an image steered into a running
+        // turn ages out of the window exactly like any other.
+        let body = Self.textWithAttachmentPaths(text, Self.persistAttachments(imagesPng))
+        if !body.isEmpty {
+            content.append(["type": "text", "text": body])
         }
         for png in imagesPng {
             content.append([
@@ -856,6 +929,7 @@ final class ClaudeBridge {
     You can DRIVE the preview browser, not just point it at a URL: open_preview loads a page and tells you where it actually landed, preview_look reads the page back (screenshot:true when you need to see it), and preview_do clicks, fills fields and navigates. Use that browser rather than launching your own headless Playwright or Puppeteer — it's the one the user is watching, and it keeps their cookies, so pages behind a login work once they've signed in there. Sign in when it's a LOCAL DEVELOPMENT login and you have the credentials legitimately — a seeded test account the user gave you, or one from the project's own .env, fixtures or seed data, against localhost or a dev container. That's ordinary development and refusing it helps nobody: you'd only end up typing the same test password into a headless browser the user can't watch. Do NOT sign in to anything else — a real account, staging or production, a third-party service, or any credential you found lying around rather than being given for this purpose. There, say you've reached a sign-in page and ask the user to sign in once in the panel; the session is remembered from then on. Either way, check preview_look after acting instead of assuming the click did what you expected.
     If a project orchestrator is coordinating you and you get blocked, need a decision, or finish a long task it was waiting on (tests, a deploy, a build), call mcp__manyagents__notify_orchestrator with a specific message to wake it — it will take a turn to act on it.
     Messages from the orchestrator (or the user) can be injected into your RUNNING turn — they appear mid-turn, often alongside a tool result. Treat such a message as arriving NOW: if it tells you to stop, stand down, or change course, obey it immediately — drop the current plan, do not first finish the step you were on, and acknowledge briefly. Because you only see injected messages when your current tool call returns, never run a long foreground command that blocks you for many minutes: run long builds, test suites, installs, and servers with the Bash tool's run_in_background option (or a modest timeout) and poll their output — that keeps you reachable mid-task.
+    Images the user attaches are ALSO written to disk, and their paths are listed in the message that carried them. A long conversation eventually pushes early images out of the window — when you can no longer see one, Read its path to get it back instead of asking the user to send it again.
     If this conversation was resumed after an app or process restart, any background tasks, watchers, or dev servers you started earlier are DEAD — they died with the previous process. Never trust a prior turn's claim that something is being watched or served; re-check actual state (and re-arm watchers or restart servers) before relying on it.
     Your Bash tool runs through ZSH on macOS, not bash, and zsh aborts a command at parse time rather than passing an unmatched pattern through. Three things bite constantly, so write around them from the start:
     - Quote globs in flags. `grep -rn foo lib/ --include=*.ts` dies with "no matches found: --include=*.ts" before grep ever runs. Write `--include='*.ts'`. Same for `--exclude=`, `--files=`, and any flag whose value contains `*`, `?`, or `[`.

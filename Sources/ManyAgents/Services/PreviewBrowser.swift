@@ -57,13 +57,25 @@ final class PreviewBrowser: NSObject, ObservableObject {
         case badURL(String)
         case snapshot(String)
         case blocked(String)
+        case needsSelector(String)
 
         var errorDescription: String? {
             switch self {
             case .noPage:
                 return "Nothing is loaded in the preview yet — call open_preview with a URL first."
             case .js(let m):        return "The page rejected that: \(m)"
-            case .notFound(let s):  return "No element matches \(s) on this page."
+            case .notFound(let s):
+                return """
+                Nothing on this page matches \(s) — as a CSS selector or as \
+                visible text. Call preview_look to see what's actually there \
+                before guessing again.
+                """
+            case .needsSelector(let action):
+                return """
+                \(action) needs a selector — pass `selector` with a CSS \
+                selector ("#email", "button[type=submit]") or the visible \
+                text of the thing ("Save changes").
+                """
             case .blocked(let why):
                 return "The form refused to submit — the browser's own validation rejected a field (\(why)). Fix the value and click again."
             case .badURL(let u):    return "Not a usable URL: \(u)"
@@ -149,7 +161,7 @@ final class PreviewBrowser: NSObject, ObservableObject {
     /// agent deciding "am I on the login page or the dashboard" needs the
     /// words, and markup is mostly tokens spent on nothing.
     func visibleText(selector: String?, limit: Int) async throws -> String {
-        let target = selector.map { "document.querySelector(\(jsString($0)))" } ?? "document.body"
+        let target = selector.map { resolver($0) } ?? "document.body"
         let script = """
         (() => {
           const el = \(target);
@@ -216,7 +228,7 @@ final class PreviewBrowser: NSObject, ObservableObject {
     func click(selector: String) async throws {
         let script = """
         (() => {
-          const el = document.querySelector(\(jsString(selector)));
+          const el = \(resolver(selector));
           if (!el) return 'missing';
           el.scrollIntoView({block: 'center'});
           const form = el.form;
@@ -248,7 +260,7 @@ final class PreviewBrowser: NSObject, ObservableObject {
     func fill(selector: String, value: String) async throws {
         let script = """
         (() => {
-          const el = document.querySelector(\(jsString(selector)));
+          const el = \(resolver(selector));
           if (!el) return 'missing';
           el.focus();
           const proto = el instanceof HTMLTextAreaElement
@@ -265,7 +277,7 @@ final class PreviewBrowser: NSObject, ObservableObject {
     }
 
     func press(key: String, selector: String?) async throws {
-        let target = selector.map { "document.querySelector(\(jsString($0)))" }
+        let target = selector.map { resolver($0) }
             ?? "(document.activeElement || document.body)"
         let script = """
         (() => {
@@ -309,12 +321,75 @@ final class PreviewBrowser: NSObject, ObservableObject {
         return try await withCheckedThrowingContinuation { cont in
             wv.evaluateJavaScript(script) { value, error in
                 if let error {
-                    cont.resume(throwing: Failure.js(error.localizedDescription))
+                    // "A JavaScript exception occurred" is WebKit's generic
+                    // wrapper and says nothing. The real message is in the
+                    // userInfo, and it's the difference between an agent
+                    // knowing its selector was malformed and it guessing again.
+                    let detail = (error as NSError)
+                        .userInfo["WKJavaScriptExceptionMessage"] as? String
+                    cont.resume(throwing: Failure.js(detail ?? error.localizedDescription))
                 } else {
                     cont.resume(returning: value)
                 }
             }
         }
+    }
+
+    /// JS that resolves a selector to an element, accepting the things a
+    /// model actually reaches for, not just strict CSS.
+    ///
+    /// Sessions write Playwright syntax — `a:has-text("Save")`, `text=Save` —
+    /// because that's the vocabulary every browser tool has taught them, and
+    /// sometimes they just describe the thing: "AdaptHer Android client row
+    /// link". querySelector threw a SyntaxError on all of it, which the card
+    /// reported as "A JavaScript exception occurred": true, useless, and it
+    /// left the agent guessing at another selector rather than knowing that
+    /// its whole approach was wrong.
+    ///
+    /// So: try it as CSS, and when that isn't valid CSS (or matches
+    /// nothing), fall back to matching visible text. Prefers the smallest
+    /// clickable thing containing the words, which is what "click the X
+    /// link" means.
+    private func resolver(_ selector: String) -> String {
+        """
+        (() => {
+          const raw = \(jsString(selector));
+          // text=… and :has-text("…") — Playwright's spellings.
+          let text = null;
+          const hasText = raw.match(/:has-text\\((['"])(.*?)\\1\\)/);
+          if (hasText) { text = hasText[2]; }
+          else if (raw.startsWith('text=')) { text = raw.slice(5).replace(/^['"]|['"]$/g, ''); }
+          if (!text) {
+            try {
+              const el = document.querySelector(raw);
+              if (el) return el;
+            } catch (e) {
+              // Not valid CSS — treat the whole thing as words to look for.
+              text = raw;
+            }
+          }
+          if (text === null) text = raw;
+          const needle = text.trim().toLowerCase();
+          if (!needle) return null;
+          const clickable = Array.from(document.querySelectorAll(
+            'a, button, [role=button], [role=link], input[type=submit], input[type=button], summary, label'));
+          const visible = el => {
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          };
+          const said = el => ((el.innerText || el.value || el.getAttribute('aria-label') || '')
+            .trim().toLowerCase());
+          let hits = clickable.filter(el => visible(el) && said(el).includes(needle));
+          if (!hits.length) {
+            hits = Array.from(document.querySelectorAll('*')).filter(el =>
+              visible(el) && el.children.length === 0 && said(el).includes(needle));
+          }
+          if (!hits.length) return null;
+          // Smallest match: the link itself, not the container holding it.
+          hits.sort((a, b) => said(a).length - said(b).length);
+          return hits[0];
+        })()
+        """
     }
 
     /// JSON-encode a Swift string into a JS literal. Hand-rolled quoting
