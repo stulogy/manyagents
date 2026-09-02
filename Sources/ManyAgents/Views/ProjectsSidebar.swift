@@ -183,10 +183,16 @@ struct ProjectsSidebar: View {
     }
 
     private func toggleButton(_ mode: WorkspaceMode, icon: String) -> some View {
-        let isActive = viewMode == mode && !manager.previewActive
+        // Stays lit while the preview is up. It used to go dark, which was
+        // right when the browser was a third state in THIS control — one of
+        // three, so only one could be lit. The browser moved out to the tab
+        // strip and this became a leftover: opening a preview blanked the
+        // switcher, and neither rows nor cards looked selected even though
+        // one of them still was.
+        let isActive = viewMode == mode
         return Button {
-            // Mutually exclusive with the browser — picking a view mode
-            // always leaves the browser (both lit at once read as broken).
+            // Picking a view mode leaves the browser: you asked to see the
+            // agents, so show them.
             viewMode = mode
             manager.previewActive = false
         } label: {

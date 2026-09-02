@@ -255,8 +255,12 @@ struct WorkspaceView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(project.sessions) { s in
+                        // Also stays lit under the preview. The tab is still
+                        // the selected one — the browser is showing over its
+                        // conversation, not instead of it — and the toggle
+                        // beside the strip is already lit orange to say so.
                         AgentTab(session: s,
-                                 isActive: !manager.previewActive && manager.activeSessionId == s.id,
+                                 isActive: manager.activeSessionId == s.id,
                                  onSelect: {
                                      manager.activeSessionId = s.id
                                      manager.previewActive = false
