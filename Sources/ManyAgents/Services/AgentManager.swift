@@ -12,12 +12,20 @@ final class AgentManager: ObservableObject {
             // Remember the last tab viewed in each project so switching back
             // to a project returns to where you were, not the last tab in
             // the list.
+            // Keyed by repoRoot, which is what `projects` groups by and
+            // what `activate(project:)` looks up. It used to store under
+            // the TAB's own cwd, so any tab in a subdirectory or a worktree
+            // was filed under a key nothing ever read — the lookup missed
+            // every time and fell through to "the last tab in the list",
+            // which is what switching projects always landed on.
             if let id = activeSessionId, let s = sessions.first(where: { $0.id == id }) {
-                lastActiveTabPerProject[s.cwd] = id
+                lastActiveTabPerProject[s.repoRoot] = id
             }
         }
     }
-    /// cwd → last-active tab id, for per-project tab memory (runtime only).
+    /// repoRoot → last-active tab id, for per-project tab memory. Runtime
+    /// only: which tab you were reading is not worth persisting across a
+    /// relaunch, where every tab is equally cold.
     private var lastActiveTabPerProject: [String: UUID] = [:]
 
     // MARK: - Preview panel
