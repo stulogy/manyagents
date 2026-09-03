@@ -327,7 +327,7 @@ private final class ServerState: @unchecked Sendable {
                 // workers are told plainly they are not the orchestrator.
                 "instructions": args.isCoordinator
                 ? """
-                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server — and preview_look / preview_do let you read and drive that same page (it keeps the user's cookies, so use it instead of your own headless browser; sign in yourself only with local development credentials you were given or that come from the project's own config, never to a real, staging or production account). This session is an ORCHESTRATOR: the board tools (list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent) let you coordinate the user's other tabs. Your board covers your own scope — the whole workspace if you sit at its root, otherwise just your repo. When a repo nested inside your workspace grows its own multi-tab workstream, delegate_orchestrator makes one of its tabs that repo's lead; you keep seeing its tabs, it runs them. A dev server belongs to the CHECKOUT it was started in, never to the repo: worktrees of one repo are separate directories on separate branches, so a tab pointed at a sibling's server verifies its change against code it did not write. Start one for a checkout when you hand it work needing visual verification, on a port that checkout owns, and stop it when the work lands — not for tabs that will never open a page. If the user runs Optimize Mode, tabs you spawn default to a cheaper model — pass model:"full" to new_agent when the work you're handing over genuinely needs the stronger one. Refer to the app as "ManyAgents".
+                You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server — and preview_look / preview_do let you read and drive that same page (it keeps the user's cookies, so use it instead of your own headless browser; sign in yourself only with local development credentials you were given or that come from the project's own config, never to a real, staging or production account). This session is an ORCHESTRATOR: the board tools (list_agents, read_agent, send_to_agent, new_agent, set_notes, mute_agent) let you coordinate the user's other tabs. Your board covers your own scope — the whole workspace if you sit at its root, otherwise just your repo. When a repo nested inside your workspace grows its own multi-tab workstream, delegate_orchestrator makes one of its tabs that repo's lead; you keep seeing its tabs, it runs them. When a tab bubbles a blocker up to you, decide it yourself if you can; when it genuinely needs the user, call flag_for_user rather than leaving the question in a transcript nobody is reading — always with a recommendation, so they can answer with a yes. A dev server belongs to the CHECKOUT it was started in, never to the repo: worktrees of one repo are separate directories on separate branches, so a tab pointed at a sibling's server verifies its change against code it did not write. Start one for a checkout when you hand it work needing visual verification, on a port that checkout owns, and stop it when the work lands — not for tabs that will never open a page. If the user runs Optimize Mode, tabs you spawn default to a cheaper model — pass model:"full" to new_agent when the work you're handing over genuinely needs the stronger one. Refer to the app as "ManyAgents".
                 """
                 : """
                 You are running inside ManyAgents, a native macOS app the user drives multiple Claude Code sessions from — each session is a tab, tabs group by project. These tools are loaded directly into your toolset (ToolSearch cannot see them; call them by name). open_preview shows the user a URL in the app's shared browser panel — use it whenever you start or update a dev server — and preview_look / preview_do let you read and drive that same page (it keeps the user's cookies, so use it instead of your own headless browser; sign in yourself only with local development credentials you were given or that come from the project's own config, never to a real, staging or production account). This session is NOT the orchestrator — a separate dedicated tab may hold that role. To reach it (you're blocked, need a cross-tab decision, or finished a long task it's waiting on), call notify_orchestrator. Refer to the app as "ManyAgents".
@@ -582,6 +582,22 @@ private final class ServerState: @unchecked Sendable {
                 ]
             ],
             [
+                "name": "flag_for_user",
+                "description": "Put something in the user's \"needs you\" drawer — the one place they look for questions raised across every project. Use it when work is genuinely blocked on a human decision, or for something they'd want to know. Say what you would do by default in `recommendation`: most items then become a one-tap yes, and if you can't state a default you probably haven't thought hard enough to be asking yet. This is a judgement call, not a habit — flag what you cannot decide, settle the rest yourself. The item clears on its own once the tab moves on, so there is nothing to undo.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "summary": ["type": "string", "description": "The question or fact, in one or two sentences, written for someone who has not been reading the transcript."],
+                        "recommendation": ["type": "string", "description": "What you would do absent an answer, e.g. 'I'd keep the worktree — it has 5 uncommitted changes' or 'I'd send the note as drafted'."],
+                        "kind": ["type": "string", "enum": ["decision", "notice"], "description": "decision (default) = work is blocked until they answer. notice = worth knowing, nothing is waiting."],
+                        "deadline": ["type": "string", "description": "Optional, when it stops mattering, in your own words — 'before Tuesday', 'Team Chat launches in 5 days'. Items with one sort to the top."],
+                        "agent_id": ["type": "string", "description": "The tab this is about, from list_agents, so clicking the item goes where the answer is given. Defaults to you."]
+                    ],
+                    "required": ["summary"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
                 "name": "preview_look",
                 "description": "Read the page currently in the preview browser: its real URL (after any redirect), its title, the device it is being viewed as, and the text a person would see. Ask for screenshot:true when you need to judge layout, styling or anything visual — you get the rendered page as an image. Call this after open_preview or preview_do to find out what actually happened, rather than assuming the page you asked for is the page you got.",
                 "inputSchema": [
@@ -827,6 +843,28 @@ private final class ServerState: @unchecked Sendable {
                         """)
                 } else {
                     respondToolResult(id: id, text: "Preview opened: \(landed)")
+                }
+            case "flag_for_user":
+                guard let summary = (arguments["summary"] ?? arguments["message"]) as? String else {
+                    respondToolResult(id: id, text: "Error: missing summary.", isError: true)
+                    return
+                }
+                var payload: [String: Any] = ["op": "flag_for_user",
+                                              "source_session_id": args.sourceSessionId as Any,
+                                              "summary": summary]
+                for key in ["recommendation", "kind", "deadline", "agent_id"] {
+                    if let v = arguments[key] as? String { payload[key] = v }
+                }
+                let res = try await awaitRelay(payload)
+                if (res["ok"] as? Bool) == true {
+                    respondToolResult(id: id, text: """
+                        Flagged for the user (\(res["kind"] as? String ?? "decision")), \
+                        against tab "\(res["tab"] as? String ?? "?")". It's in their Needs You \
+                        drawer now. Don't wait on it — carry on with anything not blocked by it, \
+                        and it clears itself once that tab takes another turn.
+                        """)
+                } else {
+                    respondToolResult(id: id, text: "Error: \(res["error"] as? String ?? "failed")", isError: true)
                 }
             case "preview_look":
                 var payload: [String: Any] = ["op": "preview_look",

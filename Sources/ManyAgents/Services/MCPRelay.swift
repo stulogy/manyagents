@@ -160,6 +160,8 @@ final class MCPRelay {
             return await previewDo(req: req, id: id)
         case "notify_orchestrator":
             return await notifyOrchestrator(req: req, id: id)
+        case "flag_for_user":
+            return await flagForUser(req: req, id: id)
         case "rename_agent":
             return await renameAgent(req: req, id: id)
         case "compact_agent":
@@ -282,6 +284,39 @@ final class MCPRelay {
         let delivery = orch.deliverNow("[Message from tab \"\(name)\" — it pinged you and needs a turn]\n\n\(message)")
         return ["id": id, "ok": true,
                 "delivery": delivery.steered ? "injected_into_running_turn" : "started_a_turn"]
+    }
+
+    /// Put something in the user's "needs you" drawer.
+    ///
+    /// The last hop of a chain that already existed: a worker hits a
+    /// blocker and pings its orchestrator, the orchestrator weighs it
+    /// against everything else on its board, and only what genuinely needs
+    /// a human lands here. That middle judgement is the point — it is why
+    /// this is a deliberate call and not a flag every tab sets on itself.
+    @MainActor
+    private func flagForUser(req: [String: Any], id: String) async -> [String: Any] {
+        guard let mgr = manager else { return ["id": id, "ok": false, "error": "manager unavailable"] }
+        guard let sourceUUID = (req["source_session_id"] as? String).flatMap(UUID.init(uuidString:)),
+              let source = mgr.sessions.first(where: { $0.id == sourceUUID })
+        else { return ["id": id, "ok": false, "error": "unknown source session"] }
+        guard let summary = (req["summary"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty
+        else { return ["id": id, "ok": false, "error": "empty summary"] }
+
+        // An orchestrator usually flags on behalf of a tab it coordinates,
+        // so the row points at the tab that can actually answer.
+        let about = (req["agent_id"] as? String).flatMap(UUID.init(uuidString:))
+            .flatMap { uid in mgr.sessions.first { $0.id == uid } } ?? source
+        let kind: AttentionItem.Kind =
+            (req["kind"] as? String)?.lowercased() == "notice" ? .notice : .decision
+        mgr.raiseEscalation(sessionId: about.id, kind: kind, summary: summary,
+                            recommendation: (req["recommendation"] as? String)?
+                                .trimmingCharacters(in: .whitespacesAndNewlines),
+                            deadline: (req["deadline"] as? String)?
+                                .trimmingCharacters(in: .whitespacesAndNewlines))
+        return ["id": id, "ok": true,
+                "tab": about.aiTitle ?? about.displayName,
+                "kind": kind == .decision ? "decision" : "notice"]
     }
 
     @MainActor

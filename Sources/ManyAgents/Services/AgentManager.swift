@@ -54,6 +54,97 @@ final class AgentManager: ObservableObject {
     /// doesn't hide the transcript in another.
     var activePreviewScope: String? { activeSession?.previewScope }
 
+
+    // MARK: - Attention
+
+    /// Escalations raised by orchestrators, newest last. Cleared when the
+    /// tab they belong to takes another turn — see `Escalation.turnMark`.
+    @Published var escalations: [Escalation] = []
+
+    /// Everything waiting on the user right now, most pressing first.
+    ///
+    /// Derived, not stored. A tab stops waiting the moment you reply, and
+    /// the item has to vanish with it — a list like this survives only as
+    /// long as it needs no grooming.
+    var attentionItems: [AttentionItem] {
+        var items: [AttentionItem] = []
+        for s in sessions {
+            let project = ProjectNaming.name(forCwd: s.projectRoot)
+            let label = s.aiTitle ?? s.displayName
+
+            func add(_ source: AttentionItem.Source, _ kind: AttentionItem.Kind,
+                     _ summary: String, id: String) {
+                items.append(AttentionItem(id: "\(s.id)-\(id)", sessionId: s.id,
+                                           tabLabel: label, projectName: project,
+                                           kind: kind, source: source,
+                                           summary: summary, recommendation: nil,
+                                           deadline: nil, raisedAt: Date()))
+            }
+
+            // Structural signals, in the order they block work. A tool call
+            // suspended on allow/deny stops that tab dead; a tab that ended
+            // its turn on a question can wait.
+            if s.pendingPermission != nil {
+                add(.permission, .decision,
+                    "Waiting on you to allow or deny \(s.pendingPermission?.toolName ?? "a tool")",
+                    id: "perm")
+            }
+            if let server = s.pendingMCPAuthServer {
+                add(.mcpAuth(server), .decision, "Needs you to sign in to \(server)", id: "mcp")
+            }
+            if let q = s.pendingAskUserQuestion {
+                add(.question, .decision, q.question, id: "ask")
+            }
+            if s.status == .error, let err = s.lastError {
+                add(.failed, .decision, err, id: "err")
+            }
+            if s.status == .waiting {
+                add(.waiting, .decision, s.latestSnippet, id: "waiting")
+            }
+        }
+        // Escalations sit on top of the automatic ones, keeping the
+        // orchestrator's own wording and its recommendation.
+        for e in escalations {
+            guard let s = sessions.first(where: { $0.id == e.sessionId }) else { continue }
+            items.append(AttentionItem(id: e.id.uuidString, sessionId: e.sessionId,
+                                       tabLabel: s.aiTitle ?? s.displayName,
+                                       projectName: ProjectNaming.name(forCwd: s.projectRoot),
+                                       kind: e.kind, source: .flagged,
+                                       summary: e.summary,
+                                       recommendation: e.recommendation,
+                                       deadline: e.deadline,
+                                       raisedAt: e.raisedAt))
+        }
+        return items.sorted(by: AttentionItem.sortsBefore)
+    }
+
+    /// Count for the toolbar badge — decisions only. A notice that has been
+    /// sitting there all afternoon should not keep a number lit.
+    var attentionDecisionCount: Int {
+        attentionItems.filter { $0.kind == .decision }.count
+    }
+
+    /// Record an orchestrator's escalation. One live escalation per tab:
+    /// a second one replaces the first rather than stacking, since the
+    /// newer question is the one that matters.
+    func raiseEscalation(sessionId: UUID, kind: AttentionItem.Kind, summary: String,
+                         recommendation: String?, deadline: String?) {
+        escalations.removeAll { $0.sessionId == sessionId }
+        let turns = sessions.first(where: { $0.id == sessionId })?.messages.count ?? 0
+        escalations.append(Escalation(sessionId: sessionId, kind: kind, summary: summary,
+                                      recommendation: recommendation, deadline: deadline,
+                                      raisedAt: Date(), turnMark: turns))
+    }
+
+    /// Drop escalations whose tab has moved on, and any pointing at a tab
+    /// that no longer exists.
+    func pruneEscalations() {
+        escalations.removeAll { e in
+            guard let s = sessions.first(where: { $0.id == e.sessionId }) else { return true }
+            return s.messages.count > e.turnMark + 1
+        }
+    }
+
     private static let snapshotKey = "manyagents.snapshot.v1"
     /// Bundle ids we'll look under when restoring. The first entry is the
     /// active bundle (where we WRITE), the rest are historical ids we read
@@ -270,6 +361,11 @@ final class AgentManager: ObservableObject {
             .sink { [weak self, weak session] end in
                 guard let self, let session else { return }
                 self.handleTurnEnded(on: session, end: end)
+                // A tab taking another turn is the signal that its flagged
+                // question either got answered or stopped mattering. That
+                // is the only way a row leaves the drawer — there is no
+                // dismiss button anywhere, by design.
+                self.pruneEscalations()
             }
     }
 

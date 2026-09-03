@@ -10,6 +10,7 @@ struct WorkspaceView: View {
     @State private var pendingCloseTarget: AgentSession?
     @State private var showShortcuts: Bool = false
     @State private var indicatorPulse: Bool = false
+    @AppStorage("attention.open") private var attentionOpen: Bool = false
     @Environment(\.openSettings) private var openSettings
 
     /// Only present while we actually hold the assertion. A badge, not a
@@ -56,6 +57,31 @@ struct WorkspaceView: View {
     /// whole signal — an earlier version drew a battery glyph next to it,
     /// but it was a fixed `battery.25` symbol that never read the real
     /// charge, so it looked like a low-battery warning it couldn't back up.
+    /// Opens the drawer, and carries the count so a question raised in a
+    /// project you aren't looking at is visible without hunting for it.
+    private var attentionButton: some View {
+        Button {
+            attentionOpen.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "bell")
+                    .font(.system(size: 12, weight: .medium))
+                if manager.attentionDecisionCount > 0 {
+                    Text("\(manager.attentionDecisionCount)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.brandOrange))
+                }
+            }
+        }
+        .help(manager.attentionDecisionCount == 0
+              ? "Nothing waiting on you (⌘⇧A)"
+              : "\(manager.attentionDecisionCount) waiting on you (⌘⇧A)")
+        .keyboardShortcut("a", modifiers: [.command, .shift])
+    }
+
     private var indicatorTint: Color {
         stayAwake.onBattery ? Color(red: 0.90, green: 0.25, blue: 0.25) : Color.brandOrange
     }
@@ -79,7 +105,16 @@ struct WorkspaceView: View {
             }
             mainPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if attentionOpen {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.08))
+                    .frame(width: 1)
+                AttentionDrawer(open: $attentionOpen)
+                    .frame(width: 300)
+                    .transition(.move(edge: .trailing))
+            }
         }
+        .animation(.easeInOut(duration: 0.2), value: attentionOpen)
         .toolbar {
             // Title bar, not the sidebar: the sidebar collapses (⌘⇧S) and
             // this must not vanish with it. Stopping a Mac from sleeping
@@ -97,6 +132,9 @@ struct WorkspaceView: View {
                 ToolbarItem(placement: .automatic) {
                     stayAwakeIndicator
                 }
+            }
+            ToolbarItem(placement: .automatic) {
+                attentionButton
             }
         }
         .animation(.easeInOut(duration: 0.2), value: sidebarCollapsed)
