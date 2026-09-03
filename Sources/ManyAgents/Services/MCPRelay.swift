@@ -358,6 +358,11 @@ final class MCPRelay {
             do { result["text"] = try await browser.visibleText(selector: selector, limit: limit) }
             catch { return ["id": id, "ok": false, "error": error.localizedDescription] }
         }
+        // Default ON: this is the cheap, precise way to see a page, and
+        // leaving it opt-in would mean agents keep reaching for the image.
+        if (req["elements"] as? Bool) ?? true {
+            result["elements"] = (try? await browser.elements()) ?? ""
+        }
         if (req["screenshot"] as? Bool) ?? false {
             do {
                 let png = try await browser.snapshot()

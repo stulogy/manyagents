@@ -213,6 +213,87 @@ final class PreviewBrowser: NSObject, ObservableObject {
         return String(text.prefix(limit)) + "\n\n[… truncated at \(limit) characters]"
     }
 
+    /// The page's interactive elements, named and numbered.
+    ///
+    /// This is the answer to "why does it keep taking screenshots". A model
+    /// cannot watch a live page — it perceives only when a request is made,
+    /// so a video feed would just be N screenshots a second, each its own
+    /// request and its own bill. What removes the screenshots is giving it
+    /// the page as STRUCTURE instead of pixels: a few hundred tokens listing
+    /// what can be clicked, each with a ref it can act on directly. No
+    /// guessing at `a:has-text(…)`, no look-guess-miss-look.
+    ///
+    /// Refs are stamped onto the elements as a data attribute, so a click
+    /// that follows resolves to the exact node that was listed rather than
+    /// to whatever a selector happens to match by then. They are restamped
+    /// on every snapshot, so a re-rendered page renumbers instead of going
+    /// quietly stale.
+    func elements(limit: Int = 60) async throws -> String {
+        let script = """
+        (() => {
+          const SEL = 'a, button, input, select, textarea, summary, ' +
+                      '[role=button], [role=link], [role=tab], [role=menuitem], ' +
+                      '[role=checkbox], [role=radio], [role=combobox], [role=switch], ' +
+                      '[contenteditable=true], [onclick]';
+          const seen = new Set();
+          const out = [];
+          let n = 0;
+          for (const el of document.querySelectorAll(SEL)) {
+            if (seen.has(el)) continue;
+            seen.add(el);
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) continue;
+            const style = getComputedStyle(el);
+            if (style.visibility === 'hidden' || style.display === 'none') continue;
+            // What a screen reader would call it, in the order the spec
+            // prefers — an icon-only button is nameless without aria-label.
+            const labelled = el.getAttribute('aria-labelledby');
+            // A checkbox's `value` is "on" — its NAME is whatever label
+            // points at it, which is the only part a person reads.
+            const boxy = el.type === 'checkbox' || el.type === 'radio';
+            const forLabel = el.id
+              ? ((document.querySelector('label[for="' + el.id + '"]') || {}).innerText || '')
+              : '';
+            let name = (el.getAttribute('aria-label')
+                     || (labelled ? (document.getElementById(labelled) || {}).innerText || '' : '')
+                     || forLabel
+                     || ((el.closest('label') || {}).innerText || '')
+                     || el.innerText
+                     || (boxy ? '' : el.value)
+                     || el.placeholder
+                     || el.title
+                     || el.alt
+                     || '').replace(/\\s+/g, ' ').trim();
+            if (name.length > 70) name = name.slice(0, 70) + '…';
+            const tag = el.tagName.toLowerCase();
+            const role = el.getAttribute('role')
+                      || (tag === 'a' ? 'link'
+                        : tag === 'button' ? 'button'
+                        : tag === 'select' ? 'combobox'
+                        : tag === 'textarea' ? 'textbox'
+                        : tag === 'input' ? (((el.type || 'text') === 'text') ? 'textbox' : el.type)
+                        : tag);
+            // Nameless and stateless is noise: a spacer anchor, a wrapper
+            // someone hung a click handler on.
+            if (!name && ['textbox', 'checkbox', 'radio', 'combobox'].indexOf(role) === -1) continue;
+            n += 1;
+            const ref = 'e' + n;
+            el.setAttribute('data-ma-ref', ref);
+            let extra = '';
+            if (el.disabled) extra += ' disabled';
+            if (el.checked) extra += ' checked';
+            const exp = el.getAttribute('aria-expanded');
+            if (exp) extra += ' expanded=' + exp;
+            if (role === 'textbox' && !el.value) extra += ' empty';
+            out.push('[' + ref + '] ' + role + (name ? ' "' + name + '"' : '') + extra);
+            if (n >= \(limit)) break;
+          }
+          return out.join('\\n');
+        })()
+        """
+        return (try await js(script)) as? String ?? ""
+    }
+
     /// PNG of the visible page. Scaled down: a retina snapshot of a wide
     /// panel is several megabytes, and every one of those bytes crosses the
     /// relay socket and lands in the agent's context.
@@ -388,6 +469,21 @@ final class PreviewBrowser: NSObject, ObservableObject {
         """
         (() => {
           const raw = \(jsString(selector));
+          // A ref from the last elements() snapshot — exact, and immune to
+          // whatever a selector might match by now.
+          if (/^e\\d+$/.test(raw)) {
+            const byRef = document.querySelector('[data-ma-ref="' + raw + '"]');
+            if (byRef) return byRef;
+          }
+          // Playwright's chaining, "input[name=q] >> nth=1". Sessions write
+          // it because that is the vocabulary every browser tool taught them.
+          const chained = raw.match(/^(.*?)\\s*>>\\s*nth=(\\d+)$/);
+          if (chained) {
+            try {
+              const hit = document.querySelectorAll(chained[1].trim())[parseInt(chained[2], 10)];
+              if (hit) return hit;
+            } catch (e) { /* fall through to the text search */ }
+          }
           // text=… and :has-text("…") — Playwright's spellings.
           let text = null;
           const hasText = raw.match(/:has-text\\((['"])(.*?)\\1\\)/);
