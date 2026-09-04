@@ -107,7 +107,20 @@ final class AgentManager: ObservableObject {
                 add(.failed, .decision, err, id: "err")
             }
             if s.status == .waiting {
-                add(.waiting, .decision, s.latestSnippet, id: "waiting")
+                // The question that made it wait, not whatever the
+                // transcript ends with now. A row that can't say what it
+                // wants is worse than no row: it costs a click to find out
+                // it was nothing, and a drawer of those is the inbox this
+                // is supposed to replace.
+                let asked = s.waitingSummary.isEmpty ? s.latestSnippet : s.waitingSummary
+                let oneLine = asked
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if oneLine.count >= 12 {
+                    add(.waiting, .decision,
+                        oneLine.count > 220 ? String(oneLine.prefix(220)) + "…" : oneLine,
+                        id: "waiting")
+                }
             }
         }
         // Escalations sit on top of the automatic ones, keeping the

@@ -295,6 +295,10 @@ final class AgentSession: ObservableObject, Identifiable {
     /// live indicator's badge — ManyAgents' own tools read as the app doing
     /// something, not as an outside plugin with a machine-shaped name.
     @Published var currentTool: String = ""
+    /// The assistant text that made this tab start waiting on the user.
+    /// Held separately because the transcript moves on: background turns
+    /// append after it, and the question is what the drawer has to show.
+    @Published var waitingSummary: String = ""
     /// Prompts the user has queued while the current turn is in flight.
     /// Sent one-by-one in FIFO order once the current turn lands. Matches
     /// the queued-messages UX in the Claude Code TUI.
@@ -1609,11 +1613,17 @@ final class AgentSession: ObservableObject, Identifiable {
                 awaitingNetworkResume = false
                 turnCompleted.send(rollingCompactSummaryBuffer)
             } else if currentTurnIsRollingCompactSeed {
-                // Reseed done. Idle, silently — deliberately NOT published on
+                // Reseed done. Deliberately NOT published on
                 // `turnCompleted`: subscribers there (the orchestrator report
                 // path) would read an internal acknowledgement as the tab
                 // having finished real work.
-                status = .idle
+                //
+                // And it must not touch the user-facing status either. A tab
+                // that was waiting on an answer is STILL waiting on it after
+                // its context was compacted behind the scenes — housekeeping
+                // nobody asked for should not be able to clear that, or
+                // create it.
+                if status != .waiting { status = .idle }
                 lastSentPrompt = nil
                 awaitingNetworkResume = false
             } else {
@@ -1623,9 +1633,14 @@ final class AgentSession: ObservableObject, Identifiable {
                 // cue when input is expected — we match that here.
                 let lastAssistantText = messages
                     .last(where: { $0.role == .assistant })?.flatText ?? ""
-                status = Self.endedAwaitingUserInput(lastAssistantText)
-                    ? .waiting
-                    : .idle
+                let asks = Self.endedAwaitingUserInput(lastAssistantText)
+                // Keep the text that MADE it wait. Reading the last
+                // assistant message later gives whatever has happened
+                // since, and a background compaction ends by making the tab
+                // say "ok" — so the drawer showed a column of "ok" where
+                // the questions should have been.
+                if asks { waitingSummary = lastAssistantText }
+                status = asks ? .waiting : .idle
                 // Clean completion: the prompt landed, so the auto-
                 // resumer has nothing to retry.
                 lastSentPrompt = nil
