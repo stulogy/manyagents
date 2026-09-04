@@ -307,13 +307,13 @@ final class MCPRelay {
         // so the row points at the tab that can actually answer.
         let about = (req["agent_id"] as? String).flatMap(UUID.init(uuidString:))
             .flatMap { uid in mgr.sessions.first { $0.id == uid } } ?? source
-        let kind: AttentionItem.Kind =
+        let kind: AttentionEntry.Kind =
             (req["kind"] as? String)?.lowercased() == "notice" ? .notice : .decision
-        mgr.raiseEscalation(sessionId: about.id, kind: kind, summary: summary,
-                            recommendation: (req["recommendation"] as? String)?
-                                .trimmingCharacters(in: .whitespacesAndNewlines),
-                            deadline: (req["deadline"] as? String)?
-                                .trimmingCharacters(in: .whitespacesAndNewlines))
+        mgr.noteAsked(about, text: summary, kind: kind,
+                      recommendation: (req["recommendation"] as? String)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                      deadline: (req["deadline"] as? String)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines))
         return ["id": id, "ok": true,
                 "tab": about.aiTitle ?? about.displayName,
                 "kind": kind == .decision ? "decision" : "notice"]

@@ -63,106 +63,108 @@ final class AgentManager: ObservableObject {
     var activePreviewScope: String? { activeSession?.previewScope }
 
 
-    // MARK: - Attention
+    // MARK: - Attention log
 
-    /// Escalations raised by orchestrators, newest last. Cleared when the
-    /// tab they belong to takes another turn — see `Escalation.turnMark`.
-    @Published var escalations: [Escalation] = []
+    /// Questions asked of the user, oldest kept until answered. Persisted:
+    /// the entire point is that a question survives you not noticing it,
+    /// which includes not noticing it before a relaunch.
+    @Published var attentionLog: [AttentionEntry] = [] {
+        didSet { saveAttentionLog() }
+    }
 
-    /// Everything waiting on the user right now, most pressing first.
-    ///
-    /// Derived, not stored. A tab stops waiting the moment you reply, and
-    /// the item has to vanish with it — a list like this survives only as
-    /// long as it needs no grooming.
-    var attentionItems: [AttentionItem] {
-        var items: [AttentionItem] = []
-        for s in sessions {
+    private static let attentionKey = "manyagents.attention.v1"
+
+    func loadAttentionLog() {
+        guard let data = UserDefaults.standard.data(forKey: Self.attentionKey),
+              let saved = try? JSONDecoder().decode([AttentionEntry].self, from: data)
+        else { return }
+        // Keep open items indefinitely; drop resolved ones after a week so
+        // the store can't grow forever.
+        let cutoff = Date().addingTimeInterval(-7 * 24 * 3600)
+        attentionLog = saved.filter { $0.isOpen || ($0.resolvedAt ?? .distantPast) > cutoff }
+    }
+
+    private func saveAttentionLog() {
+        guard let data = try? JSONEncoder().encode(attentionLog) else { return }
+        UserDefaults.standard.set(data, forKey: Self.attentionKey)
+    }
+
+    /// Open entries, most pressing first.
+    var openAttention: [AttentionEntry] {
+        attentionLog.filter(\.isOpen).sorted(by: AttentionEntry.sortsBefore)
+    }
+
+    /// Tool calls and sign-ins blocking a tab right now — derived, not
+    /// logged, because they vanish the moment they're answered.
+    var liveBlockers: [LiveBlocker] {
+        sessions.compactMap { s in
             let project = ProjectNaming.name(forCwd: s.projectRoot)
             let label = s.aiTitle ?? s.displayName
-
-            func add(_ source: AttentionItem.Source, _ kind: AttentionItem.Kind,
-                     _ summary: String, id: String) {
-                items.append(AttentionItem(id: "\(s.id)-\(id)", sessionId: s.id,
-                                           tabLabel: label, projectName: project,
-                                           kind: kind, source: source,
-                                           summary: summary, recommendation: nil,
-                                           deadline: nil, raisedAt: Date()))
-            }
-
-            // Structural signals, in the order they block work. A tool call
-            // suspended on allow/deny stops that tab dead; a tab that ended
-            // its turn on a question can wait.
-            if s.pendingPermission != nil {
-                add(.permission, .decision,
-                    "Waiting on you to allow or deny \(s.pendingPermission?.toolName ?? "a tool")",
-                    id: "perm")
+            if let p = s.pendingPermission {
+                return LiveBlocker(id: "\(s.id)-perm", sessionId: s.id, tabLabel: label,
+                                   projectName: project,
+                                   text: "Waiting on you to allow or deny \(p.toolName)",
+                                   icon: "lock.fill")
             }
             if let server = s.pendingMCPAuthServer {
-                add(.mcpAuth(server), .decision, "Needs you to sign in to \(server)", id: "mcp")
+                return LiveBlocker(id: "\(s.id)-mcp", sessionId: s.id, tabLabel: label,
+                                   projectName: project,
+                                   text: "Needs you to sign in to \(server)",
+                                   icon: "person.badge.key.fill")
             }
-            if let q = s.pendingAskUserQuestion {
-                add(.question, .decision, q.question, id: "ask")
-            }
-            if s.status == .error, let err = s.lastError {
-                add(.failed, .decision, err, id: "err")
-            }
-            if s.status == .waiting {
-                // The question that made it wait, not whatever the
-                // transcript ends with now. A row that can't say what it
-                // wants is worse than no row: it costs a click to find out
-                // it was nothing, and a drawer of those is the inbox this
-                // is supposed to replace.
-                let asked = s.waitingSummary.isEmpty ? s.latestSnippet : s.waitingSummary
-                let oneLine = asked
-                    .replacingOccurrences(of: "\n", with: " ")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if oneLine.count >= 12 {
-                    add(.waiting, .decision,
-                        oneLine.count > 220 ? String(oneLine.prefix(220)) + "…" : oneLine,
-                        id: "waiting")
-                }
-            }
+            return nil
         }
-        // Escalations sit on top of the automatic ones, keeping the
-        // orchestrator's own wording and its recommendation.
-        for e in escalations {
-            guard let s = sessions.first(where: { $0.id == e.sessionId }) else { continue }
-            items.append(AttentionItem(id: e.id.uuidString, sessionId: e.sessionId,
-                                       tabLabel: s.aiTitle ?? s.displayName,
-                                       projectName: ProjectNaming.name(forCwd: s.projectRoot),
-                                       kind: e.kind, source: .flagged,
-                                       summary: e.summary,
-                                       recommendation: e.recommendation,
-                                       deadline: e.deadline,
-                                       raisedAt: e.raisedAt))
+    }
+
+    var attentionCount: Int { openAttention.count + liveBlockers.count }
+
+    /// Log a question a tab has asked. Deduplicated on text, so a tab that
+    /// re-states the same ask after a compaction doesn't stack up.
+    func noteAsked(_ session: AgentSession, text: String, kind: AttentionEntry.Kind = .decision,
+                   recommendation: String? = nil, deadline: String? = nil) {
+        let clean = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard clean.count >= 12 else { return }
+        let trimmed = clean.count > 400 ? String(clean.prefix(400)) + "…" : clean
+        if attentionLog.contains(where: { $0.isOpen && $0.sessionId == session.id
+                                          && $0.text == trimmed }) { return }
+        attentionLog.append(AttentionEntry(
+            sessionId: session.id,
+            tabLabel: session.aiTitle ?? session.displayName,
+            projectName: ProjectNaming.name(forCwd: session.projectRoot),
+            kind: kind, text: trimmed,
+            recommendation: recommendation, deadline: deadline,
+            markAtRaise: session.messages.count))
+    }
+
+    func resolveAttention(_ id: UUID) {
+        guard let i = attentionLog.firstIndex(where: { $0.id == id }) else { return }
+        attentionLog[i].resolvedAt = Date()
+    }
+
+    func resolveAllAttention() {
+        let now = Date()
+        for i in attentionLog.indices where attentionLog[i].isOpen {
+            attentionLog[i].resolvedAt = now
         }
-        return items.sorted(by: AttentionItem.sortsBefore)
     }
 
-    /// Count for the toolbar badge — decisions only. A notice that has been
-    /// sitting there all afternoon should not keep a number lit.
-    var attentionDecisionCount: Int {
-        attentionItems.filter { $0.kind == .decision }.count
-    }
-
-    /// Record an orchestrator's escalation. One live escalation per tab:
-    /// a second one replaces the first rather than stacking, since the
-    /// newer question is the one that matters.
-    func raiseEscalation(sessionId: UUID, kind: AttentionItem.Kind, summary: String,
-                         recommendation: String?, deadline: String?) {
-        escalations.removeAll { $0.sessionId == sessionId }
-        let turns = sessions.first(where: { $0.id == sessionId })?.messages.count ?? 0
-        escalations.append(Escalation(sessionId: sessionId, kind: kind, summary: summary,
-                                      recommendation: recommendation, deadline: deadline,
-                                      raisedAt: Date(), turnMark: turns))
-    }
-
-    /// Drop escalations whose tab has moved on, and any pointing at a tab
-    /// that no longer exists.
-    func pruneEscalations() {
-        escalations.removeAll { e in
-            guard let s = sessions.first(where: { $0.id == e.sessionId }) else { return true }
-            return s.messages.count > e.turnMark + 1
+    /// Close entries the user has effectively answered: anything raised
+    /// before a later message the user typed into that tab. Called on each
+    /// turn end, so answering in the tab clears the row without a trip to
+    /// the drawer.
+    func resolveAnsweredAttention(for session: AgentSession) {
+        let userMessagesAfter: (Int) -> Bool = { mark in
+            session.messages.count > mark &&
+            session.messages[mark...].contains { $0.role == .user }
+        }
+        let now = Date()
+        for i in attentionLog.indices
+        where attentionLog[i].isOpen
+            && attentionLog[i].sessionId == session.id
+            && userMessagesAfter(attentionLog[i].markAtRaise) {
+            attentionLog[i].resolvedAt = now
         }
     }
 
@@ -248,6 +250,7 @@ final class AgentManager: ObservableObject {
         // can dispatch into the session list without needing to drag
         // a manager reference around through every call.
         MCPRelay.shared.attach(manager: self)
+        loadAttentionLog()
         // Pre-start the relay so the Unix socket is ready before any
         // session fires. Without this the socket races against claude's
         // MCP subprocess connect attempt and the tool shows as unavailable.
@@ -382,11 +385,12 @@ final class AgentManager: ObservableObject {
             .sink { [weak self, weak session] end in
                 guard let self, let session else { return }
                 self.handleTurnEnded(on: session, end: end)
-                // A tab taking another turn is the signal that its flagged
-                // question either got answered or stopped mattering. That
-                // is the only way a row leaves the drawer — there is no
-                // dismiss button anywhere, by design.
-                self.pruneEscalations()
+                // Log a real ask, and close anything the user has since
+                // answered in that tab.
+                if session.status == .waiting, !session.waitingSummary.isEmpty {
+                    self.noteAsked(session, text: session.waitingSummary)
+                }
+                self.resolveAnsweredAttention(for: session)
             }
     }
 

@@ -1861,22 +1861,26 @@ final class AgentSession: ObservableObject, Identifiable {
             stripped.removeLast()
         }
         if stripped.hasSuffix("?") { return true }
-        let lower = tail.lowercased()
-        let cues = [
-            "your move",
-            "your call",
-            "let me know",
-            "should i ", "shall i ",
-            "do you want", "would you like",
-            "which one", "which would", "which do you",
-            "what should",
-            "either way",
-            "ready to proceed",
-            "confirm",
-            "decide",
-            "pick one", "pick which",
-            "your thoughts"
-        ]
-        return cues.contains { lower.contains($0) }
+        // Only the CLOSING sentence counts, and it has to be the ask
+        // itself. Matching these anywhere in the trailing window filed
+        // every clean finish as blocked: "Done. Three files written,
+        // nothing else touched" contains "decide" or "confirm" often
+        // enough that a wall of completion reports ended up in the user's
+        // needs-you list, which is worse than not having the list.
+        let closing = String(stripped
+            .split(whereSeparator: { ".!\n".contains($0) })
+            .last ?? "")
+            .trimmingCharacters(in: .whitespaces)
+            .lowercased()
+        guard !closing.isEmpty, closing.count <= 120 else { return false }
+        // The short sign-offs the system prompt actually asks for.
+        let signOffs = ["your move", "your call", "your shout", "let me know",
+                        "up to you", "your thoughts", "say the word"]
+        if signOffs.contains(where: { closing.hasPrefix($0) || closing == $0 }) { return true }
+        // Or a closing sentence that opens by asking.
+        let openers = ["should i", "shall i", "do you want", "would you like",
+                       "want me to", "which ", "what should", "ready to proceed",
+                       "confirm ", "shall we", "do you have a preference"]
+        return openers.contains { closing.hasPrefix($0) }
     }
 }

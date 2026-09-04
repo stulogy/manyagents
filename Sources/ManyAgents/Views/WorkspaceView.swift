@@ -66,8 +66,8 @@ struct WorkspaceView: View {
             HStack(spacing: 4) {
                 Image(systemName: "bell")
                     .font(.system(size: 12, weight: .medium))
-                if manager.attentionDecisionCount > 0 {
-                    Text("\(manager.attentionDecisionCount)")
+                if manager.attentionCount > 0 {
+                    Text("\(manager.attentionCount)")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 5)
@@ -76,9 +76,9 @@ struct WorkspaceView: View {
                 }
             }
         }
-        .help(manager.attentionDecisionCount == 0
+        .help(manager.attentionCount == 0
               ? "Nothing waiting on you (⌘⇧A)"
-              : "\(manager.attentionDecisionCount) waiting on you (⌘⇧A)")
+              : "\(manager.attentionCount) waiting on you (⌘⇧A)")
         .keyboardShortcut("a", modifiers: [.command, .shift])
     }
 
