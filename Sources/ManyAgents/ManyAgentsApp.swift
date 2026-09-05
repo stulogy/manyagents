@@ -218,4 +218,8 @@ extension Notification.Name {
     static let maShowShortcuts    = Notification.Name("ManyAgents.showShortcuts")
     static let maFind             = Notification.Name("ManyAgents.find")
     static let maFocusSession     = Notification.Name("ManyAgents.focusSession")
+    /// Jump to one message in the active tab — the drawer landing you on
+    /// the question rather than at the bottom of a transcript that has
+    /// moved on since.
+    static let maScrollToMessage  = Notification.Name("ManyAgents.scrollToMessage")
 }

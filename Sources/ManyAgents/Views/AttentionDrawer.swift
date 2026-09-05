@@ -14,6 +14,10 @@ import SwiftUI
 struct AttentionDrawer: View {
     @EnvironmentObject var manager: AgentManager
     @Binding var open: Bool
+    /// Rows read as three lines by default and open in place when tapped.
+    /// A truncated question is often exactly the half that doesn't say
+    /// what is being asked.
+    @State private var expanded: Set<UUID> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -95,7 +99,8 @@ struct AttentionDrawer: View {
             manager.previewActive = false
         } label: {
             card(icon: b.icon, tab: b.tabLabel, project: b.projectName,
-                 deadline: nil, text: b.text, recommendation: nil, urgent: true)
+                 deadline: nil, text: b.text, recommendation: nil, urgent: true,
+                 lines: nil)
         }
         .buttonStyle(.plain)
     }
@@ -105,18 +110,39 @@ struct AttentionDrawer: View {
     /// and the row closes itself — the tick is for the ones that stopped
     /// mattering on their own.
     private func row(_ entry: AttentionEntry) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Button {
-                manager.activeSessionId = entry.sessionId
-                manager.previewActive = false
-            } label: {
-                card(icon: entry.kind == .decision ? "hand.raised.fill" : "info.circle.fill",
-                     tab: entry.tabLabel, project: entry.projectName,
-                     deadline: entry.deadline, text: entry.text,
-                     recommendation: entry.recommendation,
-                     urgent: entry.kind == .decision)
+        let isOpen = expanded.contains(entry.id)
+        return HStack(alignment: .top, spacing: 6) {
+            VStack(alignment: .leading, spacing: 0) {
+                Button {
+                    go(to: entry)
+                } label: {
+                    card(icon: entry.kind == .decision ? "hand.raised.fill" : "info.circle.fill",
+                         tab: entry.tabLabel, project: entry.projectName,
+                         deadline: entry.deadline, text: entry.text,
+                         recommendation: entry.recommendation,
+                         urgent: entry.kind == .decision,
+                         lines: isOpen ? nil : 3)
+                }
+                .buttonStyle(.plain)
+                // Only offered when there is more to see — a control that
+                // does nothing on half the rows teaches you to ignore it.
+                if isOpen || entry.text.count > 150 {
+                    Button {
+                        if isOpen { expanded.remove(entry.id) } else { expanded.insert(entry.id) }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: isOpen ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 8, weight: .bold))
+                            Text(isOpen ? "Less" : "More")
+                                .font(.system(size: 10))
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                        .padding(.leading, 10)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .buttonStyle(.plain)
 
             Button {
                 manager.resolveAttention(entry.id)
@@ -131,8 +157,24 @@ struct AttentionDrawer: View {
         }
     }
 
+    /// Land on the message that asked, not at the bottom of a transcript
+    /// that has moved on since — which is what made clicking a row feel
+    /// like it did nothing when the tab was already the one on screen.
+    private func go(to entry: AttentionEntry) {
+        manager.activeSessionId = entry.sessionId
+        manager.previewActive = false
+        guard let messageId = entry.messageId else { return }
+        // After the tab switch has taken effect, so the target view exists.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            NotificationCenter.default.post(
+                name: .maScrollToMessage, object: nil,
+                userInfo: ["sessionId": entry.sessionId, "messageId": messageId])
+        }
+    }
+
     private func card(icon: String, tab: String, project: String, deadline: String?,
-                      text: String, recommendation: String?, urgent: Bool) -> some View {
+                      text: String, recommendation: String?, urgent: Bool,
+                      lines: Int? = 4) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 5) {
                 Image(systemName: icon)
@@ -158,7 +200,8 @@ struct AttentionDrawer: View {
             Text(text)
                 .font(.system(size: 11.5))
                 .foregroundStyle(.primary.opacity(0.85))
-                .lineLimit(4)
+                .lineLimit(lines)
+                .textSelection(.enabled)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
             if let rec = recommendation, !rec.isEmpty {

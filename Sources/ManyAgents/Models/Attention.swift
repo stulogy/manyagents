@@ -42,12 +42,17 @@ struct AttentionEntry: Identifiable, Codable, Equatable {
     /// Message count in the tab when this was raised, so a later reply can
     /// be recognised as the answer.
     let markAtRaise: Int
+    /// The message that asked. Clicking the row scrolls to it — landing
+    /// at the bottom of a transcript that has moved on since means hunting
+    /// for the question all over again. Optional: entries written before
+    /// this existed, and flagged ones, have none.
+    var messageId: UUID?
 
     var isOpen: Bool { resolvedAt == nil }
 
     init(sessionId: UUID, tabLabel: String, projectName: String, kind: Kind,
          text: String, recommendation: String? = nil, deadline: String? = nil,
-         markAtRaise: Int) {
+         markAtRaise: Int, messageId: UUID? = nil) {
         self.id = UUID()
         self.sessionId = sessionId
         self.tabLabel = tabLabel
@@ -59,6 +64,7 @@ struct AttentionEntry: Identifiable, Codable, Equatable {
         self.raisedAt = Date()
         self.resolvedAt = nil
         self.markAtRaise = markAtRaise
+        self.messageId = messageId
     }
 
     static func sortsBefore(_ a: AttentionEntry, _ b: AttentionEntry) -> Bool {

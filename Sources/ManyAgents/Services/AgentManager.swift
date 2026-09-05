@@ -121,21 +121,51 @@ final class AgentManager: ObservableObject {
     /// Log a question a tab has asked. Deduplicated on text, so a tab that
     /// re-states the same ask after a compaction doesn't stack up.
     func noteAsked(_ session: AgentSession, text: String, kind: AttentionEntry.Kind = .decision,
-                   recommendation: String? = nil, deadline: String? = nil) {
-        let clean = text
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+                   recommendation: String? = nil, deadline: String? = nil,
+                   messageId: UUID? = nil) {
+        // Stored as plain prose. The drawer is a narrow column, and raw
+        // syntax there is just noise — "**Seafoam and Atlas teal are one
+        // color**" reads worse than the sentence it wraps.
+        let clean = Self.plainText(text)
         guard clean.count >= 12 else { return }
-        let trimmed = clean.count > 400 ? String(clean.prefix(400)) + "…" : clean
         if attentionLog.contains(where: { $0.isOpen && $0.sessionId == session.id
-                                          && $0.text == trimmed }) { return }
+                                          && $0.text == clean }) { return }
         attentionLog.append(AttentionEntry(
             sessionId: session.id,
             tabLabel: session.aiTitle ?? session.displayName,
             projectName: ProjectNaming.name(forCwd: session.projectRoot),
-            kind: kind, text: trimmed,
-            recommendation: recommendation, deadline: deadline,
-            markAtRaise: session.messages.count))
+            kind: kind, text: clean,
+            recommendation: recommendation.map(Self.plainText), deadline: deadline,
+            markAtRaise: session.messages.count,
+            messageId: messageId ?? session.messages.last(where: { $0.role == .assistant })?.id))
+    }
+
+    /// Markdown read as a person would read it aloud. Deliberately small:
+    /// emphasis, code fences, headings, list bullets and link syntax, which
+    /// is everything that actually turns up in an agent's closing sentence.
+    /// Full rendering belongs in the transcript, not in a sidebar row.
+    static func plainText(_ raw: String) -> String {
+        var t = raw
+        // Fenced blocks go entirely — a row is no place for a code listing.
+        t = t.replacingOccurrences(of: "```[\\s\\S]*?```", with: " ",
+                                   options: .regularExpression)
+        // [label](url) → label
+        t = t.replacingOccurrences(of: "\\[([^\\]]+)\\]\\([^)]*\\)", with: "$1",
+                                   options: .regularExpression)
+        // Leading heading hashes and list markers, per line.
+        t = t.replacingOccurrences(of: "(?m)^\\s{0,3}#{1,6}\\s*", with: "",
+                                   options: .regularExpression)
+        t = t.replacingOccurrences(of: "(?m)^\\s*[-*+]\\s+", with: "• ",
+                                   options: .regularExpression)
+        t = t.replacingOccurrences(of: "(?m)^\\s*>\\s?", with: "",
+                                   options: .regularExpression)
+        // Emphasis and inline code markers.
+        for mark in ["***", "**", "__", "`", "*", "_", "~~"] {
+            t = t.replacingOccurrences(of: mark, with: "")
+        }
+        return t
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func resolveAttention(_ id: UUID) {

@@ -1213,6 +1213,22 @@ struct ConversationView: View {
                     proxy.scrollTo(matchIds[currentMatch], anchor: .center)
                 }
             }
+            // The Needs You drawer sending us to the message that asked.
+            // Same treatment as a find match: expand the render window
+            // first, because scrollTo silently no-ops on an id that
+            // isn't rendered, then centre it.
+            .onReceive(NotificationCenter.default.publisher(for: .maScrollToMessage)) { note in
+                guard let sid = note.userInfo?["sessionId"] as? UUID, sid == session.id,
+                      let mid = note.userInfo?["messageId"] as? UUID,
+                      session.messages.contains(where: { $0.id == mid })
+                else { return }
+                ensureRendered(mid)
+                DispatchQueue.main.async {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        proxy.scrollTo(mid, anchor: .center)
+                    }
+                }
+            }
             // Sticky turn bar tapped → jump back to the live turn.
             .onChange(of: stickyScrollTick) { _, _ in
                 withAnimation(.easeInOut(duration: 0.25)) {
