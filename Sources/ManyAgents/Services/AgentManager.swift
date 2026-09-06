@@ -346,7 +346,13 @@ final class AgentManager: ObservableObject {
                 // the retry itself goes offline → online again instantly.
                 session.awaitingNetworkResume = false
                 session.lastError = nil
-                session.send(prompt.text, images: prompt.images)
+                // Re-dispatch the PROMPT, not its text. send() rebuilds a
+                // plain visible turn, which strips every flag it carried —
+                // so a background compaction that failed while offline came
+                // back as an ordinary one, putting its internal seed in the
+                // transcript as if the user had typed it, and its "ok"
+                // acknowledgement after it.
+                session.redispatch(prompt)
             }
         }
     }

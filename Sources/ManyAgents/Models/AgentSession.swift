@@ -1094,6 +1094,17 @@ final class AgentSession: ObservableObject, Identifiable {
              visible: false)
     }
 
+    /// Re-run a prompt exactly as it was, flags and all. Used by the
+    /// auto-resumer after a network failure: a background turn has to come
+    /// back as a background turn, or its plumbing becomes visible.
+    func redispatch(_ prompt: PendingPrompt) {
+        if status == .running || bridge.isBusy || isCompacting || isRollingCompacting {
+            pendingPrompts.append(prompt)
+            return
+        }
+        dispatch(prompt)
+    }
+
     /// Returns the id of the prompt, so a caller (the orchestrator relay) can
     /// wait for the end of the turn THIS prompt causes, whether it runs now or
     /// drains out of the queue later.
@@ -1197,15 +1208,19 @@ final class AgentSession: ObservableObject, Identifiable {
         for img in prompt.images {
             blocks.append(.image(id: UUID(), data: img, mediaType: "image/png"))
         }
-        let userMessage = Message(role: .user, blocks: blocks)
-        if prompt.visible {
-            messages.append(userMessage)
-        }
         // Tag the assistant output of this turn if it's an automatic board-wake.
         currentTurnIsBoardWake = (prompt.isBoardWake == true)
         currentTurnIsRollingCompactSummary = (prompt.isRollingCompactSummary == true)
         currentTurnIsRollingCompactSeed = (prompt.isRollingCompactSeed == true)
         isBackgroundTurn = currentTurnIsRollingCompactSummary || currentTurnIsRollingCompactSeed
+        // A background prompt is never the user's, whatever route it came
+        // by — belt to the auto-resumer's braces. If any path ever rebuilds
+        // one of these as a visible prompt, the transcript still must not
+        // show the app talking to itself.
+        let userMessage = Message(role: .user, blocks: blocks)
+        if prompt.visible, !isBackgroundTurn {
+            messages.append(userMessage)
+        }
         // Stamped onto this turn's TurnEnd so a waiter can match end to prompt.
         currentPromptId = prompt.id
         // A fresh turn is never pre-interrupted. Normally `.processExited`
