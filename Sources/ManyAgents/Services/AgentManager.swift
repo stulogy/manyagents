@@ -281,6 +281,10 @@ final class AgentManager: ObservableObject {
         // a manager reference around through every call.
         MCPRelay.shared.attach(manager: self)
         loadAttentionLog()
+        // Watch for dev servers agents leave behind. Seventeen of them
+        // once held ~40GB between them and made macOS start pausing
+        // applications; nothing in the app noticed.
+        DevServers.shared.start()
         // Pre-start the relay so the Unix socket is ready before any
         // session fires. Without this the socket races against claude's
         // MCP subprocess connect attempt and the tool shows as unavailable.

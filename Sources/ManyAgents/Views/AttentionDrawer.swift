@@ -18,16 +18,70 @@ struct AttentionDrawer: View {
     /// A truncated question is often exactly the half that doesn't say
     /// what is being asked.
     @State private var expanded: Set<UUID> = []
+    @ObservedObject private var devServers = DevServers.shared
+
+    /// Dev servers agents started and left running. Not a question anyone
+    /// asked, but it belongs in the same place: it is the app telling you
+    /// something needs doing, and the alternative is finding out when the
+    /// machine starts pausing applications.
+    private var devServerRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image(systemName: "server.rack")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.brandOrange)
+                Text("Dev servers")
+                    .font(.system(size: 11, weight: .semibold))
+                Spacer(minLength: 0)
+                Text("\(devServers.servers.count)")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            Text(devServers.summary)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.primary.opacity(0.85))
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(devServers.servers.prefix(6)) { s in
+                Text("• \(s.label) — \(s.directory)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            if devServers.servers.count > 6 {
+                Text("…and \(devServers.servers.count - 6) more")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+            Button("Stop them all") { devServers.stopAll() }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.brandOrange)
+                .padding(.top, 2)
+                .help("Any of them restarts with its usual dev command")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.brandOrange.opacity(0.28), lineWidth: 1)
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().opacity(0.4)
-            if manager.attentionCount == 0 {
+            if manager.attentionCount == 0 && !devServers.shouldWarn {
                 empty
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
+                        if devServers.shouldWarn { devServerRow }
                         // Modal blockers first: a suspended tool call is
                         // stopping that tab dead, right now.
                         ForEach(manager.liveBlockers) { b in

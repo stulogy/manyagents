@@ -66,8 +66,8 @@ struct WorkspaceView: View {
             HStack(spacing: 4) {
                 Image(systemName: "bell")
                     .font(.system(size: 12, weight: .medium))
-                if manager.attentionCount > 0 {
-                    Text("\(manager.attentionCount)")
+                if attentionBadge > 0 {
+                    Text("\(attentionBadge)")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 5)
@@ -76,10 +76,16 @@ struct WorkspaceView: View {
                 }
             }
         }
-        .help(manager.attentionCount == 0
+        .help(attentionBadge == 0
               ? "Nothing waiting on you (⌘⇧A)"
-              : "\(manager.attentionCount) waiting on you (⌘⇧A)")
+              : "\(attentionBadge) waiting on you (⌘⇧A)")
         .keyboardShortcut("a", modifiers: [.command, .shift])
+    }
+
+    /// What the bell shows: questions plus, when it applies, the one
+    /// dev-server warning.
+    private var attentionBadge: Int {
+        manager.attentionCount + (DevServers.shared.shouldWarn ? 1 : 0)
     }
 
     private var indicatorTint: Color {
