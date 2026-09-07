@@ -6,6 +6,15 @@
     <description>Auto-update feed for ManyAgents.</description>
     <language>en</language>
     <item>
+      <title>0.15.3</title>
+      <sparkle:version>130</sparkle:version>
+      <sparkle:shortVersionString>0.15.3</sparkle:shortVersionString>
+      <link>https://github.com/stulogy/manyagents/releases/tag/v0.15.3</link>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Mon, 07 Sep 2026 17:28:25 +0000</pubDate>
+      <enclosure url="https://github.com/stulogy/manyagents/releases/download/v0.15.3/ManyAgents-0.15.3.dmg" sparkle:edSignature="pNIG6z3ZBGNcqEYF/GnXFg1KzZwVCek0UWdBY7BrRAbTy51aWYo9Eg4XQJtBoMr7wIeyrFjBiaJJJHj4+I+kBA==" length="3230627" type="application/octet-stream"/>
+    </item>
+    <item>
       <title>0.15.2</title>
       <sparkle:version>129</sparkle:version>
       <sparkle:shortVersionString>0.15.2</sparkle:shortVersionString>
