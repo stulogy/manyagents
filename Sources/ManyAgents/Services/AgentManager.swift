@@ -997,7 +997,16 @@ final class AgentManager: ObservableObject {
                                 ]), at: 0)
                             }
                             session.messages = msgs
-                            session.status = .waiting
+                            // Ask the SAME question the live path asks —
+                            // does the last thing it said actually want an
+                            // answer? This used to assert .waiting for every
+                            // restored tab, so a relaunch painted the whole
+                            // sidebar orange and filled the Needs You drawer
+                            // with tabs that had finished cleanly days ago.
+                            let tail = msgs.last(where: { $0.role == .assistant })?.flatText ?? ""
+                            let asks = AgentSession.endedAwaitingUserInput(tail)
+                            if asks { session.waitingSummary = tail }
+                            session.status = asks ? .waiting : .idle
                         }
                         // Seed the context gauge from the transcript's last
                         // usage so restored tabs don't sit empty until their
