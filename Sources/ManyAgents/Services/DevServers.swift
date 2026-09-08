@@ -22,10 +22,16 @@ import Combine
 final class DevServers: ObservableObject {
     static let shared = DevServers()
 
+    /// One dev server, which on disk is a CHAIN of processes: `npm run dev`
+    /// spawns `node …/next dev` spawns `next-server`. Counting those
+    /// separately reported five servers where there were two, tripping the
+    /// warning constantly — and killing only the leaf left the npm wrapper
+    /// to start it straight back up.
     struct Server: Identifiable, Equatable {
-        let id: Int32          // pid
-        let label: String      // what it is, e.g. "next-server"
-        let directory: String  // where it's serving from, home-relative
+        let id: String         // directory — the thing that is actually one server
+        let pids: [Int32]      // the whole chain, oldest first
+        let label: String
+        let directory: String
         let startedAt: Date
         var age: TimeInterval { Date().timeIntervalSince(startedAt) }
     }
@@ -79,6 +85,11 @@ final class DevServers: ObservableObject {
         ("ng serve", "ng serve"),
         ("rails server", "rails s"),
         ("http.server", "python http.server"),
+        // The wrappers. Matched so they're killed with the chain, never
+        // counted separately — they collapse into their directory's entry.
+        ("npm run dev", "next dev"),
+        ("yarn dev", "next dev"),
+        ("pnpm dev", "next dev"),
     ]
 
     func refresh() {
@@ -104,7 +115,7 @@ final class DevServers: ObservableObject {
         fmt.dateFormat = "EEE MMM d HH:mm:ss yyyy"
         fmt.locale = Locale(identifier: "en_US_POSIX")
 
-        var out: [Server] = []
+        var out: [(Int32, String, Date)] = []
         for line in text.split(separator: "\n") {
             let s = String(line)
             let parts = s.split(separator: " ", omittingEmptySubsequences: true)
@@ -114,15 +125,38 @@ final class DevServers: ObservableObject {
             let command = s.range(of: stamp).map { String(s[$0.upperBound...]) } ?? s
             guard let match = signatures.first(where: { command.contains($0.needle) })
             else { continue }
+            // Not the shell that MENTIONS a dev command. An agent's
+            // `zsh -c "... npm run dev ..."` matched on text alone, and its
+            // cwd is the project root rather than the server's, so it
+            // invented a whole extra "server" that could never be stopped.
+            let exe = command.trimmingCharacters(in: .whitespaces)
+                .split(separator: " ").first.map(String.init) ?? ""
+            let shell = exe.hasSuffix("/zsh") || exe.hasSuffix("/bash")
+                || exe.hasSuffix("/sh") || exe == "zsh" || exe == "bash" || exe == "sh"
+            if shell { continue }
             // ps collapses lstart's day padding differently; try both.
             let started = fmt.date(from: stamp)
                 ?? fmt.date(from: stamp.replacingOccurrences(of: "  ", with: " "))
                 ?? Date()
-            out.append(Server(id: pid, label: match.label,
-                              directory: Self.workingDirectory(of: pid),
-                              startedAt: started))
+            out.append((pid, match.label, started))
         }
-        return out
+        // Collapse the chain: everything serving the same directory is one
+        // server. Its age is the oldest link's — the wrapper starts first.
+        var byDirectory: [String: [(pid: Int32, label: String, started: Date)]] = [:]
+        for entry in out {
+            let dir = Self.workingDirectory(of: entry.0)
+            guard !dir.isEmpty else { continue }
+            byDirectory[dir, default: []].append((entry.0, entry.1, entry.2))
+        }
+        return byDirectory.map { dir, group in
+            let sorted = group.sorted { $0.started < $1.started }
+            return Server(id: dir,
+                          pids: sorted.map(\.pid),
+                          label: sorted.first?.label ?? "dev server",
+                          directory: dir,
+                          startedAt: sorted.first?.started ?? Date())
+        }
+        .sorted { $0.startedAt < $1.startedAt }
     }
 
     /// Where it's serving from, so the row says which checkout rather than
@@ -146,19 +180,17 @@ final class DevServers: ObservableObject {
 
     /// SIGTERM, then SIGKILL for anything that ignores it — two of the
     /// seventeen did, including the five-day-old one.
-    func stopAll() {
-        let pids = servers.map(\.id)
+    func stopAll() { stop(pids: servers.flatMap(\.pids)) }
+
+    func stop(_ server: Server) { stop(pids: server.pids) }
+
+    /// Parent first, so a supervisor can't restart the child we just
+    /// killed — which is why stopping a server appeared not to work.
+    /// SIGTERM, then SIGKILL for whatever ignores it.
+    private func stop(pids: [Int32]) {
         for pid in pids { kill(pid, SIGTERM) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             for pid in pids where kill(pid, 0) == 0 { kill(pid, SIGKILL) }
-            self?.refresh()
-        }
-    }
-
-    func stop(_ server: Server) {
-        kill(server.id, SIGTERM)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-            if kill(server.id, 0) == 0 { kill(server.id, SIGKILL) }
             self?.refresh()
         }
     }
