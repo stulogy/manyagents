@@ -810,17 +810,18 @@ struct ConversationView: View {
     /// dozen tool calls that are one action. Rendered individually they bury
     /// whatever the agent actually found. A run ends when something that
     /// isn't a preview call (or its result) appears.
-    private var previewRunGrouping: (runs: [String: (steps: Int, landed: String)],
+    private var previewRunGrouping: (runs: [String: (steps: Int, landed: String, live: Bool)],
                                      superseded: Set<String>) {
-        var runs: [String: (steps: Int, landed: String)] = [:]
+        var runs: [String: (steps: Int, landed: String, live: Bool)] = [:]
         var superseded: Set<String> = []
         var current: [String] = []          // tool_use ids, in order
         var landed = ""
         var previewIds: Set<String> = []
+        var inRun: Bool { !current.isEmpty }
 
-        func close() {
+        func close(live: Bool = false) {
             guard let last = current.last else { return }
-            runs[last] = (current.count, landed)
+            runs[last] = (current.count, landed, live)
             for id in current.dropLast() { superseded.insert(id) }
             current = []
             landed = ""
@@ -848,12 +849,19 @@ struct ConversationView: View {
                     } else {
                         close()
                     }
-                case .text, .thinking, .image:
+                case .image:
+                    // A screenshot IS a preview result. Closing the run on
+                    // it split every look-act pair into runs of one, so
+                    // nothing ever read as "12 steps".
+                    if !inRun { close() }
+                case .text, .thinking:
                     close()
                 }
             }
         }
-        close()
+        // Whatever is still open when the transcript ends is happening
+        // right now — that's the one that animates.
+        close(live: session.status == .running)
         return (runs, superseded)
     }
 
@@ -900,7 +908,7 @@ struct ConversationView: View {
     @State private var cachedSubagentIds: Set<String> = []
     @State private var cachedEditOutcomes: [String: Bool] = [:]
     @State private var cachedHousekeepingIds: Set<String> = []
-    @State private var cachedPreviewRuns: [String: (steps: Int, landed: String)] = [:]
+    @State private var cachedPreviewRuns: [String: (steps: Int, landed: String, live: Bool)] = [:]
     @State private var cachedSupersededPreviewIds: Set<String> = []
 
     // Windowed rendering. Only the trailing `visibleTopCount` top-level

@@ -32,7 +32,10 @@ struct MessageView: View {
     /// Keyed by the tool_use id of the LAST preview call in a run: how many
     /// calls that run contained, and where the browser ended up. Only that
     /// call renders; the rest of the run is in `supersededPreviewIds`.
-    var previewRuns: [String: (steps: Int, landed: String)] = [:]
+    var previewRuns: [String: (steps: Int, landed: String, live: Bool)] = [:]
+    /// Drives the globe's rotation. Flipped once on appear; the repeating
+    /// animation carries it from there.
+    @State private var spin = false
     /// Preview calls swallowed by a later one in the same run.
     var supersededPreviewIds: Set<String> = []
     /// AskUserQuestion answers the user has given this session, keyed by the
@@ -461,10 +464,19 @@ struct MessageView: View {
             if ToolNaming.isPreviewTool(name) {
                 if let run = previewRuns[toolUseId] {
                     HStack(spacing: 6) {
+                        // Spins while the run is still going, so a browsing
+                        // stretch reads as one thing happening rather than
+                        // a line that may or may not be finished.
                         Image(systemName: "globe")
                             .font(.system(size: 10, weight: .semibold))
-                        Text(run.steps <= 1 ? "Used the preview"
-                                            : "Drove the preview · \(run.steps) steps")
+                            .rotationEffect(.degrees(run.live && spin ? 360 : 0))
+                            .animation(run.live
+                                       ? .linear(duration: 2.4).repeatForever(autoreverses: false)
+                                       : .default,
+                                       value: spin)
+                        Text(run.live ? "Driving the preview"
+                             : (run.steps <= 1 ? "Used the preview"
+                                               : "Drove the preview · \(run.steps) steps"))
                             .font(.system(size: 11.5, weight: .medium))
                         if !run.landed.isEmpty {
                             Text(run.landed)
@@ -478,6 +490,8 @@ struct MessageView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background(Capsule().fill(Color.primary.opacity(0.05)))
+                    .onAppear { if run.live { spin = true } }
+                    .onChange(of: run.live) { _, live in spin = live }
                 } else {
                     EmptyView()
                 }
@@ -486,7 +500,13 @@ struct MessageView: View {
             // the user wants to SEE that an event happened without the
             // under-the-hood payload. Works for live and restored
             // transcripts alike because it's pure rendering.
-            if let label = Self.housekeepingLabel(name) {
+            //
+            // `else if`, and it matters: two consecutive `if`s in a
+            // ViewBuilder BOTH render. The preview branch above drew its
+            // collapsed pill and then fell straight through to here, so
+            // every call produced a pill AND the full card it was meant to
+            // replace — which looked exactly like the collapse not working.
+            else if let label = Self.housekeepingLabel(name) {
                 HStack(spacing: 6) {
                     Image(systemName: "brain.head.profile")
                         .font(.system(size: 10, weight: .semibold))
