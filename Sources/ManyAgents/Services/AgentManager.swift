@@ -138,6 +138,22 @@ final class AgentManager: ObservableObject {
             recommendation: recommendation.map(Self.plainText), deadline: deadline,
             markAtRaise: session.messages.count,
             messageId: messageId ?? session.messages.last(where: { $0.role == .assistant })?.id))
+        // The row appears immediately with the raw tail; a cheap model
+        // rewrites it into the actual ask a moment later. Nothing waits on
+        // this, and it degrades to the raw text if it fails.
+        let entryId = attentionLog.last?.id
+        let hasRecommendation = recommendation?.isEmpty == false
+        AttentionSummarizer.summarize(clean) { [weak self] result in
+            guard let self, let entryId, let result,
+                  let i = self.attentionLog.firstIndex(where: { $0.id == entryId })
+            else { return }
+            self.attentionLog[i].summary = result.ask
+            // Never overwrite an orchestrator's own recommendation with a
+            // model's guess at one.
+            if !hasRecommendation, let rec = result.recommendation {
+                self.attentionLog[i].recommendation = rec
+            }
+        }
     }
 
     /// Markdown read as a person would read it aloud. Deliberately small:

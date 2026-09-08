@@ -14,10 +14,6 @@ import SwiftUI
 struct AttentionDrawer: View {
     @EnvironmentObject var manager: AgentManager
     @Binding var open: Bool
-    /// Rows read as three lines by default and open in place when tapped.
-    /// A truncated question is often exactly the half that doesn't say
-    /// what is being asked.
-    @State private var expanded: Set<UUID> = []
     @ObservedObject private var devServers = DevServers.shared
 
     /// Dev servers agents started and left running. Not a question anyone
@@ -163,40 +159,23 @@ struct AttentionDrawer: View {
     /// without going anywhere. Most of the time you'll answer in the tab
     /// and the row closes itself — the tick is for the ones that stopped
     /// mattering on their own.
+    /// No expand control. The row says what is being asked and what the
+    /// agent would do; anything more is the transcript's job, and clicking
+    /// goes there — an in-place expansion was a second, worse way to read
+    /// the same thing.
     private func row(_ entry: AttentionEntry) -> some View {
-        let isOpen = expanded.contains(entry.id)
-        return HStack(alignment: .top, spacing: 6) {
-            VStack(alignment: .leading, spacing: 0) {
-                Button {
-                    go(to: entry)
-                } label: {
-                    card(icon: entry.kind == .decision ? "hand.raised.fill" : "info.circle.fill",
-                         tab: entry.tabLabel, project: entry.projectName,
-                         deadline: entry.deadline, text: entry.text,
-                         recommendation: entry.recommendation,
-                         urgent: entry.kind == .decision,
-                         lines: isOpen ? nil : 3)
-                }
-                .buttonStyle(.plain)
-                // Only offered when there is more to see — a control that
-                // does nothing on half the rows teaches you to ignore it.
-                if isOpen || entry.text.count > 150 {
-                    Button {
-                        if isOpen { expanded.remove(entry.id) } else { expanded.insert(entry.id) }
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: isOpen ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 8, weight: .bold))
-                            Text(isOpen ? "Less" : "More")
-                                .font(.system(size: 10))
-                        }
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 4)
-                        .padding(.leading, 10)
-                    }
-                    .buttonStyle(.plain)
-                }
+        HStack(alignment: .top, spacing: 6) {
+            Button {
+                go(to: entry)
+            } label: {
+                card(icon: entry.kind == .decision ? "hand.raised.fill" : "info.circle.fill",
+                     tab: entry.tabLabel, project: entry.projectName,
+                     deadline: entry.deadline, text: entry.display,
+                     recommendation: entry.recommendation,
+                     urgent: entry.kind == .decision,
+                     lines: 3)
             }
+            .buttonStyle(.plain)
 
             Button {
                 manager.resolveAttention(entry.id)

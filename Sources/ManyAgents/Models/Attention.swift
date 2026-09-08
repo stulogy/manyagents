@@ -28,11 +28,16 @@ struct AttentionEntry: Identifiable, Codable, Equatable {
     let tabLabel: String
     let projectName: String
     let kind: Kind
-    /// What was actually asked, in the agent's own words.
+    /// What was actually asked, in the agent's own words — the raw tail of
+    /// the message, kept as the fallback and as what gets summarised.
     let text: String
+    /// A cheap model's one-line version of `text`, filled in a moment after
+    /// the row appears. The raw tail is whatever the agent happened to end
+    /// on, which in a narrow column is accurate and unreadable.
+    var summary: String?
     /// What the orchestrator would do absent an answer, when it flagged
     /// this deliberately. Turns most rows into a one-tap yes.
-    let recommendation: String?
+    var recommendation: String?
     /// Carried verbatim — "before Tuesday". Sorts to the top.
     let deadline: String?
     let raisedAt: Date
@@ -49,6 +54,8 @@ struct AttentionEntry: Identifiable, Codable, Equatable {
     var messageId: UUID?
 
     var isOpen: Bool { resolvedAt == nil }
+    /// What the row shows: the summary once it lands, the raw tail until then.
+    var display: String { summary ?? text }
 
     init(sessionId: UUID, tabLabel: String, projectName: String, kind: Kind,
          text: String, recommendation: String? = nil, deadline: String? = nil,
@@ -59,6 +66,7 @@ struct AttentionEntry: Identifiable, Codable, Equatable {
         self.projectName = projectName
         self.kind = kind
         self.text = text
+        self.summary = nil
         self.recommendation = recommendation
         self.deadline = deadline
         self.raisedAt = Date()
