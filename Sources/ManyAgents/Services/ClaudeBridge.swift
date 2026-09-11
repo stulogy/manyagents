@@ -118,6 +118,7 @@ final class ClaudeBridge {
     /// available to approved organizations, so it would fail for most users.
     static let availableModels: [(label: String, id: String)] = [
         ("Default", ""),
+        ("Fable 5.1", "claude-fable-5-1"),
         ("Fable 5", "claude-fable-5"),
         ("Opus 5", "claude-opus-5"),
         ("Opus 4.8", "claude-opus-4-8"),
